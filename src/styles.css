@@ -1,0 +1,10 @@
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400&display=swap');
+@import "tailwindcss";
+
+@theme { --font-roboto: "Roboto", ui-sans-serif, system-ui, sans-serif; }
+
+* { box-sizing: border-box; }
+html, body, #root { min-height: 100%; margin: 0; }
+body { background: #ffffff; }
+button { font: inherit; cursor: pointer; }
+button:focus-visible, a:focus-visible { outline: 2px solid #065FD4; outline-offset: 2px; }

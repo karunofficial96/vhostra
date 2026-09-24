@@ -1,0 +1,57 @@
+export type WebServer = 'apache' | 'nginx' | 'openlitespeed'
+export type PhpVersion = '8.1' | '8.2' | '8.3' | '8.4' | '8.5'
+export type ServiceName = 'mariadb' | 'phpmyadmin' | 'redis' | 'memcached'
+export type RuntimeStatus = 'running' | 'stopped' | 'starting' | 'error'
+
+export interface ServiceConfiguration {
+  name: ServiceName
+  enabled: boolean
+  required: boolean
+  status: RuntimeStatus
+  port?: number
+}
+
+export interface RedirectRule { from: string; to: string; code: 301 | 302 | 307 | 308 }
+export interface HeaderRule { name: string; value: string; operation: 'set' | 'add' | 'unset' }
+export interface RewriteRule { pattern: string; replacement: string; flags: string[] }
+
+/** Portable model: the single source of truth before rendering server-specific configs. */
+export interface VirtualHost {
+  id: string
+  hostname: string
+  aliases: string[]
+  documentRoot: string
+  https: { enabled: boolean; certificateRef?: string }
+  redirects: RedirectRule[]
+  rewrites: RewriteRule[]
+  headers: HeaderRule[]
+  logs: { access: boolean; error: boolean }
+  source?: { server: WebServer; path: string; importedAt: string }
+  /** Directives that could not be made portable remain visible for review. */
+  preservedDirectives?: ImportedDirective[]
+}
+
+export interface Site { id: string; name: string; path: string; vhostId: string; framework?: string; status: RuntimeStatus }
+
+export interface VhostraEnvironment {
+  projectName: 'vhostra'
+  server: WebServer
+  phpVersion: PhpVersion
+  services: ServiceConfiguration[]
+  sites: Site[]
+  virtualHosts: VirtualHost[]
+  persistence: { settingsDirectory: string; databaseDirectory: string; siteDirectories: 'host-bind-mounts' }
+  isolation: { composeProject: string; labels: Record<string, string>; network: string }
+}
+
+export type ConversionSeverity = 'compatible' | 'warning' | 'unsupported'
+export interface ConversionFinding { severity: ConversionSeverity; directive: string; message: string; sourceLocation?: string }
+export interface VhostConversionPlan { source: WebServer; target: WebServer; virtualHost: VirtualHost; findings: ConversionFinding[] }
+
+export interface ImportedDirective {
+  raw: string
+  sourceServer: WebServer
+  sourceLocation?: string
+  classification: ConversionSeverity
+  note: string
+}
