@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto'
-import { existsSync } from 'node:fs'
+import { createReadStream, createWriteStream, existsSync } from 'node:fs'
 import { promises as fs } from 'node:fs'
+import { finished } from 'node:stream/promises'
 import net from 'node:net'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
@@ -53,6 +54,8 @@ export class DockerRuntimeController {
     this.set({ state: 'starting', message: 'Building and creating the Vhostra runtime container…', services: ['runtime'] })
     // --remove-orphans is limited by this project name and removes obsolete Vhostra service containers after a server/PHP switch.
     await this.compose(['up', '--detach', '--remove-orphans'])
+    this.set({ state: 'starting', message: 'Configuring secure local phpMyAdmin access…', services: ['runtime'] })
+    await this.provisionPhpMyAdmin()
     this.set({ state: 'starting', message: 'Running OpenLiteSpeed, LSPHP, MariaDB, and phpMyAdmin health checks…', services: ['runtime'] })
     await this.healthCheck(state.settings.selectedWebServer)
     await this.refresh()
@@ -73,6 +76,8 @@ export class DockerRuntimeController {
     await this.compose(['config', '--quiet'])
     this.set({ state: 'starting', message: 'Building and starting replacement runtime container…', services: ['runtime'] })
     await this.compose(['up', '--detach', '--remove-orphans'])
+    this.set({ state: 'starting', message: 'Configuring secure local phpMyAdmin access…', services: ['runtime'] })
+    await this.provisionPhpMyAdmin()
     this.set({ state: 'starting', message: 'Running replacement runtime health checks…', services: ['runtime'] })
     await this.healthCheck(state.settings.selectedWebServer)
     await this.refresh()
@@ -126,16 +131,59 @@ export class DockerRuntimeController {
     const state = await this.getState()
     return { name, username, host: '127.0.0.1', port: state.settings.ports.mariadb, charset: input.charset }
   }
+  async phpMyAdminUrl(database?: string) {
+    const state = await this.getState()
+    if (this.snapshot.state !== 'running') throw new Error('Start the Vhostra runtime before opening phpMyAdmin.')
+    const query = database ? `?db=${encodeURIComponent(sqlIdentifier(database, 'database name'))}` : ''
+    return `http://localhost:${state.settings.ports.phpMyAdmin}/phpmyadmin/index.php${query}`
+  }
+  async importDatabase(name: string, source: string) {
+    const database = sqlIdentifier(name, 'database name')
+    if (path.extname(source).toLowerCase() !== '.sql') throw new Error('Choose an uncompressed .sql database dump.')
+    await fs.access(source)
+    return this.runDatabaseOperation(`Importing ${database}…`, async () => {
+      await executeWithInput('docker', this.composeArguments(['exec', '-T', 'runtime', 'mariadb', '-uroot', database]), source)
+      return { database, message: `Imported ${path.basename(source)} into ${database}.` }
+    })
+  }
+  async exportDatabase(name: string, destination: string) {
+    const database = sqlIdentifier(name, 'database name')
+    if (path.extname(destination).toLowerCase() !== '.sql') throw new Error('Database exports must use a .sql filename.')
+    return this.runDatabaseOperation(`Exporting ${database}…`, async () => {
+      await executeWithOutput('docker', this.composeArguments(['exec', '-T', 'runtime', 'mariadb-dump', '-uroot', '--single-transaction', '--routines', '--events', database]), destination)
+      return { database, message: `Exported ${database} to ${path.basename(destination)}.` }
+    })
+  }
+  async repairDatabase(name: string) {
+    const database = sqlIdentifier(name, 'database name')
+    return this.runDatabaseOperation(`Checking ${database} tables…`, async () => {
+      const rows = (await this.compose(['exec', '-T', 'runtime', 'mariadb', '-uroot', '-N', '-e', `SELECT TABLE_NAME, COALESCE(ENGINE, '') FROM information_schema.TABLES WHERE TABLE_SCHEMA=${sqlLiteral(database)} AND TABLE_TYPE='BASE TABLE'`])).split('\n').filter(Boolean).map(line => line.split('\t'))
+      const results: string[] = []
+      for (const [table, engine] of rows) {
+        if (engine === 'MyISAM' || engine === 'Aria') { await this.compose(['exec', '-T', 'runtime', 'mariadb', '-uroot', '-e', `REPAIR TABLE \`${database}\`.\`${table}\``]); results.push(`${table}: repaired (${engine})`) }
+        else { await this.compose(['exec', '-T', 'runtime', 'mariadb', '-uroot', '-e', `CHECK TABLE \`${database}\`.\`${table}\``]); results.push(`${table}: checked (${engine || 'unknown engine'}; no table repair attempted)`) }
+      }
+      return { database, message: results.length ? results.join('; ') : 'No base tables to check.' }
+    })
+  }
+  async deleteDatabase(name: string) {
+    const database = sqlIdentifier(name, 'database name')
+    return this.runDatabaseOperation(`Deleting ${database}…`, async () => {
+      await this.compose(['exec', '-T', 'runtime', 'mariadb', '-uroot', '-e', `DROP DATABASE \`${database}\``])
+      return { database, message: `Deleted ${database}. Database users were not changed.` }
+    })
+  }
 
   private get runtimeRoot() { return path.dirname(this.layout.runtime.apache) }
   private get composeFile() { return path.join(this.runtimeRoot, 'compose.yml') }
   private get environmentFile() { return path.join(this.runtimeRoot, '.env') }
   private set(next: Omit<RuntimeSnapshot, 'updatedAt'>) { const message = this.httpsWarning ? `${next.message} HTTPS is unavailable: ${this.httpsWarning}` : next.message; this.snapshot = { ...next, message, updatedAt: new Date().toISOString() }; void this.updateWelcome?.(this.snapshot.message); this.listeners.forEach(listener => listener()); return this.snapshot }
-  private async runExclusive(state: RuntimeState, message: string, task: () => Promise<void>) {
+  private async runExclusive<T>(state: RuntimeState, message: string, task: () => Promise<T>): Promise<T> {
     if (this.operation) throw new Error('A Vhostra service operation is already in progress.')
     this.set({ state, message, services: this.snapshot.services })
-    this.operation = task().catch(error => { this.set({ state: 'error', message: error instanceof Error ? error.message : String(error), services: [] }); throw error }).finally(() => { this.operation = null })
-    return this.operation
+    const result = task().catch(error => { this.set({ state: 'error', message: error instanceof Error ? error.message : String(error), services: [] }); throw error })
+    this.operation = result.then(() => undefined, () => undefined).finally(() => { this.operation = null })
+    return result
   }
   private async requireDocker() { await this.docker(['info']) }
   private async generate(state: AppState) {
@@ -161,8 +209,22 @@ export class DockerRuntimeController {
     const missing = (name: string) => !new RegExp(`^${name}=`, 'm').test(contents)
     if (missing('MARIADB_ROOT_PASSWORD')) contents += `MARIADB_ROOT_PASSWORD=${randomBytes(24).toString('base64url')}\n`
     if (missing('VHOSTRA_PMA_BLOWFISH_SECRET')) contents += `VHOSTRA_PMA_BLOWFISH_SECRET=${randomBytes(32).toString('base64url')}\n`
+    if (missing('VHOSTRA_PMA_PASSWORD')) contents += `VHOSTRA_PMA_PASSWORD=${randomBytes(32).toString('base64url')}\n`
     await fs.writeFile(this.environmentFile, contents, { mode: 0o600 })
   }
+  private async provisionPhpMyAdmin() {
+    const contents = await fs.readFile(this.environmentFile, 'utf8')
+    const password = contents.match(/^VHOSTRA_PMA_PASSWORD=(.+)$/m)?.[1]?.trim()
+    if (!password) throw new Error('Vhostra could not prepare secure phpMyAdmin credentials.')
+    const secret = sqlLiteral(password)
+    const statement = `CREATE USER IF NOT EXISTS 'vhostra_pma'@'localhost' IDENTIFIED BY ${secret}; CREATE USER IF NOT EXISTS 'vhostra_pma'@'127.0.0.1' IDENTIFIED BY ${secret}; ALTER USER 'vhostra_pma'@'localhost' IDENTIFIED BY ${secret}; ALTER USER 'vhostra_pma'@'127.0.0.1' IDENTIFIED BY ${secret}; GRANT ALL PRIVILEGES ON *.* TO 'vhostra_pma'@'localhost' WITH GRANT OPTION; GRANT ALL PRIVILEGES ON *.* TO 'vhostra_pma'@'127.0.0.1' WITH GRANT OPTION; FLUSH PRIVILEGES;`
+    let lastError: unknown
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      try { await this.compose(['exec', '-T', 'runtime', 'mariadb', '-uroot', '-e', statement]); return } catch (error) { lastError = error; await wait(1_000) }
+    }
+    throw lastError instanceof Error ? lastError : new Error('MariaDB did not become ready for phpMyAdmin.')
+  }
+  private async runDatabaseOperation<T>(message: string, action: () => Promise<T>) { return this.runExclusive('starting', message, async () => { await this.requireDocker(); const result = await action(); await this.refresh(); return result }) }
   private async writeServerConfiguration(server: WebServer, phpVersion: PhpVersion, mounts: Array<{ host: AppState['virtualHosts'][number]; container: string }>) {
     const generated = this.layout.configuration.generated
     await fs.mkdir(generated, { recursive: true })
@@ -210,7 +272,8 @@ export class DockerRuntimeController {
     if (!await ready(ports.phpMyAdmin, '/phpmyadmin/index.php')) throw new Error('phpMyAdmin did not pass its shared-runtime health check.')
   }
   private async docker(args: string[]) { return execute('docker', args) }
-  private async compose(args: string[], allowFailure = true) { return execute('docker', ['compose', '--project-name', projectName, '--project-directory', this.runtimeRoot, '--env-file', this.environmentFile, '--file', this.composeFile, ...args], allowFailure) }
+  private async compose(args: string[], allowFailure = false) { return execute('docker', this.composeArguments(args), allowFailure) }
+  private composeArguments(args: string[]) { return ['compose', '--project-name', projectName, '--project-directory', this.runtimeRoot, '--env-file', this.environmentFile, '--file', this.composeFile, ...args] }
 }
 
 const execute = (command: string, args: string[], allowFailure = false) => new Promise<string>((resolve, reject) => {
@@ -218,6 +281,15 @@ const execute = (command: string, args: string[], allowFailure = false) => new P
   child.stdout.on('data', data => { stdout += String(data) }); child.stderr.on('data', data => { stderr += String(data) })
   child.once('error', reject); child.once('close', code => code === 0 || allowFailure ? resolve(stdout) : reject(new Error(stderr.trim() || `${command} ${args.join(' ')} exited with ${code}`)))
 })
+const executeWithInput = async (command: string, args: string[], input: string) => {
+  const child = spawn(command, args, { stdio: ['pipe', 'ignore', 'pipe'] }); let stderr = ''
+  child.stderr.on('data', data => { stderr += String(data) }); const source = createReadStream(input); source.pipe(child.stdin)
+  await Promise.all([finished(source), new Promise<void>((resolve, reject) => { child.once('error', reject); child.once('close', code => code === 0 ? resolve() : reject(new Error(stderr.trim() || `${command} import failed with ${code}`))) })])
+}
+const executeWithOutput = async (command: string, args: string[], output: string) => {
+  const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] }); let stderr = ''; child.stderr.on('data', data => { stderr += String(data) }); const destination = createWriteStream(output, { mode: 0o600 }); child.stdout.pipe(destination)
+  await Promise.all([finished(destination), new Promise<void>((resolve, reject) => { child.once('error', reject); child.once('close', code => code === 0 ? resolve() : reject(new Error(stderr.trim() || `${command} export failed with ${code}`))) })])
+}
 const parseJsonLines = (value: string) => value.split('\n').flatMap(line => { try { return [JSON.parse(line)] } catch { return [] } })
 const wait = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds))
 const validatePort = (port: number) => { if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('A port must be an integer from 1 to 65535.') }
@@ -256,5 +328,35 @@ function openLiteSpeedVirtualHosts(mounts: Array<{ host: AppState['virtualHosts'
 
 function singleRuntimeComposeYaml(state: AppState, layout: StoreLayout) {
   const php = state.settings.selectedPhpVersion.replace('.', '')
-  return `name: ${projectName}\nservices:\n  runtime:\n    build:\n      context: ./image\n      args:\n        LSPHP_VERSION: ${q(php)}\n    image: ${q(`vhostra-runtime:ols-lsphp${php}`)}\n    labels:\n      ${managedLabel.split('=').map(q).join(': ')}\n    ports:\n      - ${q(`${state.settings.ports.http}:8088`)}\n      - ${q(`${state.settings.ports.phpMyAdmin}:8088`)}\n      - ${q(`${state.settings.ports.mariadb}:3306`)}\n    environment:\n      VHOSTRA_LSPHP_VERSION: ${q(php)}\n      VHOSTRA_REDIS: ${q(state.settings.optionalServices.redis)}\n      VHOSTRA_MEMCACHED: ${q(state.settings.optionalServices.memcached)}\n      VHOSTRA_PMA_BLOWFISH_SECRET: \${VHOSTRA_PMA_BLOWFISH_SECRET}\n    volumes:\n      - ${q(`${path.join(layout.sites, 'localhost', 'public')}:/var/www/html`)}\n      - ${q(`${layout.persistentData.mariaDb}:/var/lib/mysql`)}\n      - ${q(`${layout.logs}:/var/log/vhostra`)}\n    networks: [vhostra]\nnetworks:\n  vhostra:\n    name: vhostra-network\n    labels:\n      ${managedLabel.split('=').map(q).join(': ')}\n`
+  return `name: ${projectName}
+services:
+  runtime:
+    build:
+      context: ./image
+      args:
+        LSPHP_VERSION: ${q(php)}
+    image: ${q(`vhostra-runtime:ols-lsphp${php}`)}
+    labels:
+      ${managedLabel.split('=').map(q).join(': ')}
+    ports:
+      - ${q(`127.0.0.1:${state.settings.ports.http}:8088`)}
+      - ${q(`127.0.0.1:${state.settings.ports.phpMyAdmin}:8088`)}
+      - ${q(`127.0.0.1:${state.settings.ports.mariadb}:3306`)}
+    environment:
+      VHOSTRA_LSPHP_VERSION: ${q(php)}
+      VHOSTRA_REDIS: ${q(state.settings.optionalServices.redis)}
+      VHOSTRA_MEMCACHED: ${q(state.settings.optionalServices.memcached)}
+      VHOSTRA_PMA_BLOWFISH_SECRET: \${VHOSTRA_PMA_BLOWFISH_SECRET}
+      VHOSTRA_PMA_PASSWORD: \${VHOSTRA_PMA_PASSWORD}
+    volumes:
+      - ${q(`${path.join(layout.sites, 'localhost', 'public')}:/var/www/html`)}
+      - ${q(`${layout.persistentData.mariaDb}:/var/lib/mysql`)}
+      - ${q(`${layout.logs}:/var/log/vhostra`)}
+    networks: [vhostra]
+networks:
+  vhostra:
+    name: vhostra-network
+    labels:
+      ${managedLabel.split('=').map(q).join(': ')}
+`
 }

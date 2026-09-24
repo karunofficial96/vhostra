@@ -110,6 +110,17 @@ function registerIpc() {
   ipcMain.handle('vhostra:reload-web-server', () => services.reloadWebServer())
   ipcMain.handle('vhostra:list-databases', () => services.listDatabases())
   ipcMain.handle('vhostra:create-database', (_event, input) => services.createDatabase(input))
+  ipcMain.handle('vhostra:open-phpmyadmin', async (_event, database?: string) => { await openExternal(await services.phpMyAdminUrl(database)) })
+  ipcMain.handle('vhostra:import-database', async (_event, database: string) => {
+    const result = await dialog.showOpenDialog({ title: `Import into ${database}`, properties: ['openFile'], filters: [{ name: 'SQL database dump', extensions: ['sql'] }] })
+    return result.canceled || !result.filePaths[0] ? null : services.importDatabase(database, result.filePaths[0])
+  })
+  ipcMain.handle('vhostra:export-database', async (_event, database: string) => {
+    const result = await dialog.showSaveDialog({ title: `Export ${database}`, defaultPath: `${database}.sql`, filters: [{ name: 'SQL database dump', extensions: ['sql'] }] })
+    return result.canceled || !result.filePath ? null : services.exportDatabase(database, result.filePath)
+  })
+  ipcMain.handle('vhostra:repair-database', (_event, database: string) => services.repairDatabase(database))
+  ipcMain.handle('vhostra:delete-database', (_event, database: string) => services.deleteDatabase(database))
 }
 
 async function openApplicationWindow() { const window = createWindow(); window.show(); window.focus() }

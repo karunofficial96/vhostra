@@ -21,6 +21,11 @@ const api = Object.freeze({
   reloadWebServer: () => ipcRenderer.invoke('vhostra:reload-web-server'),
   listDatabases: () => ipcRenderer.invoke('vhostra:list-databases'),
   createDatabase: (input: unknown) => ipcRenderer.invoke('vhostra:create-database', input),
+  openPhpMyAdmin: (database?: string) => ipcRenderer.invoke('vhostra:open-phpmyadmin', database),
+  importDatabase: (database: string) => ipcRenderer.invoke('vhostra:import-database', database),
+  exportDatabase: (database: string) => ipcRenderer.invoke('vhostra:export-database', database),
+  repairDatabase: (database: string) => ipcRenderer.invoke('vhostra:repair-database', database),
+  deleteDatabase: (database: string) => ipcRenderer.invoke('vhostra:delete-database', database),
   onRuntimeStatus: (listener: (status: unknown) => void) => { const handler = (_event: IpcRendererEvent, status: unknown) => listener(status); ipcRenderer.on('vhostra:runtime-status', handler); return () => ipcRenderer.removeListener('vhostra:runtime-status', handler) },
 })
 

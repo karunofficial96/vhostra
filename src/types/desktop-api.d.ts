@@ -25,6 +25,11 @@ export interface VhostraDesktopApi {
   reloadWebServer(): Promise<void>
   listDatabases(): Promise<string[]>
   createDatabase(input: { name: string; charset: string; username: string; password: string }): Promise<{ name: string; username: string; host: string; port: number; charset: string }>
+  openPhpMyAdmin(database?: string): Promise<void>
+  importDatabase(database: string): Promise<{ database: string; message: string } | null>
+  exportDatabase(database: string): Promise<{ database: string; message: string } | null>
+  repairDatabase(database: string): Promise<{ database: string; message: string }>
+  deleteDatabase(database: string): Promise<{ database: string; message: string }>
   onRuntimeStatus(listener: (status: RuntimeSnapshot) => void): () => void
 }
 
