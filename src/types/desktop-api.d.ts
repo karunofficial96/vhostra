@@ -1,5 +1,5 @@
 import type { ConfigurationExportRequest, ConfigurationImportReport, StorageLayout } from './storage'
-import type { Site, VhostraSettings, VhostraState } from './domain'
+import type { RuntimeSnapshot, Site, VhostraSettings, VhostraState } from './domain'
 
 export interface SiteInput { name: string; documentRoot: string; url: string; framework?: string }
 export interface SiteUpdate extends SiteInput { id: string }
@@ -15,6 +15,11 @@ export interface VhostraDesktopApi {
   getStorageLayout(): Promise<StorageLayout>
   exportConfiguration(request: Omit<ConfigurationExportRequest, 'destinationDirectory'>): Promise<{ path: string } | null>
   previewConfigurationImport(): Promise<ConfigurationImportReport | null>
+  getRuntimeStatus(): Promise<RuntimeSnapshot>
+  startServices(): Promise<void>
+  stopServices(): Promise<void>
+  restartServices(): Promise<void>
+  onRuntimeStatus(listener: (status: RuntimeSnapshot) => void): () => void
 }
 
 declare global {

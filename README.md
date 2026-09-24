@@ -2,14 +2,14 @@
 
 Vhostra is a lightweight, cross-platform graphical local PHP development environment. It is designed around one shared runtime: many local websites use one selected web server, one selected PHP version, and shared supporting services.
 
-> Development status: Vhostra now persists settings and site/neutral-vhost definitions locally, creates a protected localhost vhost and welcome page on first use, supports add/edit/remove site definitions, host directory selection, external-browser opening, configuration bundle export, and import-bundle validation. Docker orchestration, runtime installation/start/stop, applied configuration imports, vhost parsing/conversion, screenshot capture, and database operations remain planned and inactive.
+> Development status: Vhostra persists settings and site/neutral-vhost definitions locally, creates a protected localhost welcome page, and manages a dedicated Docker Compose runtime. Configuration import/apply, HTTPS provisioning, vhost import parsing, screenshot capture, and database-management UI remain planned.
 
 ## Features
 
 - Electron desktop application for macOS, Windows, and Linux
 - React, TypeScript, Vite, and Tailwind CSS interface
 - Responsive, collapsible navigation for Dashboard, Sites, Virtual Hosts, Database, phpMyAdmin, Server, PHP, Services, Logs, and Settings
-- Dashboard backed by real saved site definitions, with no simulated runtime status
+- Dashboard and tray backed by the same real Docker-runtime status, with Start, Stop, and Restart actions
 - Add, edit, and remove site definitions without changing document-root files
 - Native document-root folder selection and secure OS-default browser opening for local site URLs
 - Persisted selected web server, PHP version, and Redis/Memcached preferences
@@ -26,15 +26,25 @@ Vhostra is a lightweight, cross-platform graphical local PHP development environ
 
 Vhostra will run exactly one global web server and exactly one global PHP runtime at a time. Websites are vhosts within that shared environment—not individual stacks. MariaDB and phpMyAdmin are required shared services; Redis and Memcached are optional shared services.
 
-Supported web servers (planned runtime support): Apache, Nginx, and OpenLiteSpeed.
+Supported web servers: Apache, Nginx, and OpenLiteSpeed. Only the selected implementation is used.
 
-Supported PHP versions (planned runtime support): PHP 8.1, 8.2, 8.3, 8.4, and 8.5.
+Supported PHP versions: PHP 8.1, 8.2, 8.3, 8.4, and 8.5.
 
 ### First-run environment defaults
 
 New Vhostra profiles select OpenLiteSpeed. PHP uses a `latestSupported` policy: it resolves from the supported PHP-version list rather than embedding a permanent version value; at present that resolves to PHP 8.5. MariaDB and phpMyAdmin remain required shared services. Redis and Memcached remain optional and disabled by default. All of these preferences are persisted when changed.
 
-Vhostra also creates a protected, server-neutral localhost site definition at `http://localhost/`. Its document root is created under Vhostra's host-side data directory and contains a lightweight static Tailwind welcome page with current saved preferences and links to configured sites. It is not served until the planned runtime layer configures the selected global server. When server generation arrives, localhost will be rendered from the same neutral-vhost model as every other Vhostra vhost.
+Vhostra also creates a protected, server-neutral localhost site definition at `http://localhost/`. Its document root is created under Vhostra's host-side data directory and contains a lightweight static Tailwind welcome page with current saved preferences, runtime status, and links to configured sites. When services are running, it is served through the selected web server rather than Electron or Vite.
+
+## Docker runtime and ports
+
+Docker Desktop (or a compatible Docker Engine with the Compose plugin) is required. Start Services verifies Docker, checks required host ports, generates and validates the Vhostra-only Compose project, and starts the selected stack.
+
+- `http://localhost:9000` is the Vite development UI only.
+- `http://localhost/` is the Vhostra managed local web-server entry point.
+- `http://localhost:9080/` is phpMyAdmin. Its image keeps internal port 80; only the host binding is 9080.
+
+Vhostra checks ports 80, 9080, and 443 when HTTPS is configured. It reports an owner where practical and never stops unrelated applications or containers to reclaim a port.
 
 ## Local-first storage and persistence
 
@@ -87,7 +97,7 @@ Future Docker configuration will use explicit host-to-container mount plans. Hos
 
 ## Docker isolation and safety principles
 
-The future Docker layer will use a dedicated Compose project, labels, network, named resource conventions, and host bind mounts. It will only inspect or change resources owned by Vhostra. It will not stop or remove unrelated containers, modify unrelated networks/volumes/images, run global cleanup, or download all web-server images. Before changing a server or PHP version, it will create a local configuration snapshot, prepare and validate the replacement, preserve persistent data and sites, remove only obsolete Vhostra runtime containers, start the selected runtime, and health-check it. Port conflicts will be detected without stopping another application.
+The Docker layer uses the dedicated `vhostra` Compose project, `com.vhostra.managed=true` labels, and `vhostra-network`. It invokes Compose only against Vhostra's generated project file; it never uses global cleanup or broad Docker stop/remove operations. Website roots, generated configuration, database data, logs, certificates, and service configuration are host bind mounts. A running server/PHP change regenerates configuration, validates it, updates only the Vhostra project, removes obsolete project containers with project-scoped orphan removal, and health-checks localhost and phpMyAdmin.
 
 Security configuration planned for generated runtimes includes `expose_php=Off` and web-server response version hiding where supported.
 
@@ -104,7 +114,7 @@ Virtual hosts are represented by a neutral internal model supporting custom host
 
 - Node.js 20 or newer (development)
 - npm 10 or newer (development)
-- Docker Desktop or a compatible Docker/Compose installation will be required when runtime management is implemented
+- Docker Desktop or a compatible Docker/Compose installation for runtime management
 - macOS, Windows, or a supported Linux distribution
 
 ## Installation and development
@@ -119,6 +129,8 @@ npm run dev
 ```bash
 npm run dev:web
 ```
+
+The Vite development UI binds to `127.0.0.1:9000`; it is separate from Vhostra's real localhost web-server port and phpMyAdmin port 9080.
 
 ## Build and validation
 
@@ -152,4 +164,4 @@ test/               Persistent-store and URL-safety tests
 
 ## Limitations in this iteration
 
-Vhostra does not yet install, start, stop, or replace Docker containers; inspect ports; generate Compose files; modify hosts files; operate MariaDB/phpMyAdmin; serve the localhost page; capture site screenshots; parse/render server configuration; apply configuration imports; create recovery snapshots; or switch PHP/web-server implementations. The selected server/PHP/service values are persisted preferences only until runtime management is implemented.
+Vhostra does not yet modify hosts files, provision HTTPS certificates, capture screenshots, parse imported server configuration, apply configuration imports, or create recovery snapshots. Custom local hostnames must already resolve on the computer before a browser can reach their generated vhost.

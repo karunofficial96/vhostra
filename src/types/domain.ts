@@ -1,7 +1,14 @@
 export type WebServer = 'apache' | 'nginx' | 'openlitespeed'
 export type PhpVersion = '8.1' | '8.2' | '8.3' | '8.4' | '8.5'
 export type ServiceName = 'mariadb' | 'phpmyadmin' | 'redis' | 'memcached'
-export type RuntimeStatus = 'running' | 'stopped' | 'starting' | 'error'
+export type RuntimeStatus = 'unavailable' | 'not-created' | 'running' | 'stopped' | 'starting' | 'stopping' | 'error'
+
+export interface RuntimeSnapshot {
+  state: RuntimeStatus
+  message: string
+  services: string[]
+  updatedAt: string
+}
 
 export interface ServiceConfiguration {
   name: ServiceName

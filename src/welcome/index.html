@@ -17,11 +17,11 @@
         <div>
           <p class="text-xs font-medium uppercase tracking-[0.14em] text-[#606060]">Vhostra local environment</p>
           <h1 class="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">Your local workspace starts here.</h1>
-          <p class="mt-4 max-w-xl text-base leading-7 text-[#606060]">This page is managed by Vhostra and is designed to be served by your selected global web server. Runtime controls remain in the desktop app.</p>
+          <p class="mt-4 max-w-xl text-base leading-7 text-[#606060]">This page is managed by Vhostra and served by your selected global web server. {{runtime}}</p>
           <div class="mt-7 grid gap-3 sm:grid-cols-2">
-            <article class="border-b border-[#E5E5E5] pb-4"><p class="text-xs font-medium uppercase tracking-[0.08em] text-[#606060]">Selected server</p><p class="mt-1 text-lg font-medium">{{server}}</p><p class="mt-1 text-xs text-[#606060]">Runtime not configured</p></article>
-            <article class="border-b border-[#E5E5E5] pb-4"><p class="text-xs font-medium uppercase tracking-[0.08em] text-[#606060]">Selected PHP</p><p class="mt-1 text-lg font-medium">{{php}}</p><p class="mt-1 text-xs text-[#606060]">Runtime not configured</p></article>
-            <article class="border-b border-[#E5E5E5] pb-4"><p class="text-xs font-medium uppercase tracking-[0.08em] text-[#606060]">MariaDB</p><p class="mt-1 text-lg font-medium">Required</p><p class="mt-1 text-xs text-[#606060]">Runtime not configured</p></article>
+            <article class="border-b border-[#E5E5E5] pb-4"><p class="text-xs font-medium uppercase tracking-[0.08em] text-[#606060]">Selected server</p><p class="mt-1 text-lg font-medium">{{server}}</p><p class="mt-1 text-xs text-[#606060]">{{runtime}}</p></article>
+            <article class="border-b border-[#E5E5E5] pb-4"><p class="text-xs font-medium uppercase tracking-[0.08em] text-[#606060]">Selected PHP</p><p class="mt-1 text-lg font-medium">{{php}}</p><p class="mt-1 text-xs text-[#606060]">{{runtime}}</p></article>
+            <article class="border-b border-[#E5E5E5] pb-4"><p class="text-xs font-medium uppercase tracking-[0.08em] text-[#606060]">MariaDB</p><p class="mt-1 text-lg font-medium">Required</p><p class="mt-1 text-xs text-[#606060]">{{runtime}}</p></article>
             <article class="border-b border-[#E5E5E5] pb-4"><p class="text-xs font-medium uppercase tracking-[0.08em] text-[#606060]">phpMyAdmin</p><p class="mt-1 text-lg font-medium">Required</p><p class="mt-1 text-xs text-[#606060]">Available after runtime setup</p></article>
           </div>
         </div>

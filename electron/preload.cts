@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 
 const api = Object.freeze({
   getState: () => ipcRenderer.invoke('vhostra:get-state'),
@@ -11,6 +11,11 @@ const api = Object.freeze({
   getStorageLayout: () => ipcRenderer.invoke('vhostra:get-storage-layout'),
   exportConfiguration: (request: unknown) => ipcRenderer.invoke('vhostra:export-configuration', request),
   previewConfigurationImport: () => ipcRenderer.invoke('vhostra:preview-configuration-import'),
+  getRuntimeStatus: () => ipcRenderer.invoke('vhostra:get-runtime-status'),
+  startServices: () => ipcRenderer.invoke('vhostra:start-services'),
+  stopServices: () => ipcRenderer.invoke('vhostra:stop-services'),
+  restartServices: () => ipcRenderer.invoke('vhostra:restart-services'),
+  onRuntimeStatus: (listener: (status: unknown) => void) => { const handler = (_event: IpcRendererEvent, status: unknown) => listener(status); ipcRenderer.on('vhostra:runtime-status', handler); return () => ipcRenderer.removeListener('vhostra:runtime-status', handler) },
 })
 
 contextBridge.exposeInMainWorld('vhostra', api)

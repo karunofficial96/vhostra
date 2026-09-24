@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process'
 
 const root = process.cwd()
 const distElectron = path.join(root, 'dist-electron')
-const port = Number(process.env.VHOSTRA_DEV_PORT ?? 5173)
+const port = Number(process.env.VHOSTRA_DEV_PORT ?? 9000)
 const executable = (name) => process.platform === 'win32' ? `${path.join(root, 'node_modules', '.bin', name)}.cmd` : path.join(root, 'node_modules', '.bin', name)
 const children = []
 
