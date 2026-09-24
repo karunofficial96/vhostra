@@ -13,7 +13,6 @@ contextBridge.exposeInMainWorld('vhostra', Object.freeze({
   chooseDocumentRoot: () => ipcRenderer.invoke('vhostra:choose-document-root'),
   openSite: (url: string) => ipcRenderer.invoke('vhostra:open-site', url),
   getStorageLayout: () => ipcRenderer.invoke('vhostra:get-storage-layout'),
-  getSiteScreenshot: (id: string) => ipcRenderer.invoke('vhostra:get-site-screenshot', id),
   exportConfiguration: (request: unknown) => ipcRenderer.invoke('vhostra:export-configuration', request),
   previewConfigurationImport: () => ipcRenderer.invoke('vhostra:preview-configuration-import'),
 }))

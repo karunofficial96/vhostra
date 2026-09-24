@@ -24,6 +24,7 @@ const validPhp = new Set<PhpVersion>(['8.1', '8.2', '8.3', '8.4', '8.5'])
 
 export class VhostraStore {
   readonly layout: StoreLayout
+  private initialized: Promise<void> | null = null
   constructor(userData: string) {
     const root = path.join(userData, 'Vhostra')
     const runtime = path.join(root, 'runtime')
@@ -35,7 +36,7 @@ export class VhostraStore {
     }
   }
 
-  async initialize() { await Promise.all(Object.values(this.directories()).map(directory => fs.mkdir(directory, { recursive: true }))) }
+  async initialize() { this.initialized ??= Promise.all(Object.values(this.directories()).map(directory => fs.mkdir(directory, { recursive: true }))).then(() => undefined); await this.initialized }
   async getState(): Promise<AppState> { await this.initialize(); return { settings: await this.readSettings(), sites: await this.readRecords<Site>(this.layout.sites), virtualHosts: await this.readRecords<VirtualHost>(this.layout.virtualHosts) } }
   async saveSettings(settings: Settings) { this.validateSettings(settings); await this.initialize(); await this.writeJson(this.layout.settings, settings); return settings }
   async addSite(input: Pick<Site, 'name' | 'documentRoot' | 'url' | 'framework'>) {
@@ -58,10 +59,18 @@ export class VhostraStore {
     await Promise.all([fs.rm(this.recordPath(this.layout.sites, site.id), { force: true }), fs.rm(this.recordPath(this.layout.virtualHosts, site.vhostId), { force: true })])
     return this.getState()
   }
-  async screenshotDataUrl(site: Site) {
-    if (!site.screenshot || !/^[a-zA-Z0-9._-]+\.(png|jpe?g|webp)$/i.test(site.screenshot.cacheFile)) return null
-    const file = path.join(this.layout.screenshots, site.screenshot.cacheFile)
-    try { const bytes = await fs.readFile(file); const extension = path.extname(file).toLowerCase(); const mime = extension === '.png' ? 'image/png' : extension === '.webp' ? 'image/webp' : 'image/jpeg'; return `data:${mime};base64,${bytes.toString('base64')}` } catch { return null }
+  /** Static previews are capped and read only for the browser image request—never retained in app state. */
+  async readScreenshot(siteId: string) {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(siteId)) return null
+    await this.initialize()
+    try {
+      const site = JSON.parse(await fs.readFile(this.recordPath(this.layout.sites, siteId), 'utf8')) as Site
+      if (!site.screenshot || !/^[a-zA-Z0-9._-]+\.(png|jpe?g|webp)$/i.test(site.screenshot.cacheFile)) return null
+      const file = path.join(this.layout.screenshots, site.screenshot.cacheFile); const details = await fs.stat(file)
+      if (!details.isFile() || details.size > 6 * 1024 * 1024) return null
+      const extension = path.extname(file).toLowerCase(); const mime = extension === '.png' ? 'image/png' : extension === '.webp' ? 'image/webp' : 'image/jpeg'
+      return { data: await fs.readFile(file), mime }
+    } catch { return null }
   }
   async exportBundle(destination: string) {
     const state = await this.getState(); const bundle = { manifest: { format: 'vhostra/config-bundle', schemaVersion: 1, bundleId: randomUUID(), createdAt: new Date().toISOString(), appVersion: '0.1.0', scopes: ['all'], excludedByDefault: ['website-content', 'database-content', 'passwords-and-secrets', 'private-tls-keys'], includesPrivateKeys: false, includesSecrets: false, entries: [{ id: 'settings', type: 'settings', relativePath: 'settings.json', ownership: 'vhostra-source' }, { id: 'sites', type: 'site', relativePath: 'sites/', ownership: 'vhostra-source' }, { id: 'virtual-hosts', type: 'virtual-host', relativePath: 'virtual-hosts/', ownership: 'vhostra-source' }] }, configuration: state }

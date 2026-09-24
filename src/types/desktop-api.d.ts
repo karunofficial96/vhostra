@@ -13,7 +13,6 @@ export interface VhostraDesktopApi {
   chooseDocumentRoot(): Promise<string | null>
   openSite(url: string): Promise<void>
   getStorageLayout(): Promise<StorageLayout>
-  getSiteScreenshot(id: string): Promise<string | null>
   exportConfiguration(request: Omit<ConfigurationExportRequest, 'destinationDirectory'>): Promise<{ path: string } | null>
   previewConfigurationImport(): Promise<ConfigurationImportReport | null>
 }

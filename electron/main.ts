@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, protocol, shell } from 'electron'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { VhostraStore } from './store.js'
@@ -6,6 +6,7 @@ import { VhostraStore } from './store.js'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 let store: VhostraStore
+let primaryWindow: BrowserWindow | null = null
 const applicationIcon = process.platform === 'darwin'
   ? path.join(__dirname, '../build/icon.icns')
   : process.platform === 'win32'
@@ -13,6 +14,7 @@ const applicationIcon = process.platform === 'darwin'
     : path.join(__dirname, '../build/icons/512x512.png')
 
 const createWindow = () => {
+  if (primaryWindow && !primaryWindow.isDestroyed()) { primaryWindow.focus(); return primaryWindow }
   const window = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -24,8 +26,15 @@ const createWindow = () => {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: true,
       preload: path.join(__dirname, 'preload.js'),
     },
+  })
+  primaryWindow = window
+  window.on('closed', () => { primaryWindow = null })
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    try { VhostraStore.validateUrl(url); void shell.openExternal(url) } catch { /* deny untrusted/non-web URLs */ }
+    return { action: 'deny' }
   })
   const devServer = process.env.VITE_DEV_SERVER_URL ?? 'http://localhost:5173'
   const renderer = app.isPackaged
@@ -37,6 +46,7 @@ const createWindow = () => {
 app.whenReady().then(() => {
   store = new VhostraStore(app.getPath('userData'))
   registerIpc()
+  registerScreenshotProtocol()
   createWindow()
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
 })
@@ -64,10 +74,6 @@ function registerIpc() {
       runtime: layout.runtime, certificates: layout.certificates, persistentData: layout.persistentData, logs: layout.logs, backups: layout.backups, exports: layout.exports,
     }
   })
-  ipcMain.handle('vhostra:get-site-screenshot', async (_event, id: string) => {
-    const site = (await store.getState()).sites.find(item => item.id === id)
-    return site ? store.screenshotDataUrl(site) : null
-  })
   ipcMain.handle('vhostra:export-configuration', async () => {
     const result = await dialog.showSaveDialog({ title: 'Export Vhostra configuration', defaultPath: path.join(store.layout.exports, 'vhostra-configuration.json'), filters: [{ name: 'Vhostra configuration', extensions: ['json'] }] })
     return result.canceled || !result.filePath ? null : { path: await store.exportBundle(result.filePath) }
@@ -75,5 +81,16 @@ function registerIpc() {
   ipcMain.handle('vhostra:preview-configuration-import', async () => {
     const result = await dialog.showOpenDialog({ title: 'Preview Vhostra configuration import', properties: ['openFile'], filters: [{ name: 'Vhostra configuration', extensions: ['json'] }] })
     return result.canceled || !result.filePaths[0] ? null : store.previewBundle(result.filePaths[0])
+  })
+}
+
+function registerScreenshotProtocol() {
+  protocol.handle('vhostra-screenshot', async request => {
+    try {
+      const url = new URL(request.url)
+      if (url.hostname !== 'site') return new Response('Not found', { status: 404 })
+      const image = await store.readScreenshot(url.pathname.slice(1))
+      return image ? new Response(image.data, { headers: { 'content-type': image.mime, 'cache-control': 'private, max-age=3600' } }) : new Response('Not found', { status: 404 })
+    } catch { return new Response('Not found', { status: 404 }) }
   })
 }
