@@ -9,7 +9,12 @@ test -x "$LSPHP_BIN" || { echo "Vhostra build error: requested LSPHP runtime is 
 # bundled runtime, so replace it atomically before OpenLiteSpeed starts.
 ln -sfn "$LSPHP_BIN" /usr/local/lsws/fcgi-bin/lsphp8
 
-mkdir -p /var/log/vhostra /var/lib/mysql
+# Keep PHP's implementation details out of HTTP responses for every selected
+# LSPHP package. The version selector is always two digits (81 through 85).
+PHP_VERSION="${VHOSTRA_LSPHP_VERSION%?}.${VHOSTRA_LSPHP_VERSION#?}"
+printf '\nexpose_php=Off\n' >> "/usr/local/lsws/lsphp${VHOSTRA_LSPHP_VERSION}/etc/php/${PHP_VERSION}/litespeed/php.ini"
+
+mkdir -p /var/log/vhostra /var/lib/mysql /var/www/html
 # This is a Vhostra-managed built-in document root. OLS deliberately rejects
 # symlinks which leave its vhost root, so seed the immutable bundled source on
 # first use instead of exposing it through a cross-root link. It remains in the
