@@ -2,7 +2,7 @@
 
 Vhostra is a lightweight, cross-platform graphical local PHP development environment. It is designed around one shared runtime: many local websites use one selected web server, one selected PHP version, and shared supporting services.
 
-> Development status: Vhostra now persists settings and site/neutral-vhost definitions locally, supports add/edit/remove site definitions, host directory selection, external-browser opening, configuration bundle export, and import-bundle validation. Docker orchestration, runtime installation/start/stop, applied configuration imports, vhost parsing/conversion, screenshot capture, and database operations remain planned and inactive.
+> Development status: Vhostra now persists settings and site/neutral-vhost definitions locally, creates a protected localhost vhost and welcome page on first use, supports add/edit/remove site definitions, host directory selection, external-browser opening, configuration bundle export, and import-bundle validation. Docker orchestration, runtime installation/start/stop, applied configuration imports, vhost parsing/conversion, screenshot capture, and database operations remain planned and inactive.
 
 ## Features
 
@@ -13,6 +13,9 @@ Vhostra is a lightweight, cross-platform graphical local PHP development environ
 - Add, edit, and remove site definitions without changing document-root files
 - Native document-root folder selection and secure OS-default browser opening for local site URLs
 - Persisted selected web server, PHP version, and Redis/Memcached preferences
+- First-run defaults of OpenLiteSpeed and the latest supported PHP policy (currently PHP 8.5)
+- Protected, server-neutral `http://localhost/` definition with a static host-side Vhostra welcome page
+- System tray/menu-bar entry that keeps Vhostra available after its window closes
 - Configuration bundle export and import-bundle validation preview
 - Typed, server-neutral virtual-host model ready for future import/conversion work
 - Typed local-first storage layout, configuration ownership, snapshot, and portable bundle models
@@ -26,6 +29,12 @@ Vhostra will run exactly one global web server and exactly one global PHP runtim
 Supported web servers (planned runtime support): Apache, Nginx, and OpenLiteSpeed.
 
 Supported PHP versions (planned runtime support): PHP 8.1, 8.2, 8.3, 8.4, and 8.5.
+
+### First-run environment defaults
+
+New Vhostra profiles select OpenLiteSpeed. PHP uses a `latestSupported` policy: it resolves from the supported PHP-version list rather than embedding a permanent version value; at present that resolves to PHP 8.5. MariaDB and phpMyAdmin remain required shared services. Redis and Memcached remain optional and disabled by default. All of these preferences are persisted when changed.
+
+Vhostra also creates a protected, server-neutral localhost site definition at `http://localhost/`. Its document root is created under Vhostra's host-side data directory and contains a lightweight static Tailwind welcome page with current saved preferences and links to configured sites. It is not served until the planned runtime layer configures the selected global server. When server generation arrives, localhost will be rendered from the same neutral-vhost model as every other Vhostra vhost.
 
 ## Local-first storage and persistence
 
@@ -41,6 +50,8 @@ The typed storage layout is platform-aware: an Electron platform adapter will pr
 - screenshot cache files associated with site definitions
 
 The implemented store persists settings in `settings.json`, plus one site definition and neutral vhost definition per JSON file. Deleting a site removes only those definition files; it never removes the selected document root. Container removal, replacement, or a later runtime switch must not remove website content, databases, settings, vhost definitions, configuration files, certificates, or persistent logs.
+
+The built-in localhost definition is intentionally protected from normal deletion in the desktop UI and store. Its host-side root and generated welcome-page files remain inspectable.
 
 ### Configuration ownership
 
@@ -63,6 +74,12 @@ By default, a portable configuration bundle excludes website content, database c
 Clicking a saved site URL, preview, or external-link button opens the validated `http` or `https` URL with the operating system's default browser via Electron's main-process `shell.openExternal` API. Websites are never opened in a Vhostra `BrowserWindow`; the renderer remains isolated with `contextIsolation` enabled and `nodeIntegration` disabled.
 
 Dashboard previews use a screenshot only when a site's definition references a real supported image file in Vhostra's host-side screenshot cache. Otherwise, Vhostra shows an explicit no-preview fallback. Screenshot capture is not implemented yet; the model and cache location are ready for a later capture service without changing site records.
+
+## Tray and application lifecycle
+
+Vhostra creates a platform tray/menu-bar icon from the exact branded application artwork. Closing the primary window hides it and leaves Vhostra available in the tray; it does not stop future local services. The tray can reopen Vhostra, securely open localhost in the operating system's default browser, or quit the desktop application.
+
+Start, Stop, and Restart actions are present but accurately disabled until the Docker runtime controller is implemented. They will be connected only to Vhostra-owned services and will never operate unrelated Docker resources. Quit Vhostra exits the desktop application; it does not imply a future runtime shutdown policy.
 
 ## Bind mounts
 
@@ -123,6 +140,7 @@ src/
   components/      Reusable renderer components (reserved for growth)
   types/           Environment, vhost, desktop bridge, local storage, and portable bundle models
   App.tsx          Application shell and persisted-site/dashboard UI
+  welcome/         Static localhost welcome-page source
   styles.css       Tailwind entry point and small global rules
 build/             App icon used by Electron packaging later
   icon.icns         macOS application icon derived from the source artwork
@@ -134,4 +152,4 @@ test/               Persistent-store and URL-safety tests
 
 ## Limitations in this iteration
 
-Vhostra does not yet install, start, stop, or replace Docker containers; inspect ports; generate Compose files; modify hosts files; operate MariaDB/phpMyAdmin; capture site screenshots; parse/render server configuration; apply configuration imports; create recovery snapshots; or switch PHP/web-server implementations. The selected server/PHP/service values are persisted preferences only until runtime management is implemented.
+Vhostra does not yet install, start, stop, or replace Docker containers; inspect ports; generate Compose files; modify hosts files; operate MariaDB/phpMyAdmin; serve the localhost page; capture site screenshots; parse/render server configuration; apply configuration imports; create recovery snapshots; or switch PHP/web-server implementations. The selected server/PHP/service values are persisted preferences only until runtime management is implemented.

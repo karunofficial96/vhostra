@@ -46,6 +46,7 @@ export interface Site {
   vhostId: string
   framework?: string
   screenshot?: SiteScreenshot
+  builtIn?: 'localhost'
   createdAt: string
   updatedAt: string
 }
@@ -56,6 +57,9 @@ export interface VhostraSettings {
   selectedPhpVersion: PhpVersion
   optionalServices: { redis: boolean; memcached: boolean }
 }
+
+export const supportedPhpVersions = ['8.1', '8.2', '8.3', '8.4', '8.5'] as const
+export const resolveLatestSupportedPhpVersion = () => supportedPhpVersions.at(-1)!
 
 export interface VhostraState {
   settings: VhostraSettings

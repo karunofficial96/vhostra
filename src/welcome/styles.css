@@ -1,0 +1,10 @@
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap');
+@import "tailwindcss";
+
+@theme { --font-sans: "Roboto", ui-sans-serif, system-ui, sans-serif; }
+
+.site-list { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+.site-link { display: block; border-bottom: 1px solid #e5e5e5; color: #0f0f0f; font-weight: 500; padding: 14px 0; text-decoration: none; }
+.site-link:hover { color: #065fd4; }
+.site-link span { display: block; color: #606060; font-family: "Roboto Mono", ui-monospace, monospace; font-size: 12px; font-weight: 400; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.empty { color: #606060; font-size: 14px; }

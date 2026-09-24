@@ -14,9 +14,10 @@
     "linux": { "icon": "build/icons" }
   },
   "scripts": {
+    "predev": "vite build --config vite.welcome.config.ts",
     "dev": "node scripts/dev.mjs",
     "dev:web": "vite",
-    "build": "tsc -b && vite build && tsc -p electron/tsconfig.json && tsc -p electron/tsconfig.preload.json",
+    "build": "tsc -b && vite build && vite build --config vite.welcome.config.ts && tsc -p electron/tsconfig.json && tsc -p electron/tsconfig.preload.json",
     "preview": "vite preview",
     "typecheck": "tsc -b --pretty false",
     "test": "npm run build && node --test test/store.test.mjs",
