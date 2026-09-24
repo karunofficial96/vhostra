@@ -1,0 +1,87 @@
+import { randomUUID } from 'node:crypto'
+import { promises as fs } from 'node:fs'
+import path from 'node:path'
+
+export type WebServer = 'apache' | 'nginx' | 'openlitespeed'
+export type PhpVersion = '8.1' | '8.2' | '8.3' | '8.4' | '8.5'
+
+export interface Settings { schemaVersion: 1; selectedWebServer: WebServer; selectedPhpVersion: PhpVersion; optionalServices: { redis: boolean; memcached: boolean } }
+export interface Screenshot { cacheFile: string; capturedAt: string; source: 'automatic' | 'manual' }
+export interface Site { id: string; name: string; documentRoot: string; url: string; vhostId: string; framework?: string; screenshot?: Screenshot; createdAt: string; updatedAt: string }
+export interface VirtualHost { id: string; hostname: string; aliases: string[]; documentRoot: string; https: { enabled: boolean }; redirects: []; rewrites: []; headers: []; logs: { access: boolean; error: boolean } }
+export interface AppState { settings: Settings; sites: Site[]; virtualHosts: VirtualHost[] }
+
+export interface StoreLayout {
+  root: string; settings: string; sites: string; virtualHosts: string; screenshots: string; exports: string; backups: string
+  configuration: { source: string; custom: string; imported: string; generated: string }
+  runtime: { apache: string; nginx: string; openLiteSpeed: string; php: string; mariaDb: string; phpMyAdmin: string; redis: string; memcached: string }
+  certificates: { directory: string; public: string; private: string }; persistentData: { mariaDb: string }; logs: string
+}
+
+const defaults: Settings = { schemaVersion: 1, selectedWebServer: 'nginx', selectedPhpVersion: '8.4', optionalServices: { redis: false, memcached: false } }
+const validServers = new Set<WebServer>(['apache', 'nginx', 'openlitespeed'])
+const validPhp = new Set<PhpVersion>(['8.1', '8.2', '8.3', '8.4', '8.5'])
+
+export class VhostraStore {
+  readonly layout: StoreLayout
+  constructor(userData: string) {
+    const root = path.join(userData, 'Vhostra')
+    const runtime = path.join(root, 'runtime')
+    this.layout = {
+      root, settings: path.join(root, 'settings.json'), sites: path.join(root, 'sites'), virtualHosts: path.join(root, 'virtual-hosts'), screenshots: path.join(root, 'cache', 'screenshots'), exports: path.join(root, 'exports'), backups: path.join(root, 'backups'),
+      configuration: { source: path.join(root, 'configuration', 'source'), custom: path.join(root, 'configuration', 'custom'), imported: path.join(root, 'configuration', 'imported'), generated: path.join(root, 'configuration', 'generated') },
+      runtime: { apache: path.join(runtime, 'apache'), nginx: path.join(runtime, 'nginx'), openLiteSpeed: path.join(runtime, 'openlitespeed'), php: path.join(runtime, 'php'), mariaDb: path.join(runtime, 'mariadb'), phpMyAdmin: path.join(runtime, 'phpmyadmin'), redis: path.join(runtime, 'redis'), memcached: path.join(runtime, 'memcached') },
+      certificates: { directory: path.join(root, 'certificates'), public: path.join(root, 'certificates', 'public'), private: path.join(root, 'certificates', 'private') }, persistentData: { mariaDb: path.join(root, 'data', 'mariadb') }, logs: path.join(root, 'logs'),
+    }
+  }
+
+  async initialize() { await Promise.all(Object.values(this.directories()).map(directory => fs.mkdir(directory, { recursive: true }))) }
+  async getState(): Promise<AppState> { await this.initialize(); return { settings: await this.readSettings(), sites: await this.readRecords<Site>(this.layout.sites), virtualHosts: await this.readRecords<VirtualHost>(this.layout.virtualHosts) } }
+  async saveSettings(settings: Settings) { this.validateSettings(settings); await this.initialize(); await this.writeJson(this.layout.settings, settings); return settings }
+  async addSite(input: Pick<Site, 'name' | 'documentRoot' | 'url' | 'framework'>) {
+    this.validateSiteInput(input); await this.initialize()
+    const now = new Date().toISOString(); const id = randomUUID(); const vhostId = randomUUID(); const hostname = new URL(input.url).hostname
+    const site: Site = { id, vhostId, name: input.name.trim(), documentRoot: input.documentRoot, url: input.url, ...(input.framework?.trim() ? { framework: input.framework.trim() } : {}), createdAt: now, updatedAt: now }
+    const vhost: VirtualHost = { id: vhostId, hostname, aliases: [], documentRoot: input.documentRoot, https: { enabled: new URL(input.url).protocol === 'https:' }, redirects: [], rewrites: [], headers: [], logs: { access: true, error: true } }
+    await Promise.all([this.writeJson(this.recordPath(this.layout.sites, id), site), this.writeJson(this.recordPath(this.layout.virtualHosts, vhostId), vhost)])
+    return this.getState()
+  }
+  async updateSite(input: Pick<Site, 'id' | 'name' | 'documentRoot' | 'url' | 'framework'>) {
+    this.validateSiteInput(input); const state = await this.getState(); const current = state.sites.find(site => site.id === input.id); if (!current) throw new Error('Site definition not found.')
+    const updated: Site = { ...current, name: input.name.trim(), documentRoot: input.documentRoot, url: input.url, ...(input.framework?.trim() ? { framework: input.framework.trim() } : { framework: undefined }), updatedAt: new Date().toISOString() }
+    const vhost = state.virtualHosts.find(host => host.id === current.vhostId); if (!vhost) throw new Error('Related virtual-host definition not found.')
+    await Promise.all([this.writeJson(this.recordPath(this.layout.sites, current.id), updated), this.writeJson(this.recordPath(this.layout.virtualHosts, vhost.id), { ...vhost, hostname: new URL(input.url).hostname, documentRoot: input.documentRoot, https: { enabled: new URL(input.url).protocol === 'https:' } })])
+    return this.getState()
+  }
+  async removeSite(id: string) {
+    const state = await this.getState(); const site = state.sites.find(item => item.id === id); if (!site) throw new Error('Site definition not found.')
+    await Promise.all([fs.rm(this.recordPath(this.layout.sites, site.id), { force: true }), fs.rm(this.recordPath(this.layout.virtualHosts, site.vhostId), { force: true })])
+    return this.getState()
+  }
+  async screenshotDataUrl(site: Site) {
+    if (!site.screenshot || !/^[a-zA-Z0-9._-]+\.(png|jpe?g|webp)$/i.test(site.screenshot.cacheFile)) return null
+    const file = path.join(this.layout.screenshots, site.screenshot.cacheFile)
+    try { const bytes = await fs.readFile(file); const extension = path.extname(file).toLowerCase(); const mime = extension === '.png' ? 'image/png' : extension === '.webp' ? 'image/webp' : 'image/jpeg'; return `data:${mime};base64,${bytes.toString('base64')}` } catch { return null }
+  }
+  async exportBundle(destination: string) {
+    const state = await this.getState(); const bundle = { manifest: { format: 'vhostra/config-bundle', schemaVersion: 1, bundleId: randomUUID(), createdAt: new Date().toISOString(), appVersion: '0.1.0', scopes: ['all'], excludedByDefault: ['website-content', 'database-content', 'passwords-and-secrets', 'private-tls-keys'], includesPrivateKeys: false, includesSecrets: false, entries: [{ id: 'settings', type: 'settings', relativePath: 'settings.json', ownership: 'vhostra-source' }, { id: 'sites', type: 'site', relativePath: 'sites/', ownership: 'vhostra-source' }, { id: 'virtual-hosts', type: 'virtual-host', relativePath: 'virtual-hosts/', ownership: 'vhostra-source' }] }, configuration: state }
+    await this.writeJson(destination, bundle); return destination
+  }
+  async previewBundle(source: string) {
+    const raw = await fs.readFile(source, 'utf8'); const candidate = JSON.parse(raw) as { manifest?: unknown; configuration?: unknown }; const manifest = candidate.manifest as { format?: unknown; schemaVersion?: unknown; entries?: unknown } | undefined
+    if (!manifest || manifest.format !== 'vhostra/config-bundle' || manifest.schemaVersion !== 1 || !Array.isArray(manifest.entries)) throw new Error('This file is not a supported Vhostra configuration bundle.')
+    return { manifest, source, warnings: ['Preview only: no configuration has been changed. Applying an import will require a local snapshot.'] }
+  }
+  private directories() {
+    const { configuration, runtime, certificates } = this.layout
+    return { root: this.layout.root, sites: this.layout.sites, virtualHosts: this.layout.virtualHosts, screenshots: this.layout.screenshots, exports: this.layout.exports, backups: this.layout.backups, logs: this.layout.logs, ...configuration, ...runtime, certificates: certificates.directory, publicCertificates: certificates.public, privateCertificates: certificates.private, mariaDbData: this.layout.persistentData.mariaDb }
+  }
+  private recordPath(directory: string, id: string) { return path.join(directory, `${id}.json`) }
+  private async readSettings() { try { const value = JSON.parse(await fs.readFile(this.layout.settings, 'utf8')) as Settings; this.validateSettings(value); return value } catch { await this.writeJson(this.layout.settings, defaults); return { ...defaults, optionalServices: { ...defaults.optionalServices } } } }
+  private async readRecords<T>(directory: string) { const files = await fs.readdir(directory); const records = await Promise.all(files.filter(file => file.endsWith('.json')).map(async file => JSON.parse(await fs.readFile(path.join(directory, file), 'utf8')) as T)); return records }
+  private async writeJson(file: string, value: unknown) { await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 }) }
+  private validateSettings(settings: Settings) { if (settings.schemaVersion !== 1 || !validServers.has(settings.selectedWebServer) || !validPhp.has(settings.selectedPhpVersion) || typeof settings.optionalServices?.redis !== 'boolean' || typeof settings.optionalServices?.memcached !== 'boolean') throw new Error('Invalid Vhostra settings.') }
+  private validateSiteInput(input: Pick<Site, 'name' | 'documentRoot' | 'url' | 'framework'>) { if (!input.name?.trim() || !input.documentRoot?.trim()) throw new Error('A site name and document root are required.'); this.validateUrl(input.url) }
+  static validateUrl(value: string) { const url = new URL(value); if (!['http:', 'https:'].includes(url.protocol) || !url.hostname || url.username || url.password) throw new Error('Only credential-free HTTP or HTTPS site URLs can be opened.') }
+  private validateUrl(value: string) { VhostraStore.validateUrl(value) }
+}

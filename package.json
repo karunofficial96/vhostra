@@ -5,12 +5,21 @@
   "type": "module",
   "description": "A lightweight graphical local PHP development environment.",
   "main": "dist-electron/main.js",
+  "build": {
+    "appId": "com.vhostra.app",
+    "productName": "Vhostra",
+    "directories": { "buildResources": "build" },
+    "mac": { "icon": "build/icon.icns" },
+    "win": { "icon": "build/icon.ico" },
+    "linux": { "icon": "build/icons" }
+  },
   "scripts": {
     "dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron .\"",
     "dev:web": "vite",
     "build": "tsc -b && vite build && tsc -p electron/tsconfig.json",
     "preview": "vite preview",
     "typecheck": "tsc -b --pretty false",
+    "test": "npm run build && node --test test/store.test.mjs",
     "lint": "eslint . --max-warnings=0"
   },
   "dependencies": {

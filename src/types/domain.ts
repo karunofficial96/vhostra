@@ -31,7 +31,37 @@ export interface VirtualHost {
   preservedDirectives?: ImportedDirective[]
 }
 
-export interface Site { id: string; name: string; path: string; vhostId: string; framework?: string; status: RuntimeStatus }
+/** A cache reference only: screenshot bytes stay in Vhostra's host-side cache. */
+export interface SiteScreenshot {
+  cacheFile: string
+  capturedAt: string
+  source: 'automatic' | 'manual'
+}
+
+export interface Site {
+  id: string
+  name: string
+  documentRoot: string
+  url: string
+  vhostId: string
+  framework?: string
+  screenshot?: SiteScreenshot
+  createdAt: string
+  updatedAt: string
+}
+
+export interface VhostraSettings {
+  schemaVersion: 1
+  selectedWebServer: WebServer
+  selectedPhpVersion: PhpVersion
+  optionalServices: { redis: boolean; memcached: boolean }
+}
+
+export interface VhostraState {
+  settings: VhostraSettings
+  sites: Site[]
+  virtualHosts: VirtualHost[]
+}
 
 export interface VhostraEnvironment {
   projectName: 'vhostra'
