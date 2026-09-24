@@ -20,7 +20,7 @@ test('persists site definitions and preserves document-root files on removal', a
     const created = await store.addSite({ name: 'Example', documentRoot: '/projects/example/public', url: 'http://example.local', framework: 'Laravel' })
     assert.equal(created.sites.length, 2)
     assert.equal(created.virtualHosts.find(vhost => vhost.id === created.sites.find(site => site.name === 'Example').vhostId).hostname, 'example.local')
-    await store.saveSettings({ schemaVersion: 1, selectedWebServer: 'apache', selectedPhpVersion: '8.5', optionalServices: { redis: true, memcached: false } })
+    await store.saveSettings({ schemaVersion: 1, selectedWebServer: 'apache', selectedPhpVersion: '8.5', optionalServices: { redis: true, memcached: false }, ports: { http: 80, https: 443, mariadb: 3306, redis: 6379, memcached: 11211, phpMyAdmin: 9080 } })
     const reloaded = await new VhostraStore(directory).getState()
     assert.equal(reloaded.settings.selectedWebServer, 'apache')
     assert.equal(reloaded.sites.find(site => site.name === 'Example').documentRoot, '/projects/example/public')

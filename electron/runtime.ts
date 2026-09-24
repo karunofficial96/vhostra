@@ -11,7 +11,7 @@ export interface RuntimeSnapshot { state: RuntimeState; message: string; service
 
 const projectName = 'vhostra'
 const managedLabel = 'com.vhostra.managed=true'
-const requiredHostPorts = () => [80, 9080]
+const requiredHostPorts = (state: AppState) => [state.settings.ports.http, state.settings.ports.phpMyAdmin]
 const q = (value: string | number | boolean) => JSON.stringify(value)
 
 /** Only ever operates the generated, labeled Vhostra Compose project. */
@@ -43,7 +43,7 @@ export class DockerRuntimeController {
   async start() { return this.runExclusive('starting', 'Preparing Vhostra runtime…', async () => {
     await this.requireDocker()
     const state = await this.getState()
-    await this.ensurePortsAvailable(requiredHostPorts())
+    await this.ensurePortsAvailable(requiredHostPorts(state))
     await this.checkOptionalHttpsPort()
     await this.generate(state)
     await this.compose(['config', '--quiet'])
@@ -60,7 +60,7 @@ export class DockerRuntimeController {
   async restart() { return this.runExclusive('stopping', 'Restarting Vhostra services…', async () => {
     await this.requireDocker()
     const state = await this.getState()
-    await this.ensurePortsAvailable(requiredHostPorts(), true)
+    await this.ensurePortsAvailable(requiredHostPorts(state), true)
     await this.checkOptionalHttpsPort(true)
     await this.generate(state)
     await this.compose(['config', '--quiet'])
@@ -126,8 +126,8 @@ export class DockerRuntimeController {
     if (conflicts.length) throw new Error(`Vhostra cannot bind required host ports:\n${conflicts.join('\n')}\nStop or reconfigure the owning application yourself; Vhostra will not stop unrelated processes or containers.`)
   }
   private async checkOptionalHttpsPort(allowProjectPorts = false) {
-    const conflicts = await this.portConflicts([443], allowProjectPorts)
-    this.httpsWarning = conflicts.length ? `${conflicts.join('; ')}. Vhostra will continue with HTTP on port 80 and will not alter the owner.` : ''
+    const state = await this.getState(); const conflicts = await this.portConflicts([state.settings.ports.https], allowProjectPorts)
+    this.httpsWarning = conflicts.length ? `${conflicts.join('; ')}. Vhostra will continue with HTTP on port ${state.settings.ports.http} and will not alter the owner.` : ''
   }
   private async portConflicts(ports: number[], allowProjectPorts: boolean) {
     const conflicts: string[] = []
@@ -144,8 +144,9 @@ export class DockerRuntimeController {
   }
   private async healthCheck(server: WebServer) {
     const ready = async (port: number) => { for (let attempt = 0; attempt < 20; attempt += 1) { const response = await requestLocalHttp(port); if (['200', '301', '302'].some(code => response.includes(code))) return true; await wait(1_000) } return false }
-    if (!await ready(80)) throw new Error(`The ${server} runtime did not pass its localhost health check.`)
-    if (!await ready(9080)) throw new Error('phpMyAdmin did not pass its host-port 9080 health check.')
+    const ports = (await this.getState()).settings.ports
+    if (!await ready(ports.http)) throw new Error(`The ${server} runtime did not pass its localhost health check.`)
+    if (!await ready(ports.phpMyAdmin)) throw new Error(`phpMyAdmin did not pass its host-port ${ports.phpMyAdmin} health check.`)
   }
   private async docker(args: string[]) { return execute('docker', args) }
   private async compose(args: string[], allowFailure = true) { return execute('docker', ['compose', '--project-name', projectName, '--project-directory', this.runtimeRoot, '--env-file', this.environmentFile, '--file', this.composeFile, ...args], allowFailure) }
@@ -158,7 +159,23 @@ const execute = (command: string, args: string[], allowFailure = false) => new P
 })
 const parseJsonLines = (value: string) => value.split('\n').flatMap(line => { try { return [JSON.parse(line)] } catch { return [] } })
 const wait = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds))
-const isPortOccupied = (port: number) => new Promise<boolean>(resolve => { const server = net.createServer(); server.once('error', () => resolve(true)); server.once('listening', () => server.close(() => resolve(false))); server.listen(port, '127.0.0.1') })
+/**
+ * macOS denies an unprivileged Node process a test bind below 1024 with EACCES.
+ * That is not evidence of a listener: verify the actual TCP endpoint before
+ * declaring a conflict. Docker Desktop can publish privileged ports separately.
+ */
+const isPortOccupied = (port: number) => new Promise<boolean>(resolve => {
+  const server = net.createServer()
+  server.once('error', error => {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'EADDRINUSE') return resolve(true)
+    if (code === 'EACCES') return resolve(connectsToPort(port))
+    resolve(false)
+  })
+  server.once('listening', () => server.close(() => resolve(false)))
+  server.listen(port, '127.0.0.1')
+})
+const connectsToPort = (port: number) => new Promise<boolean>(resolve => { const socket = net.connect({ port, host: '127.0.0.1' }); socket.setTimeout(750); socket.once('connect', () => { socket.destroy(); resolve(true) }); socket.once('error', () => resolve(false)); socket.once('timeout', () => { socket.destroy(); resolve(false) }) })
 const requestLocalHttp = (port: number) => new Promise<string>(resolve => { const socket = net.connect({ port, host: '127.0.0.1' }); let output = ''; socket.setTimeout(8_000); socket.on('connect', () => socket.write('GET / HTTP/1.0\r\nHost: localhost\r\n\r\n')); socket.on('data', data => { output += String(data) }); socket.on('error', () => resolve('')); socket.on('timeout', () => { socket.destroy(); resolve('') }); socket.on('close', () => resolve(output)) })
 async function describePort(port: number) {
   const owners: string[] = []
@@ -179,10 +196,10 @@ function composeYaml(state: AppState, layout: StoreLayout, mounts: Array<{ host:
   const siteVolumes = mounts.map(({ host, container }) => `      - ${q(`${host.documentRoot}:${container}:ro`)}`).join('\n')
   const phpService = `  php:\n    image: ${q(`php:${php}-fpm-alpine`)}\n${common}    volumes:\n      - ${q(`${layout.runtime.php}:/usr/local/etc/php/conf.d/vhostra.ini:ro`)}\n      - ${q(`${path.join(layout.logs, 'php')}:/var/log/php`)}\n${siteVolumes}\n`
   const web = server === 'apache'
-    ? `  web:\n    image: ${q(`php:${php}-apache`)}\n${common}    ports: [${q('80:80')}]\n    volumes:\n      - ${q(`${layout.runtime.apache}:/etc/apache2/conf-enabled:ro`)}\n      - ${q(`${layout.runtime.php}:/usr/local/etc/php/conf.d/vhostra.ini:ro`)}\n      - ${q(`${path.join(layout.logs, 'apache')}:/var/log/apache2`)}\n${siteVolumes}\n`
+    ? `  web:\n    image: ${q(`php:${php}-apache`)}\n${common}    ports: [${q(`${state.settings.ports.http}:80`)}]\n    volumes:\n      - ${q(`${layout.runtime.apache}:/etc/apache2/conf-enabled:ro`)}\n      - ${q(`${layout.runtime.php}:/usr/local/etc/php/conf.d/vhostra.ini:ro`)}\n      - ${q(`${path.join(layout.logs, 'apache')}:/var/log/apache2`)}\n${siteVolumes}\n`
     : server === 'nginx'
-      ? `  web:\n    image: ${q('nginx:1.27-alpine')}\n${common}    ports: [${q('80:80')}]\n    depends_on: [php]\n    volumes:\n      - ${q(`${layout.runtime.nginx}:/etc/nginx/conf.d:ro`)}\n      - ${q(`${path.join(layout.logs, 'nginx')}:/var/log/nginx`)}\n${siteVolumes}\n${phpService}`
-      : `  web:\n    image: ${q('litespeedtech/openlitespeed:latest')}\n${common}    ports: [${q('80:8088')}]\n    depends_on: [php]\n    volumes:\n      - ${q(`${layout.runtime.openLiteSpeed}/httpd_config.conf:/usr/local/lsws/conf/httpd_config.conf:ro`)}\n      - ${q(`${layout.runtime.openLiteSpeed}/vhostra-vhosts.conf:/usr/local/lsws/conf/vhostra-vhosts.conf:ro`)}\n      - ${q(`${path.join(layout.logs, 'openlitespeed')}:/usr/local/lsws/logs`)}\n${siteVolumes}\n${phpService}`
+      ? `  web:\n    image: ${q('nginx:1.27-alpine')}\n${common}    ports: [${q(`${state.settings.ports.http}:80`)}]\n    depends_on: [php]\n    volumes:\n      - ${q(`${layout.runtime.nginx}:/etc/nginx/conf.d:ro`)}\n      - ${q(`${path.join(layout.logs, 'nginx')}:/var/log/nginx`)}\n${siteVolumes}\n${phpService}`
+      : `  web:\n    image: ${q('litespeedtech/openlitespeed:latest')}\n${common}    ports: [${q(`${state.settings.ports.http}:8088`)}]\n    depends_on: [php]\n    volumes:\n      - ${q(`${layout.runtime.openLiteSpeed}/httpd_config.conf:/usr/local/lsws/conf/httpd_config.conf:ro`)}\n      - ${q(`${layout.runtime.openLiteSpeed}/vhostra-vhosts.conf:/usr/local/lsws/conf/vhostra-vhosts.conf:ro`)}\n      - ${q(`${path.join(layout.logs, 'openlitespeed')}:/usr/local/lsws/logs`)}\n${siteVolumes}\n${phpService}`
   const optional = `${optionalServices.redis ? `  redis:\n    image: ${q('redis:7-alpine')}\n${common}    command: ['redis-server', '/usr/local/etc/redis/redis.conf']\n    volumes:\n      - ${q(`${layout.runtime.redis}/redis.conf:/usr/local/etc/redis/redis.conf:ro`)}\n` : ''}${optionalServices.memcached ? `  memcached:\n    image: ${q('memcached:1.6-alpine')}\n${common}    command: ['memcached', '-m', '64']\n` : ''}`
-  return `name: ${projectName}\nservices:\n${web}  mariadb:\n    image: ${q('mariadb:11')}\n${common}    environment:\n      MARIADB_ROOT_PASSWORD: \${MARIADB_ROOT_PASSWORD}\n    volumes:\n      - ${q(`${layout.persistentData.mariaDb}:/var/lib/mysql`)}\n      - ${q(`${layout.runtime.mariaDb}/vhostra.cnf:/etc/mysql/conf.d/vhostra.cnf:ro`)}\n    healthcheck:\n      test: ['CMD', 'healthcheck.sh', '--connect', '--innodb_initialized']\n      interval: 5s\n      timeout: 5s\n      retries: 20\n  phpmyadmin:\n    image: ${q('phpmyadmin:5-apache')}\n${common}    ports: [${q('9080:80')}]\n    depends_on: [mariadb]\n    environment:\n      PMA_HOST: mariadb\n      PMA_PORT: '3306'\n${optional}networks:\n  vhostra:\n    name: vhostra-network\n    labels:\n      ${managedLabel.split('=').map(q).join(': ')}\n`
+  return `name: ${projectName}\nservices:\n${web}  mariadb:\n    image: ${q('mariadb:11')}\n${common}    ports: [${q(`${state.settings.ports.mariadb}:3306`)}]\n    environment:\n      MARIADB_ROOT_PASSWORD: \${MARIADB_ROOT_PASSWORD}\n    volumes:\n      - ${q(`${layout.persistentData.mariaDb}:/var/lib/mysql`)}\n      - ${q(`${layout.runtime.mariaDb}/vhostra.cnf:/etc/mysql/conf.d/vhostra.cnf:ro`)}\n    healthcheck:\n      test: ['CMD', 'healthcheck.sh', '--connect', '--innodb_initialized']\n      interval: 5s\n      timeout: 5s\n      retries: 20\n  phpmyadmin:\n    image: ${q('phpmyadmin:5-apache')}\n${common}    ports: [${q(`${state.settings.ports.phpMyAdmin}:80`)}]\n    depends_on: [mariadb]\n    environment:\n      PMA_HOST: mariadb\n      PMA_PORT: '3306'\n${optional}networks:\n  vhostra:\n    name: vhostra-network\n    labels:\n      ${managedLabel.split('=').map(q).join(': ')}\n`
 }

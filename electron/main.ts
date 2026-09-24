@@ -124,7 +124,7 @@ function updateTrayMenu() {
   const action = (operation: 'start' | 'stop' | 'restart') => () => { void services[operation]().catch(error => console.error(`[Vhostra] ${operation} services failed:`, error)).finally(updateTrayMenu); updateTrayMenu() }
   const items: MenuItemConstructorOptions[] = [
     { label: 'Open Vhostra', click: () => { void openApplicationWindow() } },
-    { label: 'Open localhost in default browser', click: () => { void openExternal('http://localhost/').catch(error => console.error('[Vhostra] Opening localhost failed:', error)) } },
+    { label: 'Open localhost in default browser', click: () => { void store.getLocalhostUrl().then(openExternal).catch(error => console.error('[Vhostra] Opening localhost failed:', error)) } },
     { type: 'separator' },
     ...(state === 'unavailable' ? [{ label: status.message, enabled: false } satisfies MenuItemConstructorOptions] : []),
     { label: 'Start Services', enabled: controlsAvailable && (state === 'stopped' || state === 'not-created' || state === 'error'), click: action('start') },

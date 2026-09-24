@@ -63,6 +63,7 @@ export interface VhostraSettings {
   selectedWebServer: WebServer
   selectedPhpVersion: PhpVersion
   optionalServices: { redis: boolean; memcached: boolean }
+  ports: { http: number; https: number; mariadb: number; redis: number; memcached: number; phpMyAdmin: number }
 }
 
 export const supportedPhpVersions = ['8.1', '8.2', '8.3', '8.4', '8.5'] as const

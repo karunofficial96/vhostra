@@ -7,7 +7,8 @@ export type PhpVersion = '8.1' | '8.2' | '8.3' | '8.4' | '8.5'
 export const supportedPhpVersions: PhpVersion[] = ['8.1', '8.2', '8.3', '8.4', '8.5']
 export const resolveLatestSupportedPhpVersion = (): PhpVersion => supportedPhpVersions.at(-1)!
 
-export interface Settings { schemaVersion: 1; selectedWebServer: WebServer; selectedPhpVersion: PhpVersion; optionalServices: { redis: boolean; memcached: boolean } }
+export interface ServicePorts { http: number; https: number; mariadb: number; redis: number; memcached: number; phpMyAdmin: number }
+export interface Settings { schemaVersion: 1; selectedWebServer: WebServer; selectedPhpVersion: PhpVersion; optionalServices: { redis: boolean; memcached: boolean }; ports: ServicePorts }
 export interface Screenshot { cacheFile: string; capturedAt: string; source: 'automatic' | 'manual' }
 export interface Site { id: string; name: string; documentRoot: string; url: string; vhostId: string; framework?: string; screenshot?: Screenshot; builtIn?: 'localhost'; createdAt: string; updatedAt: string }
 export interface VirtualHost { id: string; hostname: string; aliases: string[]; documentRoot: string; https: { enabled: boolean }; redirects: []; rewrites: []; headers: []; logs: { access: boolean; error: boolean }; builtIn?: 'localhost' }
@@ -20,7 +21,8 @@ export interface StoreLayout {
   certificates: { directory: string; public: string; private: string }; persistentData: { mariaDb: string }; logs: string
 }
 
-const defaults: Settings = { schemaVersion: 1, selectedWebServer: 'openlitespeed', selectedPhpVersion: resolveLatestSupportedPhpVersion(), optionalServices: { redis: false, memcached: false } }
+export const defaultServicePorts: ServicePorts = { http: 80, https: 443, mariadb: 3306, redis: 6379, memcached: 11211, phpMyAdmin: 9080 }
+const defaults: Settings = { schemaVersion: 1, selectedWebServer: 'openlitespeed', selectedPhpVersion: resolveLatestSupportedPhpVersion(), optionalServices: { redis: false, memcached: false }, ports: { ...defaultServicePorts } }
 const localhostSiteId = 'vhostra-localhost'
 const localhostVhostId = 'vhostra-localhost-vhost'
 const validServers = new Set<WebServer>(['apache', 'nginx', 'openlitespeed'])
@@ -43,7 +45,8 @@ export class VhostraStore {
   async initialize() { this.initialized ??= this.initializeOnce(); await this.initialized }
   async updateLocalhostWelcome(runtimeMessage: string) { await this.initialize(); await this.writeLocalhostWelcome(runtimeMessage) }
   async getState(): Promise<AppState> { await this.initialize(); return { settings: await this.readSettings(), sites: await this.readRecords<Site>(this.layout.sites), virtualHosts: await this.readRecords<VirtualHost>(this.layout.virtualHosts) } }
-  async saveSettings(settings: Settings) { this.validateSettings(settings); await this.initialize(); await this.writeJson(this.layout.settings, settings); await this.writeLocalhostWelcome(); return settings }
+  async getLocalhostUrl() { return localUrl((await this.readSettings()).ports.http) }
+  async saveSettings(settings: Settings) { this.validateSettings(settings); await this.initialize(); await this.writeJson(this.layout.settings, settings); await this.updateDefaultSiteUrls(settings.ports.http); await this.writeLocalhostWelcome(); return settings }
   async addSite(input: Pick<Site, 'name' | 'documentRoot' | 'url' | 'framework'>) {
     this.validateSiteInput(input); await this.initialize()
     const now = new Date().toISOString(); const id = randomUUID(); const vhostId = randomUUID(); const hostname = new URL(input.url).hostname
@@ -97,7 +100,7 @@ export class VhostraStore {
     return { root: this.layout.root, sites: this.layout.sites, virtualHosts: this.layout.virtualHosts, screenshots: this.layout.screenshots, exports: this.layout.exports, backups: this.layout.backups, logs: this.layout.logs, ...configuration, ...runtime, certificates: certificates.directory, publicCertificates: certificates.public, privateCertificates: certificates.private, mariaDbData: this.layout.persistentData.mariaDb }
   }
   private recordPath(directory: string, id: string) { return path.join(directory, `${id}.json`) }
-  private async readSettings() { try { const value = JSON.parse(await fs.readFile(this.layout.settings, 'utf8')) as Settings; this.validateSettings(value); return value } catch { await this.writeJson(this.layout.settings, defaults); return { ...defaults, optionalServices: { ...defaults.optionalServices } } } }
+  private async readSettings() { try { const value = JSON.parse(await fs.readFile(this.layout.settings, 'utf8')) as Partial<Settings>; const normalized = { ...defaults, ...value, optionalServices: { ...defaults.optionalServices, ...value.optionalServices }, ports: { ...defaultServicePorts, ...value.ports } } as Settings; this.validateSettings(normalized); if (!value.ports) await this.writeJson(this.layout.settings, normalized); return normalized } catch { await this.writeJson(this.layout.settings, defaults); return { ...defaults, optionalServices: { ...defaults.optionalServices }, ports: { ...defaultServicePorts } } } }
   private async readRecords<T>(directory: string) { const files = await fs.readdir(directory); const records = await Promise.all(files.filter(file => file.endsWith('.json')).map(async file => JSON.parse(await fs.readFile(path.join(directory, file), 'utf8')) as T)); return records }
   private async writeJson(file: string, value: unknown) { await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 }) }
   private async ensureLocalhostDefinition() {
@@ -117,11 +120,13 @@ export class VhostraStore {
       await fs.writeFile(path.join(root, 'index.html'), html, { mode: 0o600 })
     } catch { /* A missing development template must not prevent persistent settings/site setup. */ }
   }
-  private validateSettings(settings: Settings) { if (settings.schemaVersion !== 1 || !validServers.has(settings.selectedWebServer) || !validPhp.has(settings.selectedPhpVersion) || typeof settings.optionalServices?.redis !== 'boolean' || typeof settings.optionalServices?.memcached !== 'boolean') throw new Error('Invalid Vhostra settings.') }
+  private async updateDefaultSiteUrls(httpPort: number) { const sites = await this.readRecords<Site>(this.layout.sites); await Promise.all(sites.filter(site => site.builtIn === 'localhost').map(site => this.writeJson(this.recordPath(this.layout.sites, site.id), { ...site, url: localUrl(httpPort), updatedAt: new Date().toISOString() }))) }
+  private validateSettings(settings: Settings) { if (settings.schemaVersion !== 1 || !validServers.has(settings.selectedWebServer) || !validPhp.has(settings.selectedPhpVersion) || typeof settings.optionalServices?.redis !== 'boolean' || typeof settings.optionalServices?.memcached !== 'boolean' || !Object.values(settings.ports ?? {}).every(port => Number.isInteger(port) && port > 0 && port <= 65535)) throw new Error('Invalid Vhostra settings.') }
   private validateSiteInput(input: Pick<Site, 'name' | 'documentRoot' | 'url' | 'framework'>) { if (!input.name?.trim() || !input.documentRoot?.trim()) throw new Error('A site name and document root are required.'); this.validateUrl(input.url) }
   static validateUrl(value: string) { const url = new URL(value); if (!['http:', 'https:'].includes(url.protocol) || !url.hostname || url.username || url.password) throw new Error('Only credential-free HTTP or HTTPS site URLs can be opened.') }
   private validateUrl(value: string) { VhostraStore.validateUrl(value) }
 }
 
 const escapeHtml = (value: string) => value.replace(/[&<>'"]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character]!)
+export const localUrl = (port: number) => `http://localhost${port === 80 ? '' : `:${port}`}/`
 const fallbackWelcomeTemplate = '<!doctype html><title>Vhostra localhost</title><h1>Vhostra localhost</h1><p>{{server}} · {{php}}</p><h2>Configured sites</h2><div>{{sites}}</div>'
