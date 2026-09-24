@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { access, mkdtemp, rm } from 'node:fs/promises'
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -33,4 +33,20 @@ test('only accepts credential-free HTTP(S) URLs for external site opening', () =
   assert.doesNotThrow(() => VhostraStore.validateUrl('https://project.local:8443'))
   assert.throws(() => VhostraStore.validateUrl('file:///etc/passwd'))
   assert.throws(() => VhostraStore.validateUrl('https://user:secret@project.local'))
+})
+
+test('copies offline welcome fonts, logos and service assets into the localhost document root', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'vhostra-welcome-'))
+  try {
+    const store = new VhostraStore(directory, path.resolve('dist-welcome'))
+    const state = await store.getState()
+    const localhost = state.sites.find(site => site.builtIn === 'localhost')
+    assert.ok(localhost)
+    const page = await readFile(path.join(localhost.documentRoot, 'index.html'), 'utf8')
+    assert.match(page, /openlitespeed\.svg/)
+    assert.match(page, /vhostra-logo-dark-[\w-]+\.png/)
+    await access(path.join(localhost.documentRoot, 'openlitespeed.svg'))
+    await access(path.join(localhost.documentRoot, 'assets', 'roboto-400-BKwBj7lc.ttf'))
+    await access(path.join(localhost.documentRoot, 'assets', 'vhostra-logo-dark-BKgfwvFG.png'))
+  } finally { await rm(directory, { recursive: true, force: true }) }
 })
