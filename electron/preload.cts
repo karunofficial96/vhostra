@@ -15,6 +15,8 @@ const api = Object.freeze({
   startServices: () => ipcRenderer.invoke('vhostra:start-services'),
   stopServices: () => ipcRenderer.invoke('vhostra:stop-services'),
   restartServices: () => ipcRenderer.invoke('vhostra:restart-services'),
+  checkPort: (port: number) => ipcRenderer.invoke('vhostra:check-port', port),
+  findAvailablePort: (port: number) => ipcRenderer.invoke('vhostra:find-available-port', port),
   onRuntimeStatus: (listener: (status: unknown) => void) => { const handler = (_event: IpcRendererEvent, status: unknown) => listener(status); ipcRenderer.on('vhostra:runtime-status', handler); return () => ipcRenderer.removeListener('vhostra:runtime-status', handler) },
 })
 

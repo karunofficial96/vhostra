@@ -104,6 +104,8 @@ function registerIpc() {
   ipcMain.handle('vhostra:start-services', () => services.start())
   ipcMain.handle('vhostra:stop-services', () => services.stop())
   ipcMain.handle('vhostra:restart-services', () => services.restart())
+  ipcMain.handle('vhostra:check-port', (_event, port: number) => services.checkPort(port))
+  ipcMain.handle('vhostra:find-available-port', (_event, port: number) => services.findAvailablePort(port))
 }
 
 async function openApplicationWindow() { const window = createWindow(); window.show(); window.focus() }

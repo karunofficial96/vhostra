@@ -19,6 +19,8 @@ export interface VhostraDesktopApi {
   startServices(): Promise<void>
   stopServices(): Promise<void>
   restartServices(): Promise<void>
+  checkPort(port: number): Promise<{ port: number; available: boolean; owner: string | null }>
+  findAvailablePort(port: number): Promise<number>
   onRuntimeStatus(listener: (status: RuntimeSnapshot) => void): () => void
 }
 

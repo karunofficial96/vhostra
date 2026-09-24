@@ -11,7 +11,7 @@ export interface RuntimeSnapshot { state: RuntimeState; message: string; service
 
 const projectName = 'vhostra'
 const managedLabel = 'com.vhostra.managed=true'
-const requiredHostPorts = (state: AppState) => [state.settings.ports.http, state.settings.ports.phpMyAdmin]
+const requiredHostPorts = (state: AppState) => [state.settings.ports.http, state.settings.ports.phpMyAdmin, state.settings.ports.mariadb]
 const q = (value: string | number | boolean) => JSON.stringify(value)
 
 /** Only ever operates the generated, labeled Vhostra Compose project. */
@@ -73,6 +73,17 @@ export class DockerRuntimeController {
     if (before === 'running') return this.restart()
     return this.refresh()
   }
+  async checkPort(port: number) {
+    validatePort(port)
+    if (!await isPortOccupied(port)) return { port, available: true, owner: null as string | null }
+    if (await this.vhostraOwnsPort(port)) return { port, available: false, owner: 'Vhostra' }
+    return { port, available: false, owner: await describePort(port) }
+  }
+  async findAvailablePort(start: number) {
+    validatePort(start)
+    for (let port = Math.max(1025, start + 1); port <= 65535; port += 1) if (!await isPortOccupied(port)) return port
+    throw new Error('No available TCP port was found.')
+  }
 
   private get runtimeRoot() { return path.dirname(this.layout.runtime.apache) }
   private get composeFile() { return path.join(this.runtimeRoot, 'compose.yml') }
@@ -89,6 +100,7 @@ export class DockerRuntimeController {
     await fs.mkdir(this.runtimeRoot, { recursive: true })
     await Promise.all([this.layout.runtime.apache, this.layout.runtime.nginx, this.layout.runtime.openLiteSpeed, this.layout.runtime.php, this.layout.runtime.mariaDb, this.layout.runtime.phpMyAdmin, this.layout.runtime.redis, this.layout.runtime.memcached, this.layout.logs].map(directory => fs.mkdir(directory, { recursive: true })))
     await this.ensureEnvironment()
+    await fs.writeFile(path.join(this.layout.sites, 'localhost', 'public', 'vhostra-health.php'), '<?php echo "vhostra-lsphp:" . PHP_VERSION;\n', { mode: 0o600 })
     const mounts = state.virtualHosts.map(host => ({ host, container: `/var/www/vhostra/${host.id}` }))
     await Promise.all([
       fs.writeFile(path.join(this.layout.runtime.php, 'vhostra.ini'), 'expose_php=Off\nlog_errors=On\nerror_log=/var/log/php/error.log\n', { mode: 0o600 }),
@@ -98,12 +110,16 @@ export class DockerRuntimeController {
       fs.writeFile(path.join(this.layout.runtime.memcached, 'memcached.conf'), '-m 64\n', { mode: 0o600 }),
     ])
     await this.writeServerConfiguration(state.settings.selectedWebServer, state.settings.selectedPhpVersion, mounts)
-    await fs.writeFile(this.composeFile, composeYaml(state, this.layout, mounts), { mode: 0o600 })
+    await fs.cp(path.resolve(process.cwd(), 'runtime-image'), path.join(this.runtimeRoot, 'image'), { recursive: true, force: true })
+    await fs.writeFile(this.composeFile, singleRuntimeComposeYaml(state, this.layout), { mode: 0o600 })
   }
   private async ensureEnvironment() {
-    try { await fs.access(this.environmentFile) } catch {
-      await fs.writeFile(this.environmentFile, `MARIADB_ROOT_PASSWORD=${randomBytes(24).toString('base64url')}\n`, { mode: 0o600 })
-    }
+    let contents = ''
+    try { contents = await fs.readFile(this.environmentFile, 'utf8') } catch { /* generated on first use */ }
+    const missing = (name: string) => !new RegExp(`^${name}=`, 'm').test(contents)
+    if (missing('MARIADB_ROOT_PASSWORD')) contents += `MARIADB_ROOT_PASSWORD=${randomBytes(24).toString('base64url')}\n`
+    if (missing('VHOSTRA_PMA_BLOWFISH_SECRET')) contents += `VHOSTRA_PMA_BLOWFISH_SECRET=${randomBytes(32).toString('base64url')}\n`
+    await fs.writeFile(this.environmentFile, contents, { mode: 0o600 })
   }
   private async writeServerConfiguration(server: WebServer, phpVersion: PhpVersion, mounts: Array<{ host: AppState['virtualHosts'][number]; container: string }>) {
     const generated = this.layout.configuration.generated
@@ -143,10 +159,13 @@ export class DockerRuntimeController {
     try { return (await this.docker(['ps', '--filter', `label=${managedLabel}`, '--format', '{{.Ports}}'])).split('\n').some(line => line.includes(`:${port}->`)) } catch { return false }
   }
   private async healthCheck(server: WebServer) {
-    const ready = async (port: number) => { for (let attempt = 0; attempt < 20; attempt += 1) { const response = await requestLocalHttp(port); if (['200', '301', '302'].some(code => response.includes(code))) return true; await wait(1_000) } return false }
+    const ready = async (port: number, requestPath = '/') => { for (let attempt = 0; attempt < 20; attempt += 1) { const response = await requestLocalHttp(port, requestPath); if (response.includes('200')) return response; await wait(1_000) } return '' }
     const ports = (await this.getState()).settings.ports
     if (!await ready(ports.http)) throw new Error(`The ${server} runtime did not pass its localhost health check.`)
-    if (!await ready(ports.phpMyAdmin)) throw new Error(`phpMyAdmin did not pass its host-port ${ports.phpMyAdmin} health check.`)
+    const php = await ready(ports.http, '/vhostra-health.php')
+    if (!php.includes(`vhostra-lsphp:${(await this.getState()).settings.selectedPhpVersion}`)) throw new Error('OpenLiteSpeed did not invoke the selected LSPHP runtime.')
+    await this.compose(['exec', '-T', 'runtime', 'mariadb', '-uroot', '-e', 'SELECT 1'])
+    if (!await ready(ports.phpMyAdmin, '/phpmyadmin/index.php')) throw new Error('phpMyAdmin did not pass its shared-runtime health check.')
   }
   private async docker(args: string[]) { return execute('docker', args) }
   private async compose(args: string[], allowFailure = true) { return execute('docker', ['compose', '--project-name', projectName, '--project-directory', this.runtimeRoot, '--env-file', this.environmentFile, '--file', this.composeFile, ...args], allowFailure) }
@@ -159,6 +178,7 @@ const execute = (command: string, args: string[], allowFailure = false) => new P
 })
 const parseJsonLines = (value: string) => value.split('\n').flatMap(line => { try { return [JSON.parse(line)] } catch { return [] } })
 const wait = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds))
+const validatePort = (port: number) => { if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('A port must be an integer from 1 to 65535.') }
 /**
  * macOS denies an unprivileged Node process a test bind below 1024 with EACCES.
  * That is not evidence of a listener: verify the actual TCP endpoint before
@@ -176,7 +196,7 @@ const isPortOccupied = (port: number) => new Promise<boolean>(resolve => {
   server.listen(port, '127.0.0.1')
 })
 const connectsToPort = (port: number) => new Promise<boolean>(resolve => { const socket = net.connect({ port, host: '127.0.0.1' }); socket.setTimeout(750); socket.once('connect', () => { socket.destroy(); resolve(true) }); socket.once('error', () => resolve(false)); socket.once('timeout', () => { socket.destroy(); resolve(false) }) })
-const requestLocalHttp = (port: number) => new Promise<string>(resolve => { const socket = net.connect({ port, host: '127.0.0.1' }); let output = ''; socket.setTimeout(8_000); socket.on('connect', () => socket.write('GET / HTTP/1.0\r\nHost: localhost\r\n\r\n')); socket.on('data', data => { output += String(data) }); socket.on('error', () => resolve('')); socket.on('timeout', () => { socket.destroy(); resolve('') }); socket.on('close', () => resolve(output)) })
+const requestLocalHttp = (port: number, requestPath = '/') => new Promise<string>(resolve => { const socket = net.connect({ port, host: '127.0.0.1' }); let output = ''; socket.setTimeout(8_000); socket.on('connect', () => socket.write(`GET ${requestPath} HTTP/1.0\r\nHost: localhost\r\n\r\n`)); socket.on('data', data => { output += String(data) }); socket.on('error', () => resolve('')); socket.on('timeout', () => { socket.destroy(); resolve('') }); socket.on('close', () => resolve(output)) })
 async function describePort(port: number) {
   const owners: string[] = []
   try { const output = await execute('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN'], true); const lines = output.trim().split('\n'); if (lines.length > 1) owners.push(`process ${lines.slice(1).join('; ')}`) } catch { /* Windows/Linux fall back below. */ }
@@ -190,16 +210,7 @@ function nginxConfig(mounts: Array<{ host: AppState['virtualHosts'][number]; con
 function openLiteSpeedConfig(mounts: Array<{ host: AppState['virtualHosts'][number]; container: string }>) { return `serverName Vhostra\nhttpdWorkers 1\nlistener Default {\n  address *:8088\n  secure 0\n${mounts.map(({ host }) => `  map ${host.hostname} ${host.id}\n${host.aliases.map(alias => `  map ${alias} ${host.id}`).join('\n')}`).join('\n')}\n}\n${mounts.map(({ host, container }) => `virtualhost ${host.id} {\n  vhRoot ${container}/\n  configFile /usr/local/lsws/conf/vhostra-vhosts.conf\n  allowSymbolLink 1\n  enableScript 1\n}\n`).join('')}` }
 function openLiteSpeedVirtualHosts(mounts: Array<{ host: AppState['virtualHosts'][number]; container: string }>) { return mounts.map(({ host, container }) => `virtualhost ${host.id} {\n  docRoot ${container}/\n  indexFiles index.php,index.html\n  extprocessor php { type fcgi; address php:9000; maxConns 10; initTimeout 60; retryTimeout 0; }\n  scripthandler { add fcgi:php php }\n  accesslog /usr/local/lsws/logs/${host.id}-access.log { }\n  errorlog /usr/local/lsws/logs/${host.id}-error.log { }\n}\n`).join('\n') }
 
-function composeYaml(state: AppState, layout: StoreLayout, mounts: Array<{ host: AppState['virtualHosts'][number]; container: string }>) {
-  const { selectedWebServer: server, selectedPhpVersion: php, optionalServices } = state.settings
-  const common = `    labels:\n      ${managedLabel.split('=').map(q).join(': ')}\n    networks: [vhostra]\n`
-  const siteVolumes = mounts.map(({ host, container }) => `      - ${q(`${host.documentRoot}:${container}:ro`)}`).join('\n')
-  const phpService = `  php:\n    image: ${q(`php:${php}-fpm-alpine`)}\n${common}    volumes:\n      - ${q(`${layout.runtime.php}:/usr/local/etc/php/conf.d/vhostra.ini:ro`)}\n      - ${q(`${path.join(layout.logs, 'php')}:/var/log/php`)}\n${siteVolumes}\n`
-  const web = server === 'apache'
-    ? `  web:\n    image: ${q(`php:${php}-apache`)}\n${common}    ports: [${q(`${state.settings.ports.http}:80`)}]\n    volumes:\n      - ${q(`${layout.runtime.apache}:/etc/apache2/conf-enabled:ro`)}\n      - ${q(`${layout.runtime.php}:/usr/local/etc/php/conf.d/vhostra.ini:ro`)}\n      - ${q(`${path.join(layout.logs, 'apache')}:/var/log/apache2`)}\n${siteVolumes}\n`
-    : server === 'nginx'
-      ? `  web:\n    image: ${q('nginx:1.27-alpine')}\n${common}    ports: [${q(`${state.settings.ports.http}:80`)}]\n    depends_on: [php]\n    volumes:\n      - ${q(`${layout.runtime.nginx}:/etc/nginx/conf.d:ro`)}\n      - ${q(`${path.join(layout.logs, 'nginx')}:/var/log/nginx`)}\n${siteVolumes}\n${phpService}`
-      : `  web:\n    image: ${q('litespeedtech/openlitespeed:latest')}\n${common}    ports: [${q(`${state.settings.ports.http}:8088`)}]\n    depends_on: [php]\n    volumes:\n      - ${q(`${layout.runtime.openLiteSpeed}/httpd_config.conf:/usr/local/lsws/conf/httpd_config.conf:ro`)}\n      - ${q(`${layout.runtime.openLiteSpeed}/vhostra-vhosts.conf:/usr/local/lsws/conf/vhostra-vhosts.conf:ro`)}\n      - ${q(`${path.join(layout.logs, 'openlitespeed')}:/usr/local/lsws/logs`)}\n${siteVolumes}\n${phpService}`
-  const optional = `${optionalServices.redis ? `  redis:\n    image: ${q('redis:7-alpine')}\n${common}    command: ['redis-server', '/usr/local/etc/redis/redis.conf']\n    volumes:\n      - ${q(`${layout.runtime.redis}/redis.conf:/usr/local/etc/redis/redis.conf:ro`)}\n` : ''}${optionalServices.memcached ? `  memcached:\n    image: ${q('memcached:1.6-alpine')}\n${common}    command: ['memcached', '-m', '64']\n` : ''}`
-  return `name: ${projectName}\nservices:\n${web}  mariadb:\n    image: ${q('mariadb:11')}\n${common}    ports: [${q(`${state.settings.ports.mariadb}:3306`)}]\n    environment:\n      MARIADB_ROOT_PASSWORD: \${MARIADB_ROOT_PASSWORD}\n    volumes:\n      - ${q(`${layout.persistentData.mariaDb}:/var/lib/mysql`)}\n      - ${q(`${layout.runtime.mariaDb}/vhostra.cnf:/etc/mysql/conf.d/vhostra.cnf:ro`)}\n    healthcheck:\n      test: ['CMD', 'healthcheck.sh', '--connect', '--innodb_initialized']\n      interval: 5s\n      timeout: 5s\n      retries: 20\n  phpmyadmin:\n    image: ${q('phpmyadmin:5-apache')}\n${common}    ports: [${q(`${state.settings.ports.phpMyAdmin}:80`)}]\n    depends_on: [mariadb]\n    environment:\n      PMA_HOST: mariadb\n      PMA_PORT: '3306'\n${optional}networks:\n  vhostra:\n    name: vhostra-network\n    labels:\n      ${managedLabel.split('=').map(q).join(': ')}\n`
+function singleRuntimeComposeYaml(state: AppState, layout: StoreLayout) {
+  const php = state.settings.selectedPhpVersion.replace('.', '')
+  return `name: ${projectName}\nservices:\n  runtime:\n    build:\n      context: ./image\n      args:\n        LSPHP_VERSION: ${q(php)}\n    image: ${q(`vhostra-runtime:ols-lsphp${php}`)}\n    labels:\n      ${managedLabel.split('=').map(q).join(': ')}\n    ports:\n      - ${q(`${state.settings.ports.http}:8088`)}\n      - ${q(`${state.settings.ports.phpMyAdmin}:8088`)}\n      - ${q(`${state.settings.ports.mariadb}:3306`)}\n    environment:\n      VHOSTRA_LSPHP_VERSION: ${q(php)}\n      VHOSTRA_REDIS: ${q(state.settings.optionalServices.redis)}\n      VHOSTRA_MEMCACHED: ${q(state.settings.optionalServices.memcached)}\n      VHOSTRA_PMA_BLOWFISH_SECRET: \${VHOSTRA_PMA_BLOWFISH_SECRET}\n    volumes:\n      - ${q(`${path.join(layout.sites, 'localhost', 'public')}:/var/www/html`)}\n      - ${q(`${layout.persistentData.mariaDb}:/var/lib/mysql`)}\n      - ${q(`${layout.logs}:/var/log/vhostra`)}\n    networks: [vhostra]\nnetworks:\n  vhostra:\n    name: vhostra-network\n    labels:\n      ${managedLabel.split('=').map(q).join(': ')}\n`
 }

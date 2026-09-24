@@ -12,12 +12,20 @@ RUN apt-get update \
  && curl -fsSL https://repo.litespeed.sh | bash \
  && apt-get update \
  && apt-cache show "lsphp${LSPHP_VERSION}" >/dev/null \
- && apt-get install -y --no-install-recommends "lsphp${LSPHP_VERSION}" "lsphp${LSPHP_VERSION}-mysql" \
+ && apt-get install -y --no-install-recommends \
+      "lsphp${LSPHP_VERSION}" "lsphp${LSPHP_VERSION}-mysql" \
  && test -x "/usr/local/lsws/lsphp${LSPHP_VERSION}/bin/lsphp" \
+ && curl -fsSL --retry 3 -o /tmp/phpmyadmin.tar.gz https://files.phpmyadmin.net/phpMyAdmin/5.2.2/phpMyAdmin-5.2.2-all-languages.tar.gz \
+ && mkdir -p /usr/share/phpmyadmin \
+ && tar -xzf /tmp/phpmyadmin.tar.gz --strip-components=1 -C /usr/share/phpmyadmin \
+ && rm -f /tmp/phpmyadmin.tar.gz \
  && rm -rf /var/lib/apt/lists/*
 
+COPY phpmyadmin-config.inc.php /usr/share/phpmyadmin/config.inc.php
 COPY supervisor.conf /etc/supervisor/conf.d/vhostra.conf
 COPY entrypoint.sh /usr/local/bin/vhostra-entrypoint
-RUN chmod 0755 /usr/local/bin/vhostra-entrypoint
+RUN chmod 0755 /usr/local/bin/vhostra-entrypoint \
+ && rm -rf /usr/local/lsws/Example/html \
+ && ln -s /var/www/html /usr/local/lsws/Example/html
 
 ENTRYPOINT ["/usr/local/bin/vhostra-entrypoint"]
