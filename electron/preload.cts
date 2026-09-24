@@ -1,10 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
-/**
- * Intentionally narrow renderer bridge. Future backend capabilities belong here
- * rather than exposing Node or Electron APIs directly to the React UI.
- */
-contextBridge.exposeInMainWorld('vhostra', Object.freeze({
+const api = Object.freeze({
   getState: () => ipcRenderer.invoke('vhostra:get-state'),
   saveSettings: (settings: unknown) => ipcRenderer.invoke('vhostra:save-settings', settings),
   addSite: (input: unknown) => ipcRenderer.invoke('vhostra:add-site', input),
@@ -15,4 +11,8 @@ contextBridge.exposeInMainWorld('vhostra', Object.freeze({
   getStorageLayout: () => ipcRenderer.invoke('vhostra:get-storage-layout'),
   exportConfiguration: (request: unknown) => ipcRenderer.invoke('vhostra:export-configuration', request),
   previewConfigurationImport: () => ipcRenderer.invoke('vhostra:preview-configuration-import'),
-}))
+})
+
+contextBridge.exposeInMainWorld('vhostra', api)
+
+if (process.env.NODE_ENV === 'development') console.info('[Vhostra preload] Secure bridge exposed as window.vhostra')

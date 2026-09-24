@@ -14,12 +14,13 @@
     "linux": { "icon": "build/icons" }
   },
   "scripts": {
-    "dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron .\"",
+    "dev": "node scripts/dev.mjs",
     "dev:web": "vite",
-    "build": "tsc -b && vite build && tsc -p electron/tsconfig.json",
+    "build": "tsc -b && vite build && tsc -p electron/tsconfig.json && tsc -p electron/tsconfig.preload.json",
     "preview": "vite preview",
     "typecheck": "tsc -b --pretty false",
     "test": "npm run build && node --test test/store.test.mjs",
+    "test:bridge": "node scripts/run-bridge-test.mjs",
     "lint": "eslint . --max-warnings=0"
   },
   "dependencies": {

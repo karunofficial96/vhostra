@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, protocol, shell } from 'electron'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { VhostraStore } from './store.js'
@@ -12,9 +13,11 @@ const applicationIcon = process.platform === 'darwin'
   : process.platform === 'win32'
     ? path.join(__dirname, '../build/icon.ico')
     : path.join(__dirname, '../build/icons/512x512.png')
+const preloadPath = path.join(__dirname, 'preload.cjs')
 
 const createWindow = () => {
   if (primaryWindow && !primaryWindow.isDestroyed()) { primaryWindow.focus(); return primaryWindow }
+  if (!existsSync(preloadPath)) console.error(`[Vhostra] Preload script is missing: ${preloadPath}. Run the Electron build before starting the app.`)
   const window = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -27,11 +30,15 @@ const createWindow = () => {
       nodeIntegration: false,
       sandbox: true,
       backgroundThrottling: true,
-      preload: path.join(__dirname, 'preload.js'),
+      preload: preloadPath,
     },
   })
   primaryWindow = window
   window.on('closed', () => { primaryWindow = null })
+  window.webContents.on('preload-error', (_event, failedPath, error) => console.error(`[Vhostra] Failed to load preload script at ${failedPath}:`, error))
+  window.webContents.on('console-message', (_event, _level, message, line, sourceId) => {
+    if (message.includes('[Vhostra preload]')) console.error(`[Vhostra] Preload diagnostic (${sourceId}:${line}): ${message}`)
+  })
   window.webContents.setWindowOpenHandler(({ url }) => {
     try { VhostraStore.validateUrl(url); void shell.openExternal(url) } catch { /* deny untrusted/non-web URLs */ }
     return { action: 'deny' }
