@@ -14,6 +14,10 @@ ln -sfn "$LSPHP_BIN" /usr/local/lsws/fcgi-bin/lsphp8
 PHP_VERSION="${VHOSTRA_LSPHP_VERSION%?}.${VHOSTRA_LSPHP_VERSION#?}"
 printf '\nexpose_php=Off\n' >> "/usr/local/lsws/lsphp${VHOSTRA_LSPHP_VERSION}/etc/php/${PHP_VERSION}/litespeed/php.ini"
 
+# The built-in vhost is the same one used by the mounted Vhostra localhost
+# page. Keep WordPress-style `.htaccess` permalinks available by default.
+sed -Ei '/^rewrite[[:space:]]*\{/,/^\}/ s/^[[:space:]]*enable[[:space:]]+0[[:space:]]*$/  enable 1\n  autoLoadHtaccess 1/' /usr/local/lsws/conf/vhosts/Example/vhconf.conf
+
 mkdir -p /var/log/vhostra /var/lib/mysql /var/www/html
 # This is a Vhostra-managed built-in document root. OLS deliberately rejects
 # symlinks which leave its vhost root, so seed the immutable bundled source on

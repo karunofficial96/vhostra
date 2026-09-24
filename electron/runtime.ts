@@ -41,14 +41,19 @@ export class DockerRuntimeController {
     }
   }
   async start() { return this.runExclusive('starting', 'Preparing Vhostra runtime…', async () => {
+    this.set({ state: 'starting', message: 'Checking Docker…', services: [] })
     await this.requireDocker()
     const state = await this.getState()
+    this.set({ state: 'starting', message: 'Checking configured service ports…', services: [] })
     await this.ensurePortsAvailable(requiredHostPorts(state))
     await this.checkOptionalHttpsPort()
+    this.set({ state: 'starting', message: 'Preparing persistent runtime configuration…', services: [] })
     await this.generate(state)
     await this.compose(['config', '--quiet'])
+    this.set({ state: 'starting', message: 'Building and creating the Vhostra runtime container…', services: ['runtime'] })
     // --remove-orphans is limited by this project name and removes obsolete Vhostra service containers after a server/PHP switch.
     await this.compose(['up', '--detach', '--remove-orphans'])
+    this.set({ state: 'starting', message: 'Running OpenLiteSpeed, LSPHP, MariaDB, and phpMyAdmin health checks…', services: ['runtime'] })
     await this.healthCheck(state.settings.selectedWebServer)
     await this.refresh()
   }) }
@@ -58,13 +63,17 @@ export class DockerRuntimeController {
     await this.refresh()
   }) }
   async restart() { return this.runExclusive('stopping', 'Restarting Vhostra services…', async () => {
+    this.set({ state: 'stopping', message: 'Checking Docker and configured ports before runtime replacement…', services: this.snapshot.services })
     await this.requireDocker()
     const state = await this.getState()
     await this.ensurePortsAvailable(requiredHostPorts(state), true)
     await this.checkOptionalHttpsPort(true)
+    this.set({ state: 'starting', message: 'Preparing replacement runtime configuration…', services: this.snapshot.services })
     await this.generate(state)
     await this.compose(['config', '--quiet'])
+    this.set({ state: 'starting', message: 'Building and starting replacement runtime container…', services: ['runtime'] })
     await this.compose(['up', '--detach', '--remove-orphans'])
+    this.set({ state: 'starting', message: 'Running replacement runtime health checks…', services: ['runtime'] })
     await this.healthCheck(state.settings.selectedWebServer)
     await this.refresh()
   }) }
@@ -83,6 +92,39 @@ export class DockerRuntimeController {
     validatePort(start)
     for (let port = Math.max(1025, start + 1); port <= 65535; port += 1) if (!await isPortOccupied(port)) return port
     throw new Error('No available TCP port was found.')
+  }
+  async reloadWebServer() { return this.runExclusive('starting', 'Reloading OpenLiteSpeed rewrite configuration…', async () => {
+    await this.requireDocker()
+    const state = await this.getState()
+    if (state.settings.selectedWebServer !== 'openlitespeed') throw new Error('A graceful reload is currently available for the OpenLiteSpeed runtime only.')
+    await this.compose(['exec', '-T', 'runtime', '/usr/local/lsws/bin/lswsctrl', 'reload'])
+    await this.healthCheck('openlitespeed')
+    await this.refresh()
+  }) }
+  async setOpenLiteSpeedRewrite(enabled: boolean) { const wasRunning = this.snapshot.state === 'running'; return this.runExclusive('starting', `${enabled ? 'Enabling' : 'Disabling'} OpenLiteSpeed rewrite support…`, async () => {
+    await this.requireDocker()
+    const state = await this.getState()
+    if (state.settings.selectedWebServer !== 'openlitespeed' || !wasRunning) { await this.refresh(); return }
+    const value = enabled ? '1' : '0'
+    const command = `/usr/bin/sed -Ei '/^rewrite[[:space:]]*\\{/,/^\\}/ s/^[[:space:]]*enable[[:space:]]+[01][[:space:]]*$/  enable ${value}/' /usr/local/lsws/conf/vhosts/Example/vhconf.conf && /usr/local/lsws/bin/lswsctrl reload`
+    await this.compose(['exec', '-T', 'runtime', '/bin/sh', '-lc', command])
+    await this.healthCheck('openlitespeed')
+    await this.refresh()
+  }) }
+  async listDatabases() {
+    await this.requireDocker()
+    const output = await this.compose(['exec', '-T', 'runtime', 'mariadb', '-uroot', '-N', '-e', 'SHOW DATABASES'])
+    return output.split('\n').map(name => name.trim()).filter(name => name && !['information_schema', 'mysql', 'performance_schema', 'sys'].includes(name))
+  }
+  async createDatabase(input: { name: string; charset: string; username: string; password: string }) {
+    const name = sqlIdentifier(input.name, 'database name'); const username = sqlIdentifier(input.username, 'username')
+    if (!['utf8mb4', 'utf8', 'latin1'].includes(input.charset)) throw new Error('Unsupported MariaDB character set.')
+    if (input.password.length < 12) throw new Error('Database passwords must contain at least 12 characters.')
+    const password = sqlLiteral(input.password)
+    const sql = `CREATE DATABASE \`${name}\` CHARACTER SET ${input.charset}; CREATE USER '${username}'@'%' IDENTIFIED BY ${password}; GRANT ALL PRIVILEGES ON \`${name}\`.* TO '${username}'@'%'; FLUSH PRIVILEGES;`
+    await this.compose(['exec', '-T', 'runtime', 'mariadb', '-uroot', '-e', sql])
+    const state = await this.getState()
+    return { name, username, host: '127.0.0.1', port: state.settings.ports.mariadb, charset: input.charset }
   }
 
   private get runtimeRoot() { return path.dirname(this.layout.runtime.apache) }
@@ -179,6 +221,8 @@ const execute = (command: string, args: string[], allowFailure = false) => new P
 const parseJsonLines = (value: string) => value.split('\n').flatMap(line => { try { return [JSON.parse(line)] } catch { return [] } })
 const wait = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds))
 const validatePort = (port: number) => { if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('A port must be an integer from 1 to 65535.') }
+const sqlIdentifier = (value: string, label: string) => { const normalized = value.trim(); if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(normalized)) throw new Error(`Invalid ${label}. Use letters, digits, and underscores only.`); return normalized }
+const sqlLiteral = (value: string) => `'${value.replace(/'/g, "''")}'`
 /**
  * macOS denies an unprivileged Node process a test bind below 1024 with EACCES.
  * That is not evidence of a listener: verify the actual TCP endpoint before
@@ -205,8 +249,8 @@ async function describePort(port: number) {
 }
 const dockerMessage = (error: unknown) => `Docker is unavailable: ${error instanceof Error ? error.message : String(error)}`
 
-function apacheConfig(mounts: Array<{ host: AppState['virtualHosts'][number]; container: string }>) { return `ServerTokens Prod\nServerSignature Off\nTraceEnable Off\n${mounts.map(({ host, container }) => `<VirtualHost *:80>\n  ServerName ${host.hostname}\n  ${host.aliases.map(alias => `ServerAlias ${alias}`).join('\n  ')}\n  DocumentRoot ${container}\n  <Directory ${container}>\n    Options FollowSymLinks\n    AllowOverride All\n    Require all granted\n  </Directory>\n  ErrorLog /var/log/apache2/${host.id}-error.log\n  CustomLog /var/log/apache2/${host.id}-access.log combined\n</VirtualHost>`).join('\n\n')}\n` }
-function nginxConfig(mounts: Array<{ host: AppState['virtualHosts'][number]; container: string }>) { return `server_tokens off;\n${mounts.map(({ host, container }) => `server {\n  listen 80;\n  server_name ${[host.hostname, ...host.aliases].join(' ')};\n  root ${container};\n  index index.php index.html;\n  access_log /var/log/nginx/${host.id}-access.log;\n  error_log /var/log/nginx/${host.id}-error.log;\n  location / { try_files $uri $uri/ /index.php?$query_string; }\n  location ~ \\.php$ { include fastcgi_params; fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name; fastcgi_pass php:9000; }\n}\n`).join('\n')}` }
+function apacheConfig(mounts: Array<{ host: AppState['virtualHosts'][number]; container: string }>) { return `ServerTokens Prod\nServerSignature Off\nTraceEnable Off\nLoadModule rewrite_module modules/mod_rewrite.so\n${mounts.map(({ host, container }) => `<VirtualHost *:80>\n  ServerName ${host.hostname}\n  ${host.aliases.map(alias => `ServerAlias ${alias}`).join('\n  ')}\n  DocumentRoot ${container}\n  <Directory ${container}>\n    Options FollowSymLinks\n    AllowOverride ${host.rewriteEnabled === false ? 'None' : 'FileInfo'}\n    Require all granted\n  </Directory>\n  ${host.rewriteEnabled === false ? 'RewriteEngine Off' : 'RewriteEngine On'}\n  ErrorLog /var/log/apache2/${host.id}-error.log\n  CustomLog /var/log/apache2/${host.id}-access.log combined\n</VirtualHost>`).join('\n\n')}\n` }
+function nginxConfig(mounts: Array<{ host: AppState['virtualHosts'][number]; container: string }>) { return `server_tokens off;\n${mounts.map(({ host, container }) => `server {\n  listen 80;\n  server_name ${[host.hostname, ...host.aliases].join(' ')};\n  root ${container};\n  index index.php index.html;\n  access_log /var/log/nginx/${host.id}-access.log;\n  error_log /var/log/nginx/${host.id}-error.log;\n  # Vhostra managed WordPress-compatible front controller. Unsupported .htaccess directives remain reported in the neutral model.\n  location / { try_files $uri $uri/ ${host.rewriteEnabled === false ? '=404' : '/index.php?$query_string'}; }\n  location ~ \\.php$ { include fastcgi_params; fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name; fastcgi_pass php:9000; }\n}\n`).join('\n')}` }
 function openLiteSpeedConfig(mounts: Array<{ host: AppState['virtualHosts'][number]; container: string }>) { return `serverName Vhostra\nhttpdWorkers 1\nlistener Default {\n  address *:8088\n  secure 0\n${mounts.map(({ host }) => `  map ${host.hostname} ${host.id}\n${host.aliases.map(alias => `  map ${alias} ${host.id}`).join('\n')}`).join('\n')}\n}\n${mounts.map(({ host, container }) => `virtualhost ${host.id} {\n  vhRoot ${container}/\n  configFile /usr/local/lsws/conf/vhostra-vhosts.conf\n  allowSymbolLink 1\n  enableScript 1\n}\n`).join('')}` }
 function openLiteSpeedVirtualHosts(mounts: Array<{ host: AppState['virtualHosts'][number]; container: string }>) { return mounts.map(({ host, container }) => `virtualhost ${host.id} {\n  docRoot ${container}/\n  indexFiles index.php,index.html\n  extprocessor php { type fcgi; address php:9000; maxConns 10; initTimeout 60; retryTimeout 0; }\n  scripthandler { add fcgi:php php }\n  accesslog /usr/local/lsws/logs/${host.id}-access.log { }\n  errorlog /usr/local/lsws/logs/${host.id}-error.log { }\n}\n`).join('\n') }
 

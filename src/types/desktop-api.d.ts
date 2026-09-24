@@ -10,6 +10,7 @@ export interface VhostraDesktopApi {
   addSite(input: SiteInput): Promise<VhostraState>
   updateSite(input: SiteUpdate): Promise<VhostraState>
   removeSite(id: string): Promise<VhostraState>
+  setVirtualHostRewrite(id: string, enabled: boolean): Promise<VhostraState>
   chooseDocumentRoot(): Promise<string | null>
   openSite(url: string): Promise<void>
   getStorageLayout(): Promise<StorageLayout>
@@ -21,6 +22,9 @@ export interface VhostraDesktopApi {
   restartServices(): Promise<void>
   checkPort(port: number): Promise<{ port: number; available: boolean; owner: string | null }>
   findAvailablePort(port: number): Promise<number>
+  reloadWebServer(): Promise<void>
+  listDatabases(): Promise<string[]>
+  createDatabase(input: { name: string; charset: string; username: string; password: string }): Promise<{ name: string; username: string; host: string; port: number; charset: string }>
   onRuntimeStatus(listener: (status: RuntimeSnapshot) => void): () => void
 }
 

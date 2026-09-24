@@ -6,6 +6,14 @@
 * { box-sizing: border-box; }
 html, body, #root { min-height: 100%; margin: 0; }
 body { background: #ffffff; }
+html[data-theme="dark"] { color-scheme: dark; }
+html[data-theme="dark"] body, html[data-theme="dark"] main, html[data-theme="dark"] aside, html[data-theme="dark"] header { background: #181818 !important; color: #f1f1f1 !important; }
+html[data-theme="dark"] .bg-white { background: #181818 !important; }
+html[data-theme="dark"] .bg-\[\#F2F2F2\] { background: #2a2a2a !important; }
+html[data-theme="dark"] .border-\[\#E5E5E5\], html[data-theme="dark"] .border-b, html[data-theme="dark"] .border-t { border-color: #454545 !important; }
+html[data-theme="dark"] .text-\[\#0F0F0F\] { color: #f1f1f1 !important; }
+html[data-theme="dark"] .text-\[\#606060\] { color: #b8b8b8 !important; }
+html[data-theme="dark"] .input { background: #242424; border-color: #555; color: #f1f1f1; }
 button { font: inherit; cursor: pointer; }
 button:focus-visible, a:focus-visible { outline: 2px solid #065FD4; outline-offset: 2px; }
 .input { height: 40px; width: 100%; border: 1px solid #E5E5E5; border-radius: 4px; background: #fff; padding: 0 12px; color: #0F0F0F; font: inherit; font-size: 14px; }

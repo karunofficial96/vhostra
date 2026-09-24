@@ -11,7 +11,7 @@ export interface ServicePorts { http: number; https: number; mariadb: number; re
 export interface Settings { schemaVersion: 1; selectedWebServer: WebServer; selectedPhpVersion: PhpVersion; optionalServices: { redis: boolean; memcached: boolean }; ports: ServicePorts }
 export interface Screenshot { cacheFile: string; capturedAt: string; source: 'automatic' | 'manual' }
 export interface Site { id: string; name: string; documentRoot: string; url: string; vhostId: string; framework?: string; screenshot?: Screenshot; builtIn?: 'localhost'; createdAt: string; updatedAt: string }
-export interface VirtualHost { id: string; hostname: string; aliases: string[]; documentRoot: string; https: { enabled: boolean }; redirects: []; rewrites: []; headers: []; logs: { access: boolean; error: boolean }; builtIn?: 'localhost' }
+export interface VirtualHost { id: string; hostname: string; aliases: string[]; documentRoot: string; https: { enabled: boolean }; rewriteEnabled: boolean; redirects: []; rewrites: []; headers: []; logs: { access: boolean; error: boolean }; builtIn?: 'localhost' }
 export interface AppState { settings: Settings; sites: Site[]; virtualHosts: VirtualHost[] }
 
 export interface StoreLayout {
@@ -51,7 +51,7 @@ export class VhostraStore {
     this.validateSiteInput(input); await this.initialize()
     const now = new Date().toISOString(); const id = randomUUID(); const vhostId = randomUUID(); const hostname = new URL(input.url).hostname
     const site: Site = { id, vhostId, name: input.name.trim(), documentRoot: input.documentRoot, url: input.url, ...(input.framework?.trim() ? { framework: input.framework.trim() } : {}), createdAt: now, updatedAt: now }
-    const vhost: VirtualHost = { id: vhostId, hostname, aliases: [], documentRoot: input.documentRoot, https: { enabled: new URL(input.url).protocol === 'https:' }, redirects: [], rewrites: [], headers: [], logs: { access: true, error: true } }
+    const vhost: VirtualHost = { id: vhostId, hostname, aliases: [], documentRoot: input.documentRoot, https: { enabled: new URL(input.url).protocol === 'https:' }, rewriteEnabled: true, redirects: [], rewrites: [], headers: [], logs: { access: true, error: true } }
     await Promise.all([this.writeJson(this.recordPath(this.layout.sites, id), site), this.writeJson(this.recordPath(this.layout.virtualHosts, vhostId), vhost)])
     await this.writeLocalhostWelcome(); return this.getState()
   }
@@ -66,6 +66,12 @@ export class VhostraStore {
     const state = await this.getState(); const site = state.sites.find(item => item.id === id); if (!site) throw new Error('Site definition not found.'); if (site.builtIn === 'localhost') throw new Error('The built-in localhost vhost is protected. Its document root and configuration remain inspectable.')
     await Promise.all([fs.rm(this.recordPath(this.layout.sites, site.id), { force: true }), fs.rm(this.recordPath(this.layout.virtualHosts, site.vhostId), { force: true })])
     await this.writeLocalhostWelcome(); return this.getState()
+  }
+  async setVirtualHostRewrite(id: string, enabled: boolean) {
+    const state = await this.getState(); const host = state.virtualHosts.find(item => item.id === id)
+    if (!host) throw new Error('Virtual-host definition not found.')
+    await this.writeJson(this.recordPath(this.layout.virtualHosts, id), { ...host, rewriteEnabled: enabled })
+    return this.getState()
   }
   /** Static previews are capped and read only for the browser image request—never retained in app state. */
   async readScreenshot(siteId: string) {
@@ -107,7 +113,7 @@ export class VhostraStore {
     const documentRoot = path.join(this.layout.sites, 'localhost', 'public'); const now = new Date().toISOString()
     await fs.mkdir(documentRoot, { recursive: true })
     try { await fs.access(this.recordPath(this.layout.sites, localhostSiteId)) } catch { await this.writeJson(this.recordPath(this.layout.sites, localhostSiteId), { id: localhostSiteId, name: 'Vhostra Localhost', documentRoot, url: 'http://localhost/', vhostId: localhostVhostId, builtIn: 'localhost', createdAt: now, updatedAt: now } satisfies Site) }
-    try { await fs.access(this.recordPath(this.layout.virtualHosts, localhostVhostId)) } catch { await this.writeJson(this.recordPath(this.layout.virtualHosts, localhostVhostId), { id: localhostVhostId, hostname: 'localhost', aliases: [], documentRoot, https: { enabled: false }, redirects: [], rewrites: [], headers: [], logs: { access: true, error: true }, builtIn: 'localhost' } satisfies VirtualHost) }
+    try { await fs.access(this.recordPath(this.layout.virtualHosts, localhostVhostId)) } catch { await this.writeJson(this.recordPath(this.layout.virtualHosts, localhostVhostId), { id: localhostVhostId, hostname: 'localhost', aliases: [], documentRoot, https: { enabled: false }, rewriteEnabled: true, redirects: [], rewrites: [], headers: [], logs: { access: true, error: true }, builtIn: 'localhost' } satisfies VirtualHost) }
   }
   private async writeLocalhostWelcome(runtimeMessage = 'Runtime has not been created.') {
     const root = path.join(this.layout.sites, 'localhost', 'public'); const template = this.welcomeTemplateDirectory ? path.join(this.welcomeTemplateDirectory, 'index.html') : ''

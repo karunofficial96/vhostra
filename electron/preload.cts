@@ -6,6 +6,7 @@ const api = Object.freeze({
   addSite: (input: unknown) => ipcRenderer.invoke('vhostra:add-site', input),
   updateSite: (input: unknown) => ipcRenderer.invoke('vhostra:update-site', input),
   removeSite: (id: string) => ipcRenderer.invoke('vhostra:remove-site', id),
+  setVirtualHostRewrite: (id: string, enabled: boolean) => ipcRenderer.invoke('vhostra:set-vhost-rewrite', id, enabled),
   chooseDocumentRoot: () => ipcRenderer.invoke('vhostra:choose-document-root'),
   openSite: (url: string) => ipcRenderer.invoke('vhostra:open-site', url),
   getStorageLayout: () => ipcRenderer.invoke('vhostra:get-storage-layout'),
@@ -17,6 +18,9 @@ const api = Object.freeze({
   restartServices: () => ipcRenderer.invoke('vhostra:restart-services'),
   checkPort: (port: number) => ipcRenderer.invoke('vhostra:check-port', port),
   findAvailablePort: (port: number) => ipcRenderer.invoke('vhostra:find-available-port', port),
+  reloadWebServer: () => ipcRenderer.invoke('vhostra:reload-web-server'),
+  listDatabases: () => ipcRenderer.invoke('vhostra:list-databases'),
+  createDatabase: (input: unknown) => ipcRenderer.invoke('vhostra:create-database', input),
   onRuntimeStatus: (listener: (status: unknown) => void) => { const handler = (_event: IpcRendererEvent, status: unknown) => listener(status); ipcRenderer.on('vhostra:runtime-status', handler); return () => ipcRenderer.removeListener('vhostra:runtime-status', handler) },
 })
 

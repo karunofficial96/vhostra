@@ -29,6 +29,7 @@ export interface VirtualHost {
   aliases: string[]
   documentRoot: string
   https: { enabled: boolean; certificateRef?: string }
+  rewriteEnabled?: boolean
   redirects: RedirectRule[]
   rewrites: RewriteRule[]
   headers: HeaderRule[]

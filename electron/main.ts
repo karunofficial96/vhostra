@@ -77,6 +77,7 @@ function registerIpc() {
   ipcMain.handle('vhostra:add-site', async (_event, input) => { const result = await store.addSite(input); await services.applyConfiguration(); return result })
   ipcMain.handle('vhostra:update-site', async (_event, input) => { const result = await store.updateSite(input); await services.applyConfiguration(); return result })
   ipcMain.handle('vhostra:remove-site', async (_event, id: string) => { const result = await store.removeSite(id); await services.applyConfiguration(); return result })
+  ipcMain.handle('vhostra:set-vhost-rewrite', async (_event, id: string, enabled: boolean) => { const result = await store.setVirtualHostRewrite(id, enabled); await services.setOpenLiteSpeedRewrite(enabled); return result })
   ipcMain.handle('vhostra:choose-document-root', async event => {
     const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender)!, { properties: ['openDirectory', 'createDirectory'] })
     return result.canceled ? null : result.filePaths[0] ?? null
@@ -106,6 +107,9 @@ function registerIpc() {
   ipcMain.handle('vhostra:restart-services', () => services.restart())
   ipcMain.handle('vhostra:check-port', (_event, port: number) => services.checkPort(port))
   ipcMain.handle('vhostra:find-available-port', (_event, port: number) => services.findAvailablePort(port))
+  ipcMain.handle('vhostra:reload-web-server', () => services.reloadWebServer())
+  ipcMain.handle('vhostra:list-databases', () => services.listDatabases())
+  ipcMain.handle('vhostra:create-database', (_event, input) => services.createDatabase(input))
 }
 
 async function openApplicationWindow() { const window = createWindow(); window.show(); window.focus() }
