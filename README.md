@@ -44,7 +44,7 @@ Docker Desktop (or a compatible Docker Engine with the Compose plugin) is requir
 - `http://localhost/` is the Vhostra managed local web-server entry point.
 - `http://localhost:9080/` is phpMyAdmin. Its image keeps internal port 80; only the host binding is 9080.
 
-Vhostra checks ports 80, 9080, and 443 when HTTPS is configured. It reports an owner where practical and never stops unrelated applications or containers to reclaim a port.
+Vhostra requires ports 80 and 9080 at startup. Port 443 is checked only as an optional HTTPS capability: if another application such as Tailscale Serve owns it, Vhostra starts HTTP normally on port 80 and reports HTTPS as unavailable without touching the owner.
 
 ## Local-first storage and persistence
 

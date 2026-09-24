@@ -11,7 +11,7 @@ export interface RuntimeSnapshot { state: RuntimeState; message: string; service
 
 const projectName = 'vhostra'
 const managedLabel = 'com.vhostra.managed=true'
-const requiredHostPorts = (state: AppState) => [80, 9080, ...(state.virtualHosts.some(host => host.https.enabled) ? [443] : [])]
+const requiredHostPorts = () => [80, 9080]
 const q = (value: string | number | boolean) => JSON.stringify(value)
 
 /** Only ever operates the generated, labeled Vhostra Compose project. */
@@ -19,6 +19,7 @@ export class DockerRuntimeController {
   private snapshot: RuntimeSnapshot = { state: 'not-created', message: 'Docker runtime has not been created.', services: [], updatedAt: new Date().toISOString() }
   private listeners = new Set<() => void>()
   private operation: Promise<void> | null = null
+  private httpsWarning = ''
 
   constructor(private readonly layout: StoreLayout, private readonly getState: () => Promise<AppState>, private readonly updateWelcome?: (message: string) => Promise<void>) {}
 
@@ -27,6 +28,7 @@ export class DockerRuntimeController {
   async refresh() {
     try {
       await this.docker(['info'])
+      await this.checkOptionalHttpsPort()
       if (!existsSync(this.composeFile)) return this.set({ state: 'not-created', message: 'Docker is available. Start Services to create the Vhostra runtime.', services: [] })
       const output = await this.compose(['ps', '--format', 'json'], false)
       const rows = parseJsonLines(output)
@@ -41,7 +43,8 @@ export class DockerRuntimeController {
   async start() { return this.runExclusive('starting', 'Preparing Vhostra runtime…', async () => {
     await this.requireDocker()
     const state = await this.getState()
-    await this.ensurePortsAvailable(requiredHostPorts(state))
+    await this.ensurePortsAvailable(requiredHostPorts())
+    await this.checkOptionalHttpsPort()
     await this.generate(state)
     await this.compose(['config', '--quiet'])
     // --remove-orphans is limited by this project name and removes obsolete Vhostra service containers after a server/PHP switch.
@@ -57,7 +60,8 @@ export class DockerRuntimeController {
   async restart() { return this.runExclusive('stopping', 'Restarting Vhostra services…', async () => {
     await this.requireDocker()
     const state = await this.getState()
-    await this.ensurePortsAvailable(requiredHostPorts(state), true)
+    await this.ensurePortsAvailable(requiredHostPorts(), true)
+    await this.checkOptionalHttpsPort(true)
     await this.generate(state)
     await this.compose(['config', '--quiet'])
     await this.compose(['up', '--detach', '--remove-orphans'])
@@ -73,7 +77,7 @@ export class DockerRuntimeController {
   private get runtimeRoot() { return path.dirname(this.layout.runtime.apache) }
   private get composeFile() { return path.join(this.runtimeRoot, 'compose.yml') }
   private get environmentFile() { return path.join(this.runtimeRoot, '.env') }
-  private set(next: Omit<RuntimeSnapshot, 'updatedAt'>) { this.snapshot = { ...next, updatedAt: new Date().toISOString() }; void this.updateWelcome?.(this.snapshot.message); this.listeners.forEach(listener => listener()); return this.snapshot }
+  private set(next: Omit<RuntimeSnapshot, 'updatedAt'>) { const message = this.httpsWarning ? `${next.message} HTTPS is unavailable: ${this.httpsWarning}` : next.message; this.snapshot = { ...next, message, updatedAt: new Date().toISOString() }; void this.updateWelcome?.(this.snapshot.message); this.listeners.forEach(listener => listener()); return this.snapshot }
   private async runExclusive(state: RuntimeState, message: string, task: () => Promise<void>) {
     if (this.operation) throw new Error('A Vhostra service operation is already in progress.')
     this.set({ state, message, services: this.snapshot.services })
@@ -118,6 +122,14 @@ export class DockerRuntimeController {
     await fs.writeFile(path.join(generated, 'runtime-selection.json'), JSON.stringify({ server, phpVersion, generatedAt: new Date().toISOString() }, null, 2), { mode: 0o600 })
   }
   private async ensurePortsAvailable(ports: number[], allowProjectPorts = false) {
+    const conflicts = await this.portConflicts(ports, allowProjectPorts)
+    if (conflicts.length) throw new Error(`Vhostra cannot bind required host ports:\n${conflicts.join('\n')}\nStop or reconfigure the owning application yourself; Vhostra will not stop unrelated processes or containers.`)
+  }
+  private async checkOptionalHttpsPort(allowProjectPorts = false) {
+    const conflicts = await this.portConflicts([443], allowProjectPorts)
+    this.httpsWarning = conflicts.length ? `${conflicts.join('; ')}. Vhostra will continue with HTTP on port 80 and will not alter the owner.` : ''
+  }
+  private async portConflicts(ports: number[], allowProjectPorts: boolean) {
     const conflicts: string[] = []
     for (const port of ports) {
       const occupied = await isPortOccupied(port)
@@ -125,7 +137,7 @@ export class DockerRuntimeController {
       const ownedByVhostra = allowProjectPorts && await this.vhostraOwnsPort(port)
       if (!ownedByVhostra) conflicts.push(await describePort(port))
     }
-    if (conflicts.length) throw new Error(`Vhostra cannot bind required host ports:\n${conflicts.join('\n')}\nStop or reconfigure the owning application yourself; Vhostra will not stop unrelated processes or containers.`)
+    return conflicts
   }
   private async vhostraOwnsPort(port: number) {
     try { return (await this.docker(['ps', '--filter', `label=${managedLabel}`, '--format', '{{.Ports}}'])).split('\n').some(line => line.includes(`:${port}->`)) } catch { return false }
