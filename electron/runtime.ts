@@ -53,7 +53,7 @@ export class DockerRuntimeController {
     await this.compose(['config', '--quiet'])
     this.set({ state: 'starting', message: 'Building and creating the Vhostra runtime container…', services: ['runtime'] })
     // --remove-orphans is limited by this project name and removes obsolete Vhostra service containers after a server/PHP switch.
-    await this.compose(['up', '--detach', '--remove-orphans'])
+    await this.compose(['up', '--detach', '--build', '--remove-orphans'])
     this.set({ state: 'starting', message: 'Configuring secure local phpMyAdmin access…', services: ['runtime'] })
     await this.provisionPhpMyAdmin()
     this.set({ state: 'starting', message: 'Running OpenLiteSpeed, LSPHP, MariaDB, and phpMyAdmin health checks…', services: ['runtime'] })
@@ -75,7 +75,7 @@ export class DockerRuntimeController {
     await this.generate(state)
     await this.compose(['config', '--quiet'])
     this.set({ state: 'starting', message: 'Building and starting replacement runtime container…', services: ['runtime'] })
-    await this.compose(['up', '--detach', '--remove-orphans'])
+    await this.compose(['up', '--detach', '--build', '--remove-orphans'])
     this.set({ state: 'starting', message: 'Configuring secure local phpMyAdmin access…', services: ['runtime'] })
     await this.provisionPhpMyAdmin()
     this.set({ state: 'starting', message: 'Running replacement runtime health checks…', services: ['runtime'] })

@@ -1,0 +1,17 @@
+import { deflateSync, inflateSync } from 'node:zlib'
+import { readFile, writeFile } from 'node:fs/promises'
+
+const [input, output] = process.argv.slice(2)
+if (!input || !output) throw new Error('Usage: node scripts/make-transparent-logo.mjs input.png output.png')
+const source = await readFile(input)
+const signature = source.subarray(0, 8)
+if (!signature.equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new Error('Expected a PNG.')
+let offset = 8; let width = 0; let height = 0; let channels = 0; const idat = []
+while (offset < source.length) { const size = source.readUInt32BE(offset); const type = source.subarray(offset + 4, offset + 8).toString('ascii'); const data = source.subarray(offset + 8, offset + 8 + size); if (type === 'IHDR') { width = data.readUInt32BE(0); height = data.readUInt32BE(4); channels = data[9] === 2 ? 3 : data[9] === 6 ? 4 : 0; if (data[8] !== 8 || !channels || data[12] !== 0) throw new Error('Expected a non-interlaced RGB or RGBA PNG.') } if (type === 'IDAT') idat.push(data); offset += size + 12 }
+const raw = inflateSync(Buffer.concat(idat)); const stride = width * channels; const pixels = Buffer.alloc(width * height * channels); let previous = Buffer.alloc(stride); let read = 0
+for (let row = 0; row < height; row += 1) { const filter = raw[read++]; const line = Buffer.from(raw.subarray(read, read + stride)); read += stride; for (let x = 0; x < stride; x += 1) { const left = x >= channels ? line[x - channels] : 0; const up = previous[x]; const upperLeft = x >= channels ? previous[x - channels] : 0; if (filter === 1) line[x] = (line[x] + left) & 255; else if (filter === 2) line[x] = (line[x] + up) & 255; else if (filter === 3) line[x] = (line[x] + Math.floor((left + up) / 2)) & 255; else if (filter === 4) { const p = left + up - upperLeft; const pa = Math.abs(p - left); const pb = Math.abs(p - up); const pc = Math.abs(p - upperLeft); line[x] = (line[x] + (pa <= pb && pa <= pc ? left : pb <= pc ? up : upperLeft)) & 255 } else if (filter !== 0) throw new Error('Unsupported PNG filter.') } line.copy(pixels, row * stride); previous = line }
+const rgba = Buffer.alloc(height * (width * 4 + 1)); for (let y = 0; y < height; y += 1) { const target = y * (width * 4 + 1); rgba[target] = 0; for (let x = 0; x < width; x += 1) { const from = (y * width + x) * channels; const to = target + 1 + x * 4; const r = pixels[from]; const g = pixels[from + 1]; const b = pixels[from + 2]; rgba[to] = r; rgba[to + 1] = g; rgba[to + 2] = b; rgba[to + 3] = Math.max(r, g, b) <= 24 ? 0 : channels === 4 ? pixels[from + 3] : 255 } }
+const crcTable = Array.from({ length: 256 }, (_, index) => { let value = index; for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1; return value >>> 0 })
+const chunk = (type, data) => { const body = Buffer.concat([Buffer.from(type), data]); let crc = 0xffffffff; for (const byte of body) crc = crcTable[(crc ^ byte) & 255] ^ (crc >>> 8); const result = Buffer.alloc(data.length + 12); result.writeUInt32BE(data.length, 0); Buffer.from(type).copy(result, 4); data.copy(result, 8); result.writeUInt32BE((crc ^ 0xffffffff) >>> 0, data.length + 8); return result }
+const header = Buffer.alloc(13); header.writeUInt32BE(width, 0); header.writeUInt32BE(height, 4); header[8] = 8; header[9] = 6
+await writeFile(output, Buffer.concat([signature, chunk('IHDR', header), chunk('IDAT', deflateSync(rgba)), chunk('IEND', Buffer.alloc(0))]))

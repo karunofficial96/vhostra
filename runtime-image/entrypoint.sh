@@ -25,6 +25,11 @@ mkdir -p /var/log/vhostra /var/lib/mysql /var/www/html
 # same supervised runtime and survives container replacement on the host.
 if [ -L /var/www/html/phpmyadmin ]; then rm /var/www/html/phpmyadmin; fi
 if [ ! -f /var/www/html/phpmyadmin/index.php ]; then cp -a /usr/share/phpmyadmin /var/www/html/phpmyadmin; fi
+# Configuration is Vhostra-owned runtime state, not user content. Render the
+# config-auth secret only into PHP source (never an HTTP response or a client
+# script) and refresh it on every disposable-container start.
+sed "s/__VHOSTRA_PMA_PASSWORD__/${VHOSTRA_PMA_PASSWORD:?}/g" /usr/share/phpmyadmin/config.inc.php > /var/www/html/phpmyadmin/config.inc.php
+chmod 0644 /var/www/html/phpmyadmin/config.inc.php
 if [ ! -d /var/lib/mysql/mysql ]; then
   mariadb-install-db --user=mysql --datadir=/var/lib/mysql
 fi

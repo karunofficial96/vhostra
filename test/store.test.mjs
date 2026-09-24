@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { access, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { access, mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -47,6 +47,6 @@ test('copies offline welcome fonts, logos and service assets into the localhost 
     assert.match(page, /vhostra-logo-dark-[\w-]+\.png/)
     await access(path.join(localhost.documentRoot, 'openlitespeed.svg'))
     await access(path.join(localhost.documentRoot, 'assets', 'roboto-400-BKwBj7lc.ttf'))
-    await access(path.join(localhost.documentRoot, 'assets', 'vhostra-logo-dark-BKgfwvFG.png'))
+    assert.ok((await readdir(path.join(localhost.documentRoot, 'assets'))).some(file => /^vhostra-logo-dark-[\w-]+\.png$/.test(file)))
   } finally { await rm(directory, { recursive: true, force: true }) }
 })
