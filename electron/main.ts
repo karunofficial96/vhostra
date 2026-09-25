@@ -181,6 +181,14 @@ function registerIpc() {
     const result = await dialog.showOpenDialog({ title: 'Preview Vhostra configuration import', properties: ['openFile'], filters: [{ name: 'Vhostra configuration', extensions: ['json'] }] })
     return result.canceled || !result.filePaths[0] ? null : store.previewBundle(result.filePaths[0])
   })
+  ipcMain.handle('vhostra:import-configuration', async () => {
+    const result = await dialog.showOpenDialog({ title: 'Import Vhostra configuration', properties: ['openFile'], filters: [{ name: 'Vhostra configuration', extensions: ['json'] }] })
+    if (result.canceled || !result.filePaths[0]) return null
+    const imported = await store.importBundle(result.filePaths[0])
+    await services.applyConfiguration()
+    const mapping = await safelyEnsureHosts(imported.imported.flatMap(site => [site.hostname, ...site.aliases]))
+    return { ...imported, mapping }
+  })
   ipcMain.handle('vhostra:get-runtime-status', () => services.current())
   ipcMain.handle('vhostra:start-services', () => services.start())
   ipcMain.handle('vhostra:stop-services', () => services.stop())

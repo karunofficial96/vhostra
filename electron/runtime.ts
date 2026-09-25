@@ -156,9 +156,13 @@ export class DockerRuntimeController {
     const state = await this.getState()
     const name = id === 'web' ? 'openlitespeed' : id
     if ((id === 'redis' && !state.settings.optionalServices.redis) || (id === 'memcached' && !state.settings.optionalServices.memcached)) throw new Error(`${id === 'redis' ? 'Redis' : 'Memcached'} is disabled in Vhostra Settings.`)
+    // Check the container before runExclusive changes the public snapshot to a
+    // transitional state. Otherwise every individual action observes its own
+    // “starting” state and is incorrectly rejected.
+    await this.refresh()
+    if (this.snapshot.state !== 'running') throw new Error('Start the Vhostra runtime before controlling an individual service.')
     return this.runExclusive(action === 'stop' ? 'stopping' : 'starting', `${action[0].toUpperCase()}${action.slice(1)}ing ${id === 'web' ? 'the active web server' : id}…`, async () => {
       await this.requireDocker()
-      if (this.snapshot.state !== 'running') throw new Error('Start the Vhostra runtime before controlling an individual service.')
       await this.compose(['exec', '-T', 'runtime', 'supervisorctl', action, name])
       if (id === 'web' && action !== 'stop') await this.healthCheck(state.settings.selectedWebServer)
       if (id === 'mariadb' && action !== 'stop') await this.compose(['exec', '-T', 'runtime', 'mariadb', '-uroot', '-e', 'SELECT 1'])

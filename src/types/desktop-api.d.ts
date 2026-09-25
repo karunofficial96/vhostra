@@ -21,6 +21,7 @@ export interface VhostraDesktopApi {
   readLogTail(relative: string): Promise<{ path: string; text: string; truncated: boolean; size: number }>
   exportConfiguration(request: Omit<ConfigurationExportRequest, 'destinationDirectory'>): Promise<{ path: string } | null>
   previewConfigurationImport(): Promise<ConfigurationImportReport | null>
+  importConfiguration(): Promise<{ imported: Array<{ name: string; hostname: string; aliases: string[] }>; backup: string; message: string; mapping: HostsMappingResult } | null>
   getRuntimeStatus(): Promise<RuntimeSnapshot>
   startServices(): Promise<void>
   stopServices(): Promise<void>

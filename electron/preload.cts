@@ -16,6 +16,7 @@ const api = Object.freeze({
   readLogTail: (relative: string) => ipcRenderer.invoke('vhostra:read-log-tail', relative),
   exportConfiguration: (request: unknown) => ipcRenderer.invoke('vhostra:export-configuration', request),
   previewConfigurationImport: () => ipcRenderer.invoke('vhostra:preview-configuration-import'),
+  importConfiguration: () => ipcRenderer.invoke('vhostra:import-configuration'),
   getRuntimeStatus: () => ipcRenderer.invoke('vhostra:get-runtime-status'),
   startServices: () => ipcRenderer.invoke('vhostra:start-services'),
   stopServices: () => ipcRenderer.invoke('vhostra:stop-services'),

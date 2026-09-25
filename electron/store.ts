@@ -121,6 +121,29 @@ export class VhostraStore {
     if (!manifest || manifest.format !== 'vhostra/config-bundle' || manifest.schemaVersion !== 1 || !Array.isArray(manifest.entries)) throw new Error('This file is not a supported Vhostra configuration bundle.')
     return { manifest, source, warnings: ['Preview only: no configuration has been changed. Applying an import will require a local snapshot.'] }
   }
+  /** Imports portable site definitions only. Website files, database data, and
+   * secrets are intentionally outside configuration bundles and are never copied. */
+  async importBundle(source: string) {
+    const raw = await fs.readFile(source, 'utf8')
+    const candidate = JSON.parse(raw) as { manifest?: { format?: unknown; schemaVersion?: unknown }; configuration?: Partial<AppState> }
+    if (candidate.manifest?.format !== 'vhostra/config-bundle' || candidate.manifest.schemaVersion !== 1 || !candidate.configuration || !Array.isArray(candidate.configuration.sites) || !Array.isArray(candidate.configuration.virtualHosts)) throw new Error('This file is not a supported Vhostra configuration bundle.')
+    await this.initialize()
+    const snapshot = path.join(this.layout.backups, `before-import-${new Date().toISOString().replace(/[:.]/g, '-')}.json`)
+    await this.exportBundle(snapshot)
+    const imported: Array<{ name: string; hostname: string; aliases: string[] }> = []
+    const existing = await this.getState()
+    const knownHostnames = new Set(existing.virtualHosts.map(host => host.hostname.toLowerCase()))
+    for (const site of candidate.configuration.sites) {
+      if (!site || typeof site !== 'object' || (site as Site).builtIn === 'localhost') continue
+      const incoming = site as Site
+      const host = candidate.configuration.virtualHosts.find(item => item && typeof item === 'object' && (item as VirtualHost).id === incoming.vhostId) as VirtualHost | undefined
+      if (!host || knownHostnames.has(host.hostname?.toLowerCase())) continue
+      await this.addSite({ name: incoming.name, documentRoot: incoming.documentRoot, url: incoming.url, framework: incoming.framework, aliases: host.aliases })
+      knownHostnames.add(host.hostname.toLowerCase())
+      imported.push({ name: incoming.name, hostname: host.hostname, aliases: host.aliases })
+    }
+    return { imported, backup: snapshot, message: imported.length ? `Imported ${imported.length} portable site definition${imported.length === 1 ? '' : 's'}.` : 'No new portable site definitions were found in this bundle.' }
+  }
   private async initializeOnce() {
     await Promise.all(Object.values(this.directories()).map(directory => fs.mkdir(directory, { recursive: true })))
     await this.readSettings()
