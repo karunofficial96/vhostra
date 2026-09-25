@@ -121,6 +121,20 @@ export class DockerRuntimeController {
     const output = await this.compose(['exec', '-T', 'runtime', 'mariadb', '-uroot', '-N', '-e', 'SHOW DATABASES'])
     return output.split('\n').map(name => name.trim()).filter(name => name && !['information_schema', 'mysql', 'performance_schema', 'sys'].includes(name))
   }
+  async listPhpExtensions() {
+    const state = await this.getState()
+    const selected = new Set(state.settings.php.extensions)
+    const catalog = [
+      { id: 'opcache', label: 'Zend OPcache', required: false, enabled: state.settings.php.opcacheEnabled },
+      { id: 'mysqli', label: 'MySQLi', required: true, enabled: true },
+      { id: 'pdo_mysql', label: 'PDO MySQL', required: true, enabled: true },
+      { id: 'redis', label: 'Redis', required: false, enabled: selected.has('redis') || state.settings.optionalServices.redis },
+      { id: 'memcached', label: 'Memcached', required: false, enabled: selected.has('memcached') || state.settings.optionalServices.memcached },
+    ]
+    if (this.snapshot.state !== 'running') return catalog.map(extension => ({ ...extension, status: extension.enabled ? 'Requires runtime start' : 'Disabled' }))
+    const health = await requestLocalHttp(state.settings.ports.http, '/vhostra-extensions.php')
+    return catalog.map(extension => ({ ...extension, status: health.includes(`${extension.id}:1`) ? 'Enabled' : extension.enabled ? 'Unavailable or failed' : 'Disabled' }))
+  }
   async createDatabase(input: { name: string; charset: string; username: string; password: string }) {
     const name = sqlIdentifier(input.name, 'database name'); const username = sqlIdentifier(input.username, 'username')
     if (!['utf8mb4', 'utf8', 'latin1'].includes(input.charset)) throw new Error('Unsupported MariaDB character set.')
@@ -190,7 +204,10 @@ export class DockerRuntimeController {
     await fs.mkdir(this.runtimeRoot, { recursive: true })
     await Promise.all([this.layout.runtime.apache, this.layout.runtime.nginx, this.layout.runtime.openLiteSpeed, this.layout.runtime.php, this.layout.runtime.mariaDb, this.layout.runtime.phpMyAdmin, this.layout.runtime.redis, this.layout.runtime.memcached, this.layout.logs].map(directory => fs.mkdir(directory, { recursive: true })))
     await this.ensureEnvironment()
-    await fs.writeFile(path.join(this.layout.sites, 'localhost', 'public', 'vhostra-health.php'), '<?php echo "vhostra-lsphp:" . PHP_VERSION;\n', { mode: 0o600 })
+    await Promise.all([
+      fs.writeFile(path.join(this.layout.sites, 'localhost', 'public', 'vhostra-health.php'), '<?php echo "vhostra-lsphp:" . PHP_VERSION;\n', { mode: 0o600 }),
+      fs.writeFile(path.join(this.layout.sites, 'localhost', 'public', 'vhostra-extensions.php'), '<?php foreach (["mysqli", "pdo_mysql", "redis", "memcached"] as $extension) { echo $extension . ":" . (extension_loaded($extension) ? "1" : "0") . "\\n"; } echo "opcache:" . ((function_exists("opcache_get_status") && ini_get("opcache.enable")) ? "1" : "0") . "\\n";\n', { mode: 0o600 }),
+    ])
     const mounts = state.virtualHosts.map(host => ({ host, container: `/var/www/vhostra/${host.id}` }))
     await Promise.all([
       fs.writeFile(path.join(this.layout.runtime.php, 'vhostra.ini'), 'expose_php=Off\nlog_errors=On\nerror_log=/var/log/php/error.log\n', { mode: 0o600 }),
@@ -269,6 +286,12 @@ export class DockerRuntimeController {
     const php = await ready(ports.http, '/vhostra-health.php')
     if (!php.includes(`vhostra-lsphp:${(await this.getState()).settings.selectedPhpVersion}`)) throw new Error('OpenLiteSpeed did not invoke the selected LSPHP runtime.')
     await this.compose(['exec', '-T', 'runtime', 'mariadb', '-uroot', '-e', 'SELECT 1'])
+    const state = await this.getState()
+    const extensionHealth = await ready(ports.http, '/vhostra-extensions.php')
+    const expectExtension = (extension: string, enabled: boolean) => { if (enabled && !extensionHealth.includes(`${extension}:1`)) throw new Error(`The required PHP extension “${extension}” is not enabled in the selected LSPHP runtime.`) }
+    expectExtension('mysqli', true); expectExtension('pdo_mysql', true); expectExtension('opcache', state.settings.php.opcacheEnabled); expectExtension('redis', state.settings.optionalServices.redis || state.settings.php.extensions.includes('redis')); expectExtension('memcached', state.settings.optionalServices.memcached || state.settings.php.extensions.includes('memcached'))
+    if (state.settings.optionalServices.redis) await this.compose(['exec', '-T', 'runtime', 'redis-cli', 'PING'])
+    if (state.settings.optionalServices.memcached) await this.compose(['exec', '-T', 'runtime', '/bin/sh', '-lc', "printf 'version\\r\\n' | nc -w 3 127.0.0.1 11211 | grep -q '^VERSION'"])
     if (!await ready(ports.phpMyAdmin, '/phpmyadmin/index.php')) throw new Error('phpMyAdmin did not pass its shared-runtime health check.')
   }
   private async docker(args: string[]) { return execute('docker', args) }
@@ -346,6 +369,8 @@ services:
       VHOSTRA_LSPHP_VERSION: ${q(php)}
       VHOSTRA_REDIS: ${q(state.settings.optionalServices.redis)}
       VHOSTRA_MEMCACHED: ${q(state.settings.optionalServices.memcached)}
+      VHOSTRA_PHP_EXTENSIONS: ${q(state.settings.php.extensions.join(','))}
+      VHOSTRA_OPCACHE: ${q(state.settings.php.opcacheEnabled)}
       VHOSTRA_PMA_BLOWFISH_SECRET: \${VHOSTRA_PMA_BLOWFISH_SECRET}
       VHOSTRA_PMA_PASSWORD: \${VHOSTRA_PMA_PASSWORD}
     volumes:

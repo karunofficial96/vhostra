@@ -19,6 +19,8 @@ html[data-theme="dark"] .border-\[\#E5E5E5\], html[data-theme="dark"] .border-b,
 .theme-toggle:hover, .theme-toggle:focus-visible { background: var(--v-surface); color: var(--v-text); outline: 2px solid var(--v-link); outline-offset: 2px; }
 .theme-toggle svg { fill: none; height: 19px; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; width: 19px; }
 .service-logo { display: inline-block; height: 18px; margin-right: 6px; object-fit: contain; vertical-align: -4px; width: 18px; }
+.service-logo--wide { width: 56px; }
+html[data-theme="dark"] .service-logo--wide { background: #f6f6f6; border: 1px solid #d5d5d5; border-radius: 4px; padding: 2px 4px; }
 
 .site-list { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
 .site-link { display: block; border-bottom: 1px solid var(--v-border); color: var(--v-text); font-weight: 500; padding: 14px 0; text-decoration: none; }

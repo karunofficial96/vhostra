@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { VhostraStore } from '../dist-electron/store.js'
+import { parseHosts } from '../dist-electron/hosts.js'
 
 test('persists site definitions and preserves document-root files on removal', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'vhostra-store-'))
@@ -35,6 +36,13 @@ test('only accepts credential-free HTTP(S) URLs for external site opening', () =
   assert.throws(() => VhostraStore.validateUrl('https://user:secret@project.local'))
 })
 
+test('parses hosts entries without treating comments or unrelated aliases as mappings', () => {
+  const entries = parseHosts('# keep this comment\n127.0.0.1 localhost project.test # Vhostra\n192.168.1.8 existing.test\n')
+  assert.deepEqual([...entries.get('project.test')], ['127.0.0.1'])
+  assert.deepEqual([...entries.get('existing.test')], ['192.168.1.8'])
+  assert.equal(entries.has('vhostra'), false)
+})
+
 test('copies offline welcome fonts, logos and service assets into the localhost document root', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'vhostra-welcome-'))
   try {
@@ -43,9 +51,9 @@ test('copies offline welcome fonts, logos and service assets into the localhost 
     const localhost = state.sites.find(site => site.builtIn === 'localhost')
     assert.ok(localhost)
     const page = await readFile(path.join(localhost.documentRoot, 'index.html'), 'utf8')
-    assert.match(page, /openlitespeed\.svg/)
+    assert.match(page, /openlitespeed\.png/)
     assert.match(page, /vhostra-logo-dark-[\w-]+\.png/)
-    await access(path.join(localhost.documentRoot, 'openlitespeed.svg'))
+    await access(path.join(localhost.documentRoot, 'openlitespeed.png'))
     await access(path.join(localhost.documentRoot, 'assets', 'roboto-400-BKwBj7lc.ttf'))
     assert.ok((await readdir(path.join(localhost.documentRoot, 'assets'))).some(file => /^vhostra-logo-dark-[\w-]+\.png$/.test(file)))
   } finally { await rm(directory, { recursive: true, force: true }) }

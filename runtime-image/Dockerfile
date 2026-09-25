@@ -12,8 +12,9 @@ RUN apt-get update \
  && curl -fsSL https://repo.litespeed.sh | bash \
  && apt-get update \
  && apt-cache show "lsphp${LSPHP_VERSION}" >/dev/null \
+ && for package in redis memcached; do apt-cache show "lsphp${LSPHP_VERSION}-${package}" >/dev/null || { echo "Vhostra build error: LSPHP ${LSPHP_VERSION} does not provide ${package}" >&2; exit 65; }; done \
  && apt-get install -y --no-install-recommends \
-      "lsphp${LSPHP_VERSION}" "lsphp${LSPHP_VERSION}-mysql" \
+      "lsphp${LSPHP_VERSION}" "lsphp${LSPHP_VERSION}-mysql" "lsphp${LSPHP_VERSION}-redis" "lsphp${LSPHP_VERSION}-memcached" \
  && test -x "/usr/local/lsws/lsphp${LSPHP_VERSION}/bin/lsphp" \
  && curl -fsSL --retry 3 -o /tmp/phpmyadmin.tar.gz https://files.phpmyadmin.net/phpMyAdmin/5.2.2/phpMyAdmin-5.2.2-all-languages.tar.gz \
  && mkdir -p /usr/share/phpmyadmin \

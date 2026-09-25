@@ -12,7 +12,27 @@ ln -sfn "$LSPHP_BIN" /usr/local/lsws/fcgi-bin/lsphp8
 # Keep PHP's implementation details out of HTTP responses for every selected
 # LSPHP package. The version selector is always two digits (81 through 85).
 PHP_VERSION="${VHOSTRA_LSPHP_VERSION%?}.${VHOSTRA_LSPHP_VERSION#?}"
-printf '\nexpose_php=Off\n' >> "/usr/local/lsws/lsphp${VHOSTRA_LSPHP_VERSION}/etc/php/${PHP_VERSION}/litespeed/php.ini"
+OPCACHE_ENABLED=1
+[ "${VHOSTRA_OPCACHE:-true}" = true ] || OPCACHE_ENABLED=0
+printf '\nexpose_php=Off\nopcache.enable=%s\n' "$OPCACHE_ENABLED" >> "/usr/local/lsws/lsphp${VHOSTRA_LSPHP_VERSION}/etc/php/${PHP_VERSION}/litespeed/php.ini"
+
+# Packages are installed once in the selected disposable image. LiteSpeed scans
+# its package-provided module files, so toggle only those exact files instead
+# of loading an extension twice through a generic PHP mechanism.
+configure_extension() {
+  extension="$1"; enabled="$2"
+  source="$(find "/usr/local/lsws/lsphp${VHOSTRA_LSPHP_VERSION}" -path "*/mods-available/*${extension}.ini" -type f -print -quit)"
+  [ -n "$source" ] || { [ "$enabled" = true ] && { echo "Vhostra build error: selected LSPHP extension ${extension} is unavailable" >&2; exit 65; }; return 0; }
+  if [ "$enabled" = true ]; then sed -Ei "s/^;[[:space:]]*(extension=${extension}\.so)/\1/" "$source"
+  else sed -Ei "s/^[[:space:]]*(extension=${extension}\.so)/;\1/" "$source"; fi
+}
+for extension in redis memcached; do
+  enabled=false
+  case ",${VHOSTRA_PHP_EXTENSIONS:-}," in *",${extension},"*) enabled=true;; esac
+  [ "$extension" = redis ] && [ "${VHOSTRA_REDIS:-false}" = true ] && enabled=true
+  [ "$extension" = memcached ] && [ "${VHOSTRA_MEMCACHED:-false}" = true ] && enabled=true
+  configure_extension "$extension" "$enabled"
+done
 
 # The built-in vhost is the same one used by the mounted Vhostra localhost
 # page. Keep WordPress-style `.htaccess` permalinks available by default.

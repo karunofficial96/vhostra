@@ -4,11 +4,13 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { VhostraStore } from './store.js'
 import { DockerRuntimeController, type RuntimeState } from './runtime.js'
+import { HostsFileManager } from './hosts.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 let store: VhostraStore
 let services: DockerRuntimeController
+let hosts: HostsFileManager
 let primaryWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
@@ -61,6 +63,7 @@ const createWindow = () => {
 app.whenReady().then(() => {
   store = new VhostraStore(app.getPath('userData'), path.join(__dirname, '../dist-welcome'))
   services = new DockerRuntimeController(store.layout, () => store.getState(), message => store.updateLocalhostWelcome(message))
+  hosts = new HostsFileManager(path.join(store.layout.root, 'temporary'))
   services.subscribe(() => { primaryWindow?.webContents.send('vhostra:runtime-status', services.current()) })
   registerIpc()
   registerScreenshotProtocol()
@@ -74,9 +77,10 @@ app.on('before-quit', () => { isQuitting = true })
 function registerIpc() {
   ipcMain.handle('vhostra:get-state', () => store.getState())
   ipcMain.handle('vhostra:save-settings', async (_event, settings) => { const result = await store.saveSettings(settings); await services.applyConfiguration(); return result })
-  ipcMain.handle('vhostra:add-site', async (_event, input) => { const result = await store.addSite(input); await services.applyConfiguration(); return result })
-  ipcMain.handle('vhostra:update-site', async (_event, input) => { const result = await store.updateSite(input); await services.applyConfiguration(); return result })
-  ipcMain.handle('vhostra:remove-site', async (_event, id: string) => { const result = await store.removeSite(id); await services.applyConfiguration(); return result })
+  ipcMain.handle('vhostra:add-site', async (_event, input) => { const result = await store.addSite(input); await services.applyConfiguration(); const mapping = await hosts.ensureLocalhostMappings([new URL(input.url).hostname, ...(input.aliases ?? [])]); return { state: result, mapping } })
+  ipcMain.handle('vhostra:update-site', async (_event, input) => { const result = await store.updateSite(input); await services.applyConfiguration(); const mapping = await hosts.ensureLocalhostMappings([new URL(input.url).hostname, ...(input.aliases ?? [])]); return { state: result, mapping } })
+  ipcMain.handle('vhostra:remove-site', async (_event, id: string) => { const before = await store.getState(); const site = before.sites.find(item => item.id === id); const host = before.virtualHosts.find(item => item.id === site?.vhostId); const result = await store.removeSite(id); if (host) await hosts.removeVhostraMappings([host.hostname, ...host.aliases]); await services.applyConfiguration(); return result })
+  ipcMain.handle('vhostra:sync-hosts', async (_event, id: string) => { const state = await store.getState(); const host = state.virtualHosts.find(item => item.id === id); if (!host) throw new Error('Virtual-host definition not found.'); return hosts.ensureLocalhostMappings([host.hostname, ...host.aliases]) })
   ipcMain.handle('vhostra:set-vhost-rewrite', async (_event, id: string, enabled: boolean) => { const result = await store.setVirtualHostRewrite(id, enabled); await services.setOpenLiteSpeedRewrite(enabled); return result })
   ipcMain.handle('vhostra:choose-document-root', async event => {
     const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender)!, { properties: ['openDirectory', 'createDirectory'] })
@@ -109,6 +113,7 @@ function registerIpc() {
   ipcMain.handle('vhostra:find-available-port', (_event, port: number) => services.findAvailablePort(port))
   ipcMain.handle('vhostra:reload-web-server', () => services.reloadWebServer())
   ipcMain.handle('vhostra:list-databases', () => services.listDatabases())
+  ipcMain.handle('vhostra:list-php-extensions', () => services.listPhpExtensions())
   ipcMain.handle('vhostra:create-database', (_event, input) => services.createDatabase(input))
   ipcMain.handle('vhostra:open-phpmyadmin', async (_event, database?: string) => { await openExternal(await services.phpMyAdminUrl(database)) })
   ipcMain.handle('vhostra:import-database', async (_event, database: string) => {
