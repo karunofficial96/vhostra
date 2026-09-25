@@ -10,6 +10,7 @@
     "appId": "com.vhostra.app",
     "productName": "Vhostra",
     "directories": { "buildResources": "build" },
+    "extraResources": [{ "from": "build/trayIcon.png", "to": "trayIcon.png" }],
     "mac": { "icon": "build/icon.icns" },
     "win": { "icon": "build/icon.ico" },
     "linux": { "icon": "build/icons" }

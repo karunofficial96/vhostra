@@ -219,6 +219,8 @@ vhostra service list
 vhostra service web restart
 vhostra service mariadb restart
 vhostra service redis stop
+vhostra service redis enable
+vhostra service memcached disable
 
 vhostra php extensions list
 vhostra php extension enable imagick

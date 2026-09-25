@@ -9,6 +9,15 @@ test -x "$LSPHP_BIN" || { echo "Vhostra build error: requested LSPHP runtime is 
 # bundled runtime, so replace it atomically before OpenLiteSpeed starts.
 ln -sfn "$LSPHP_BIN" /usr/local/lsws/fcgi-bin/lsphp8
 
+# Apply the generated, server-neutral Vhostra virtual hosts to the stock OLS
+# configuration at container start. The pristine image config is restored first
+# so a restart cannot accumulate duplicate listener mappings or vhost blocks.
+if [ -s /etc/vhostra/openlitespeed/vhostra-vhosts.conf ]; then
+  cp /usr/local/lsws/conf/httpd_config.vhostra-base.conf /usr/local/lsws/conf/httpd_config.conf
+  sed -i '/^    secure[[:space:]]\+0/r /etc/vhostra/openlitespeed/vhostra-maps.conf' /usr/local/lsws/conf/httpd_config.conf
+  cat /etc/vhostra/openlitespeed/vhostra-vhosts.conf >> /usr/local/lsws/conf/httpd_config.conf
+fi
+
 # Keep PHP's implementation details out of HTTP responses for every selected
 # LSPHP package. The version selector is always two digits (81 through 85).
 PHP_VERSION="${VHOSTRA_LSPHP_VERSION%?}.${VHOSTRA_LSPHP_VERSION#?}"
@@ -23,14 +32,23 @@ configure_extension() {
   extension="$1"; enabled="$2"
   source="$(find "/usr/local/lsws/lsphp${VHOSTRA_LSPHP_VERSION}" -path "*/mods-available/*${extension}.ini" -type f -print -quit)"
   [ -n "$source" ] || { [ "$enabled" = true ] && { echo "Vhostra build error: selected LSPHP extension ${extension} is unavailable" >&2; exit 65; }; return 0; }
-  if [ "$enabled" = true ]; then sed -Ei "s/^;[[:space:]]*(extension=${extension}\.so)/\1/" "$source"
-  else sed -Ei "s/^[[:space:]]*(extension=${extension}\.so)/;\1/" "$source"; fi
+  ini="/usr/local/lsws/lsphp${VHOSTRA_LSPHP_VERSION}/etc/php/${PHP_VERSION}/litespeed/php.ini"
+  sed -i "/; Vhostra extension ${extension}$/d" "$ini"
+  if [ "$enabled" = true ]; then
+    grep -E '^[[:space:]]*extension[[:space:]]*=' "$source" | head -n 1 | sed 's/[[:space:]]*$//' | sed "s/$/ ; Vhostra extension ${extension}/" >> "$ini"
+  fi
 }
-for extension in redis memcached; do
+# Apply the persisted selection to every optional package included by the image,
+# not just the Redis/Memcached dependency extensions. Disabled selections are
+# installed for portability but deliberately left unloaded.
+extensions="${VHOSTRA_PHP_EXTENSIONS:-},${VHOSTRA_PHP_DISABLED_EXTENSIONS:-},redis,memcached"
+for extension in $(printf '%s' "$extensions" | tr ',' '\n' | sort -u); do
+  [ -n "$extension" ] || continue
   enabled=false
   case ",${VHOSTRA_PHP_EXTENSIONS:-}," in *",${extension},"*) enabled=true;; esac
   [ "$extension" = redis ] && [ "${VHOSTRA_REDIS:-false}" = true ] && enabled=true
   [ "$extension" = memcached ] && [ "${VHOSTRA_MEMCACHED:-false}" = true ] && enabled=true
+  case ",${VHOSTRA_PHP_DISABLED_EXTENSIONS:-}," in *",${extension},"*) enabled=false;; esac
   configure_extension "$extension" "$enabled"
 done
 

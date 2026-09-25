@@ -42,6 +42,14 @@ export class HostsFileManager {
     return { installed: missing, alreadyMapped, conflicts: [], message: `Added Vhostra local mapping${missing.length === 1 ? '' : 's'} for ${missing.join(', ')}.` }
   }
 
+  async mappingStatus(hostnames: string[]) {
+    const entries = parseHosts(await fs.readFile(this.hostsPath, 'utf8'))
+    return hostnames.map(hostname => {
+      const addresses = entries.get(hostname.toLowerCase()) ?? new Set<string>()
+      return { hostname, state: addresses.has('127.0.0.1') ? 'mapped' as const : addresses.size ? 'conflict' as const : 'required' as const, address: addresses.size ? [...addresses][0] : undefined }
+    })
+  }
+
   /** Removes only lines that Vhostra itself marked; unrelated hosts entries stay intact. */
   async removeVhostraMappings(hostnames: string[]) {
     const requested = new Set(hostnames.map(value => value.toLowerCase()))

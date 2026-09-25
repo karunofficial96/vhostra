@@ -21,13 +21,37 @@ const applicationIcon = process.platform === 'darwin'
     ? path.join(__dirname, '../build/icon.ico')
     : path.join(__dirname, '../build/icons/512x512.png')
 const preloadPath = path.join(__dirname, 'preload.cjs')
-const trayIcon = path.join(__dirname, '../build/icons/32x32.png')
+// Tray artwork is separate from the dock icon so its glyph has transparent
+// native-menu padding instead of a baked rectangular app-icon background.
+const trayIcon = app.isPackaged
+  ? path.join(process.resourcesPath, 'trayIcon.png')
+  : path.join(__dirname, '../build/trayIcon.png')
 
 function createRuntimeController() {
   services?.dispose()
   services = new DockerRuntimeController(store.layout, () => store.getState(), message => store.updateLocalhostWelcome(message))
   hosts = new HostsFileManager(path.join(store.layout.root, 'temporary'))
   services.subscribe(() => { primaryWindow?.webContents.send('vhostra:runtime-status', services.current()); updateTrayMenu() })
+}
+
+// A protected hosts-file write is intentionally non-transactional with site
+// creation: declining elevation must not erase a valid local site definition.
+// The renderer receives an actionable mapping result and can offer Repair.
+async function safelyEnsureHosts(hostnames: string[]) {
+  try { return await hosts.ensureLocalhostMappings(hostnames) }
+  catch (error) {
+    return {
+      installed: [], alreadyMapped: [], conflicts: [],
+      message: `The virtual host was saved, but its local hosts mapping still requires attention. ${error instanceof Error ? error.message : 'Administrator permission was cancelled or unavailable.'}`,
+    }
+  }
+}
+
+async function setOptionalService(id: 'redis' | 'memcached', enabled: boolean) {
+  const state = await store.getState()
+  await store.saveSettings({ ...state.settings, optionalServices: { ...state.settings.optionalServices, [id]: enabled } })
+  await services.applyConfiguration()
+  await services.refresh()
 }
 
 
@@ -88,10 +112,24 @@ app.on('before-quit', () => { isQuitting = true; services?.dispose() })
 function registerIpc() {
   ipcMain.handle('vhostra:get-state', () => store.getState())
   ipcMain.handle('vhostra:save-settings', async (_event, settings) => { const result = await store.saveSettings(settings); await configureLaunchAtLogin(result.startup.launchAtLogin); await services.applyConfiguration(); return result })
-  ipcMain.handle('vhostra:add-site', async (_event, input) => { const result = await store.addSite(input); await services.applyConfiguration(); const mapping = await hosts.ensureLocalhostMappings([new URL(input.url).hostname, ...(input.aliases ?? [])]); return { state: result, mapping } })
-  ipcMain.handle('vhostra:update-site', async (_event, input) => { const result = await store.updateSite(input); await services.applyConfiguration(); const mapping = await hosts.ensureLocalhostMappings([new URL(input.url).hostname, ...(input.aliases ?? [])]); return { state: result, mapping } })
+  ipcMain.handle('vhostra:add-site', async (_event, input) => {
+    const result = await store.addSite(input); await services.applyConfiguration()
+    const mapping = await safelyEnsureHosts([new URL(input.url).hostname, ...(input.aliases ?? [])])
+    return { state: result, mapping }
+  })
+  ipcMain.handle('vhostra:update-site', async (_event, input) => {
+    const before = await store.getState(); const previous = before.sites.find(site => site.id === input.id); const previousHost = before.virtualHosts.find(host => host.id === previous?.vhostId)
+    const result = await store.updateSite(input); await services.applyConfiguration()
+    const names = [new URL(input.url).hostname, ...(input.aliases ?? [])]
+    if (previousHost) {
+      const removed = [previousHost.hostname, ...previousHost.aliases].filter(name => !names.map(value => value.toLowerCase()).includes(name.toLowerCase()))
+      if (removed.length) await hosts.removeVhostraMappings(removed)
+    }
+    const mapping = await safelyEnsureHosts(names); return { state: result, mapping }
+  })
   ipcMain.handle('vhostra:remove-site', async (_event, id: string) => { const before = await store.getState(); const site = before.sites.find(item => item.id === id); const host = before.virtualHosts.find(item => item.id === site?.vhostId); const result = await store.removeSite(id); if (host) await hosts.removeVhostraMappings([host.hostname, ...host.aliases]); await services.applyConfiguration(); return result })
   ipcMain.handle('vhostra:sync-hosts', async (_event, id: string) => { const state = await store.getState(); const host = state.virtualHosts.find(item => item.id === id); if (!host) throw new Error('Virtual-host definition not found.'); return hosts.ensureLocalhostMappings([host.hostname, ...host.aliases]) })
+  ipcMain.handle('vhostra:hosts-status', async (_event, id: string) => { const state = await store.getState(); const host = state.virtualHosts.find(item => item.id === id); if (!host) throw new Error('Virtual-host definition not found.'); return hosts.mappingStatus([host.hostname, ...host.aliases]) })
   ipcMain.handle('vhostra:get-app-info', () => ({ name: 'Vhostra', version: app.getVersion() }))
   ipcMain.handle('vhostra:check-for-updates', () => checkForUpdates())
   ipcMain.handle('vhostra:set-vhost-rewrite', async (_event, id: string, enabled: boolean) => { const result = await store.setVirtualHostRewrite(id, enabled); await services.setOpenLiteSpeedRewrite(enabled); return result })
@@ -107,11 +145,20 @@ function registerIpc() {
     if (typeof directory !== 'string' || !path.isAbsolute(directory)) throw new Error('Choose an absolute local configuration destination.')
     // Coordinate Vhostra's own writer before copying. This stops only the
     // Vhostra-labeled runtime; host project files and unrelated Docker resources remain untouched.
-    if (services.current().state === 'running') await services.stop()
-    const result = await store.migrateConfiguration(directory)
-    createRuntimeController()
-    await services.refresh()
-    return result
+    const wasRunning = services.current().state === 'running'
+    if (wasRunning) await services.stop()
+    try {
+      const result = await store.migrateConfiguration(directory)
+      createRuntimeController()
+      await services.refresh()
+      if (wasRunning) await services.start()
+      return { ...result, message: wasRunning ? `${result.message} The Vhostra runtime was restored from the verified new location.` : result.message }
+    } catch (error) {
+      // A failed copy never changes the pointer. Restore the already-existing
+      // Vhostra runtime if this operation had stopped it before the attempt.
+      if (wasRunning) await services.start().catch(restartError => console.error('[Vhostra] Could not restore runtime after configuration migration failure:', restartError))
+      throw error
+    }
   })
   ipcMain.handle('vhostra:open-site', async (_event, value: string) => {
     await openExternal(value)
@@ -142,11 +189,35 @@ function registerIpc() {
   ipcMain.handle('vhostra:check-port', (_event, port: number) => services.checkPort(port))
   ipcMain.handle('vhostra:find-available-port', (_event, port: number) => services.findAvailablePort(port))
   ipcMain.handle('vhostra:reload-web-server', () => services.reloadWebServer())
+  ipcMain.handle('vhostra:set-optional-service', async (_event, id: 'redis' | 'memcached', enabled: boolean) => {
+    if (id !== 'redis' && id !== 'memcached') throw new Error('Only optional Vhostra services can be enabled or disabled.')
+    await setOptionalService(id, Boolean(enabled))
+    return services.listManagedServices()
+  })
   ipcMain.handle('vhostra:list-managed-services', () => services.listManagedServices())
   ipcMain.handle('vhostra:control-managed-service', (_event, id: 'web' | 'mariadb' | 'redis' | 'memcached', action: 'start' | 'stop' | 'restart') => services.controlManagedService(id, action))
   ipcMain.handle('vhostra:list-databases', () => services.listDatabases())
   ipcMain.handle('vhostra:list-php-extensions', () => services.listPhpExtensions())
+  ipcMain.handle('vhostra:manage-php-extension', async (_event, id: string, action: 'install' | 'enable' | 'disable' | 'remove') => {
+    const catalog = await services.managePhpExtension(id, action)
+    const state = await store.getState()
+    // Persist only optional user-directed selections. Runtime-managed add-on
+    // dependencies and protected modules never become ordinary preferences.
+    const extensions = action === 'install' || action === 'enable'
+      ? [...new Set([...state.settings.php.extensions, id])]
+      : state.settings.php.extensions.filter(value => value !== id)
+    const disabledExtensions = action === 'disable'
+      ? [...new Set([...state.settings.php.disabledExtensions, id])]
+      : state.settings.php.disabledExtensions.filter(value => value !== id)
+    await store.saveSettings({ ...state.settings, php: { ...state.settings.php, extensions, disabledExtensions } })
+    return catalog
+  })
   ipcMain.handle('vhostra:get-cwebp-status', () => services.getCwebpStatus())
+  ipcMain.handle('vhostra:configure-cwebp', async (_event, enabled: boolean) => {
+    const result = await services.configureCwebp(Boolean(enabled))
+    const state = await store.getState(); await store.saveSettings({ ...state.settings, php: { ...state.settings.php, cwebpEnabled: Boolean(enabled) } })
+    return result
+  })
   ipcMain.handle('vhostra:create-database', (_event, input) => services.createDatabase(input))
   ipcMain.handle('vhostra:open-phpmyadmin', async (_event, database?: string) => { await openExternal(await services.phpMyAdminUrl(database)) })
   ipcMain.handle('vhostra:import-database', async (_event, database: string) => {
@@ -204,7 +275,15 @@ async function requestShutdown(mode: 'keep-services' | 'stop-services' | 'minimi
 }
 
 function createTray() {
-  const image = nativeImage.createFromPath(trayIcon)
+  // Menu bars render native image pixels directly. Keep the padded source for
+  // HiDPI clarity, then use a compact logical size so Vhostra is a small mark
+  // rather than a dock icon squeezed into the status area.
+  const image = nativeImage.createFromPath(trayIcon).resize({ width: process.platform === 'darwin' ? 20 : 22, height: process.platform === 'darwin' ? 20 : 22 })
+  if (image.isEmpty()) console.error(`[Vhostra] Tray artwork could not be loaded: ${trayIcon}`)
+  // Do not mark this colour Vhostra artwork as a macOS template image. Template
+  // images are monochromatically tinted by the menu bar, which would erase the
+  // branded red tray mark and make it appear oversized/white.
+  image.setTemplateImage(false)
   tray = new Tray(image)
   tray.setToolTip('Vhostra')
   tray.on('click', () => { void openApplicationWindow() })
@@ -242,7 +321,8 @@ function updateTrayMenuWithManaged(managed: Awaited<ReturnType<typeof services.l
     { label: 'Start', enabled: controlsAvailable && service.state !== 'running' && service.state !== 'starting', click: control(service.id, 'start') },
     { label: 'Stop', enabled: controlsAvailable && service.state === 'running', click: control(service.id, 'stop') },
     { label: 'Restart', enabled: controlsAvailable && service.state === 'running', click: control(service.id, 'restart') },
-  ] : [{ label: 'Disabled in Vhostra Settings', enabled: false }] }))
+    ...(service.id === 'redis' || service.id === 'memcached' ? [{ type: 'separator' as const }, { label: 'Disable', enabled: controlsAvailable, click: () => { void setOptionalService(service.id as 'redis' | 'memcached', false).catch(error => console.error(`[Vhostra] Disabling ${service.id} failed:`, error)).finally(updateTrayMenu) } }] : []),
+  ] : service.id === 'redis' || service.id === 'memcached' ? [{ label: 'Enable', enabled: controlsAvailable, click: () => { void setOptionalService(service.id as 'redis' | 'memcached', true).catch(error => console.error(`[Vhostra] Enabling ${service.id} failed:`, error)).finally(updateTrayMenu) } }] : [{ label: 'Not available', enabled: false }] }))
   const action = (operation: 'start' | 'stop' | 'restart') => () => { void services[operation]().catch(error => console.error(`[Vhostra] ${operation} services failed:`, error)).finally(updateTrayMenu) }
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Open Vhostra', click: () => { void openApplicationWindow() } },

@@ -29,11 +29,14 @@ export interface VhostraDesktopApi {
   checkPort(port: number): Promise<{ port: number; available: boolean; owner: string | null }>
   findAvailablePort(port: number): Promise<number>
   reloadWebServer(): Promise<void>
+  setOptionalService(id: 'redis' | 'memcached', enabled: boolean): Promise<Array<{ id: 'web' | 'mariadb' | 'redis' | 'memcached'; label: string; enabled: boolean; state: string }>>
   listManagedServices(): Promise<Array<{ id: 'web' | 'mariadb' | 'redis' | 'memcached'; label: string; enabled: boolean; state: 'running' | 'stopped' | 'starting' | 'failed' | 'disabled' | 'unavailable' }>>
   controlManagedService(id: 'web' | 'mariadb' | 'redis' | 'memcached', action: 'start' | 'stop' | 'restart'): Promise<Array<{ id: 'web' | 'mariadb' | 'redis' | 'memcached'; label: string; enabled: boolean; state: string }>>
   listDatabases(): Promise<string[]>
-  listPhpExtensions(): Promise<Array<{ id: string; label: string; required: boolean; enabled: boolean; installed: boolean; status: string }>>
+  listPhpExtensions(): Promise<Array<{ id: string; label: string; required: boolean; enabled: boolean; installed: boolean; category: string; status: string }>>
+  managePhpExtension(id: string, action: 'install' | 'enable' | 'disable' | 'remove'): Promise<Array<{ id: string; label: string; required: boolean; enabled: boolean; installed: boolean; category: string; status: string }>>
   getCwebpStatus(): Promise<{ enabled: boolean; installed: boolean; version?: string }>
+  configureCwebp(enabled: boolean): Promise<{ enabled: boolean; installed: boolean; version?: string }>
   createDatabase(input: { name: string; charset: string; username: string; password: string }): Promise<{ name: string; username: string; host: string; port: number; charset: string }>
   openPhpMyAdmin(database?: string): Promise<void>
   importDatabase(database: string): Promise<{ database: string; message: string } | null>
@@ -41,6 +44,7 @@ export interface VhostraDesktopApi {
   repairDatabase(database: string): Promise<{ database: string; message: string }>
   deleteDatabase(database: string): Promise<{ database: string; message: string }>
   syncHosts(id: string): Promise<HostsMappingResult>
+  hostsStatus(id: string): Promise<Array<{ hostname: string; state: 'mapped' | 'required' | 'conflict'; address?: string }>>
   getAppInfo(): Promise<{ name: string; version: string }>
   checkForUpdates(): Promise<{ state: 'unconfigured' | 'up-to-date' | 'available' | 'error'; currentVersion: string; availableVersion?: string; notes?: string; url?: string; message: string }>
   onRuntimeStatus(listener: (status: RuntimeSnapshot) => void): () => void

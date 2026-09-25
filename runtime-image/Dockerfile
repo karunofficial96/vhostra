@@ -35,6 +35,7 @@ COPY phpmyadmin-config.inc.php /usr/share/phpmyadmin/config.inc.php
 COPY supervisor.conf /etc/supervisor/conf.d/vhostra.conf
 COPY entrypoint.sh /usr/local/bin/vhostra-entrypoint
 RUN chmod 0755 /usr/local/bin/vhostra-entrypoint \
+ && cp /usr/local/lsws/conf/httpd_config.conf /usr/local/lsws/conf/httpd_config.vhostra-base.conf \
  && rm -rf /usr/local/lsws/Example/html \
  && ln -s /var/www/html /usr/local/lsws/Example/html
 

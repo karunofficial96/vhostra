@@ -57,8 +57,10 @@ export class DockerRuntimeController {
     await this.generate(state)
     await this.compose(['config', '--quiet'])
     this.set({ state: 'starting', message: 'Building and creating the Vhostra runtime container…', services: ['runtime'] })
-    // --remove-orphans is limited by this project name and removes obsolete Vhostra service containers after a server/PHP switch.
-    await this.compose(['up', '--detach', '--build', '--remove-orphans'])
+    // Never use Compose orphan removal during startup: candidate/replacement
+    // promotion must retain the prior Vhostra runtime until it has been proven
+    // healthy, and unrelated Compose projects are never in scope.
+    await this.compose(['up', '--detach', '--build'])
     this.set({ state: 'starting', message: 'Configuring secure local phpMyAdmin access…', services: ['runtime'] })
     await this.provisionPhpMyAdmin()
     this.set({ state: 'starting', message: 'Running OpenLiteSpeed, LSPHP, MariaDB, and phpMyAdmin health checks…', services: ['runtime'] })
@@ -80,7 +82,7 @@ export class DockerRuntimeController {
     await this.generate(state)
     await this.compose(['config', '--quiet'])
     this.set({ state: 'starting', message: 'Building and starting replacement runtime container…', services: ['runtime'] })
-    await this.compose(['up', '--detach', '--build', '--remove-orphans'])
+    await this.compose(['up', '--detach', '--build'])
     this.set({ state: 'starting', message: 'Configuring secure local phpMyAdmin access…', services: ['runtime'] })
     await this.provisionPhpMyAdmin()
     this.set({ state: 'starting', message: 'Running replacement runtime health checks…', services: ['runtime'] })
@@ -170,25 +172,66 @@ export class DockerRuntimeController {
   async listPhpExtensions() {
     const state = await this.getState()
     const selected = new Set(state.settings.php.extensions)
-    const core = new Set(['mysqli', 'pdo_mysql', 'pdo', 'mysqlnd', 'json', 'mbstring', 'curl', 'openssl', 'xml', 'zip'])
-    const fixed = [
-      { id: 'opcache', label: 'Zend OPcache', required: false, enabled: state.settings.php.opcacheEnabled, installed: true },
-      ...[...core].map(id => ({ id, label: extensionLabel(id), required: true, enabled: true, installed: true })),
-      { id: 'redis', label: 'Redis', required: false, enabled: selected.has('redis') || state.settings.optionalServices.redis, installed: false },
-      { id: 'memcached', label: 'Memcached', required: false, enabled: selected.has('memcached') || state.settings.optionalServices.memcached, installed: false },
-    ]
-    if (this.snapshot.state !== 'running') return fixed.map(extension => ({ ...extension, status: extension.required ? 'Built-in and required' : extension.enabled ? 'Selected — starts with the next runtime build' : 'Available to install after runtime start' }))
+    const required = new Set(['mysqli', 'pdo_mysql'])
+    const disabled = new Set(state.settings.php.disabledExtensions)
+    const configured = new Set(['opcache', 'redis', 'memcached', ...selected, ...disabled])
+    if (this.snapshot.state !== 'running') return [...configured].sort().map(id => ({ id, label: extensionLabel(id), required: required.has(id), enabled: id === 'opcache' ? state.settings.php.opcacheEnabled : selected.has(id) || (id === 'redis' && state.settings.optionalServices.redis) || (id === 'memcached' && state.settings.optionalServices.memcached), installed: false, category: required.has(id) ? 'required' : 'selected', status: 'Selected — start the runtime to discover its complete package catalog and actual module state.' }))
     const raw = await requestLocalHttp(state.settings.ports.http, '/vhostra-extension-state.php')
     const loaded = new Set(parseHttpJson<string[]>(raw) ?? [])
-    const available = await this.availablePhpPackages().catch(() => [])
-    const all = new Map(fixed.map(extension => [extension.id, extension]))
-    for (const id of available) if (!all.has(id)) all.set(id, { id, label: extensionLabel(id), required: false, enabled: selected.has(id), installed: false })
-    return [...all.values()].sort((a, b) => a.label.localeCompare(b.label)).map(extension => {
-      const actual = extension.id === 'opcache' ? state.settings.php.opcacheEnabled && loaded.has('Zend OPcache') : loaded.has(extension.id)
-      const dependency = (extension.id === 'redis' && state.settings.optionalServices.redis) || (extension.id === 'memcached' && state.settings.optionalServices.memcached)
-      const installed = extension.id === 'opcache' || extension.required || actual || selected.has(extension.id) || dependency
-      const enabled = extension.required || actual || (extension.id === 'opcache' ? state.settings.php.opcacheEnabled : dependency || selected.has(extension.id))
-      return { ...extension, enabled, installed, status: extension.required ? 'Built-in and required' : dependency ? 'Enabled by the matching Vhostra service' : actual ? 'Installed and enabled' : installed ? 'Installed but disabled or unavailable' : 'Available to install' }
+    const available: string[] = await this.availablePhpPackages().catch((): string[] => [])
+    const packageInstalled = new Set(await this.installedPhpPackages().catch(() => []))
+    const all = new Set([...available, ...loaded].map(normalizeExtensionId).filter(Boolean))
+    for (const id of configured) all.add(id)
+    for (const id of required) all.add(id)
+    return [...all].sort((a, b) => extensionLabel(a).localeCompare(extensionLabel(b))).map(id => {
+      const actual = id === 'opcache' ? loaded.has('Zend OPcache') : [...loaded].map(normalizeExtensionId).includes(id)
+      const dependency = (id === 'redis' && state.settings.optionalServices.redis) || (id === 'memcached' && state.settings.optionalServices.memcached)
+      const isRequired = required.has(id)
+      const managedPackage = packageInstalled.has(id)
+      const installed = managedPackage || isRequired || selected.has(id) || disabled.has(id) || dependency
+      const enabled = isRequired || actual || dependency || (id === 'opcache' ? state.settings.php.opcacheEnabled : selected.has(id))
+      const supported = available.includes(id) || actual || isRequired || dependency || id === 'opcache'
+      const category = isRequired ? 'required' : dependency ? 'dependency-managed' : !supported ? 'unsupported' : actual && !managedPackage ? 'core' : actual ? 'installed-enabled' : installed ? 'installed-disabled' : 'available'
+      return { id, label: extensionLabel(id), required: isRequired, enabled, installed, category, status: isRequired ? 'Required by Vhostra' : dependency ? 'Dependency-managed by the matching Vhostra service' : !supported ? 'Unsupported or unavailable for the selected LSPHP version' : actual && !managedPackage ? 'Built-in/Core' : actual ? 'Installed and enabled' : installed ? 'Installed but disabled' : 'Available to install' }
+    })
+  }
+  /** Installs or removes one catalogued optional LSPHP package in the running
+   * Vhostra container, then verifies the package/module state before returning.
+   * Core, required, and dependency-managed entries are deliberately protected. */
+  async managePhpExtension(id: string, action: 'install' | 'enable' | 'disable' | 'remove') {
+    const extension = normalizeExtensionId(id)
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(extension)) throw new Error('Invalid PHP extension identifier.')
+    if (['mysqli', 'pdo-mysql', 'pdo_mysql', 'mysql', 'opcache', 'redis', 'memcached'].includes(extension)) throw new Error(`${extensionLabel(extension)} is required or dependency-managed and cannot be changed here.`)
+    if (this.snapshot.state !== 'running') throw new Error('Start the Vhostra runtime before changing PHP extensions.')
+    const available = new Set(await this.availablePhpPackages())
+    if (!available.has(extension)) throw new Error(`${extensionLabel(extension)} is not an installable extension package for the selected LSPHP version.`)
+    const state = await this.getState(); const php = state.settings.selectedPhpVersion.replace('.', '')
+    const packageName = `lsphp${php}-${extension}`
+    return this.runExclusive('starting', `${action[0].toUpperCase()}${action.slice(1)}ing PHP extension ${extensionLabel(extension)}…`, async () => {
+      if (action === 'install' || action === 'enable') {
+        await this.compose(['exec', '-T', 'runtime', '/bin/sh', '-lc', `DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ${packageName}`])
+        // Package-maintained extension INI files are normally enabled by default.
+        // Where one is explicitly disabled, restore its exact package module line.
+        await this.configureRuntimePhpExtension(php, extension, true)
+      } else if (action === 'disable') {
+        const output = await this.compose(['exec', '-T', 'runtime', '/bin/sh', '-lc', `find /usr/local/lsws/lsphp${php} -path '*/mods-available/*${extension}*.ini' -type f -print -quit`])
+        if (!output.trim()) throw new Error(`${extensionLabel(extension)} has no independently disableable module configuration.`)
+        await this.configureRuntimePhpExtension(php, extension, false)
+      } else await this.compose(['exec', '-T', 'runtime', '/bin/sh', '-lc', `DEBIAN_FRONTEND=noninteractive apt-get purge -y ${packageName}`])
+      await this.compose(['exec', '-T', 'runtime', 'supervisorctl', 'restart', 'openlitespeed'])
+      // LSAPI workers survive a parent restart on some OLS builds. They are
+      // Vhostra-owned children inside this container, so retire them to force
+      // the selected LSPHP php.ini to be read on the next request.
+      await this.compose(['exec', '-T', 'runtime', '/bin/sh', '-lc', 'pkill -u nobody -x lsphp || true'])
+      const installed = (await this.compose(['exec', '-T', 'runtime', '/bin/sh', '-lc', `dpkg-query -W -f='${'${db:Status-Status}'}' ${packageName} 2>/dev/null || true`])).trim() === 'installed'
+      if ((action === 'install' || action === 'enable') && !installed) throw new Error(`${extensionLabel(extension)} package installation could not be verified.`)
+      if ((action === 'remove') && installed) throw new Error(`${extensionLabel(extension)} package removal could not be verified.`)
+      const raw = await requestLocalHttp(state.settings.ports.http, '/vhostra-extension-state.php')
+      const loaded = new Set((parseHttpJson<string[]>(raw) ?? []).map(normalizeExtensionId))
+      if ((action === 'install' || action === 'enable') && !loaded.has(extension)) throw new Error(`${extensionLabel(extension)} package changed, but the selected LSPHP web runtime did not load it.`)
+      if ((action === 'disable' || action === 'remove') && loaded.has(extension)) throw new Error(`${extensionLabel(extension)} is still loaded by the selected LSPHP web runtime.`)
+      await this.refresh()
+      return this.listPhpExtensions()
     })
   }
   async getCwebpStatus() {
@@ -196,6 +239,18 @@ export class DockerRuntimeController {
     if (this.snapshot.state !== 'running') return { enabled, installed: false }
     const version = await this.compose(['exec', '-T', 'runtime', '/bin/sh', '-lc', 'command -v cwebp >/dev/null && cwebp -version'], true)
     return { enabled, installed: Boolean(version.trim()), ...(version.trim() ? { version: version.trim().split('\n')[0] } : {}) }
+  }
+  async configureCwebp(enabled: boolean) {
+    if (this.snapshot.state !== 'running') throw new Error('Start the Vhostra runtime before changing cwebp.')
+    return this.runExclusive('starting', `${enabled ? 'Installing' : 'Removing'} cwebp…`, async () => {
+      await this.compose(['exec', '-T', 'runtime', '/bin/sh', '-lc', enabled ? 'DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y webp' : 'DEBIAN_FRONTEND=noninteractive apt-get purge -y webp'])
+      const output = await this.compose(['exec', '-T', 'runtime', '/bin/sh', '-lc', 'command -v cwebp >/dev/null && cwebp -version'], true)
+      const status = { enabled, installed: Boolean(output.trim()), ...(output.trim() ? { version: output.trim().split('\n')[0] } : {}) }
+      if (enabled && !status.installed) throw new Error('cwebp installation could not be verified.')
+      if (!enabled && status.installed) throw new Error('cwebp removal could not be verified.')
+      await this.refresh()
+      return status
+    })
   }
   async createDatabase(input: { name: string; charset: string; username: string; password: string }) {
     const name = sqlIdentifier(input.name, 'database name'); const username = sqlIdentifier(input.username, 'username')
@@ -271,7 +326,7 @@ export class DockerRuntimeController {
       fs.writeFile(path.join(this.layout.sites, 'localhost', 'public', 'vhostra-extensions.php'), '<?php foreach (["mysqli", "pdo_mysql", "redis", "memcached"] as $extension) { echo $extension . ":" . (extension_loaded($extension) ? "1" : "0") . "\\n"; } echo "opcache:" . ((function_exists("opcache_get_status") && ini_get("opcache.enable")) ? "1" : "0") . "\\n";\n', { mode: 0o600 }),
       fs.writeFile(path.join(this.layout.sites, 'localhost', 'public', 'vhostra-extension-state.php'), '<?php header("Content-Type: application/json"); echo json_encode(get_loaded_extensions());\n', { mode: 0o600 }),
     ])
-    const mounts = state.virtualHosts.map(host => ({ host, container: `/var/www/vhostra/${host.id}` }))
+    const mounts = state.virtualHosts.map(host => ({ host, container: host.builtIn === 'localhost' ? '/var/www/html' : `/var/www/vhostra/${host.id}` }))
     await Promise.all([
       fs.writeFile(path.join(this.layout.runtime.php, 'vhostra.ini'), 'expose_php=Off\nlog_errors=On\nerror_log=/var/log/php/error.log\n', { mode: 0o600 }),
       fs.writeFile(path.join(this.layout.runtime.mariaDb, 'vhostra.cnf'), '[mariadb]\nskip-name-resolve\n', { mode: 0o600 }),
@@ -315,8 +370,17 @@ export class DockerRuntimeController {
       const config = nginxConfig(mounts)
       await Promise.all([fs.writeFile(path.join(this.layout.runtime.nginx, 'default.conf'), config, { mode: 0o600 }), fs.writeFile(path.join(generated, 'nginx-vhosts.conf'), config, { mode: 0o600 })])
     } else {
-      const main = openLiteSpeedConfig(mounts); const virtualHosts = openLiteSpeedVirtualHosts(mounts)
-      await Promise.all([fs.writeFile(path.join(this.layout.runtime.openLiteSpeed, 'httpd_config.conf'), main, { mode: 0o600 }), fs.writeFile(path.join(this.layout.runtime.openLiteSpeed, 'vhostra-vhosts.conf'), virtualHosts, { mode: 0o600 }), fs.writeFile(path.join(generated, 'openlitespeed-vhosts.conf'), `${main}\n${virtualHosts}`, { mode: 0o600 })])
+      // The stock Example vhost remains the protected localhost vhost. Only
+      // user-created portable definitions are injected as additional OLS vhosts.
+      const managedMounts = mounts.filter(({ host }) => host.builtIn !== 'localhost')
+      const main = openLiteSpeedConfig(managedMounts); const virtualHosts = openLiteSpeedVirtualHosts(managedMounts)
+      await fs.mkdir(path.join(this.layout.runtime.openLiteSpeed, 'sites'), { recursive: true })
+      await Promise.all([
+        fs.writeFile(path.join(this.layout.runtime.openLiteSpeed, 'vhostra-maps.conf'), main, { mode: 0o600 }),
+        fs.writeFile(path.join(this.layout.runtime.openLiteSpeed, 'vhostra-vhosts.conf'), virtualHosts, { mode: 0o600 }),
+        ...managedMounts.map(({ host, container }) => fs.writeFile(path.join(this.layout.runtime.openLiteSpeed, 'sites', `${host.id}.conf`), openLiteSpeedSiteConfig(host, container), { mode: 0o600 })),
+        fs.writeFile(path.join(generated, 'openlitespeed-vhosts.conf'), `${main}\n${virtualHosts}`, { mode: 0o600 }),
+      ])
     }
     // Keeps the PHP policy explicit in generated config metadata without exposing it over HTTP.
     await fs.writeFile(path.join(generated, 'runtime-selection.json'), JSON.stringify({ server, phpVersion, generatedAt: new Date().toISOString() }, null, 2), { mode: 0o600 })
@@ -365,8 +429,23 @@ export class DockerRuntimeController {
   }
   private async availablePhpPackages() {
     const state = await this.getState(); const php = state.settings.selectedPhpVersion.replace('.', '')
-    const output = await this.compose(['exec', '-T', 'runtime', '/bin/sh', '-lc', `apt-cache search '^lsphp${php}-' | awk '{print $1}' | sed 's/^lsphp${php}-//' | sort -u`])
+    // Discover directly from the selected LiteSpeed repository. Repository
+    // descriptions identify development/runtime/meta artifacts generically;
+    // all remaining versioned packages are module candidates and are still
+    // verified against the loaded PHP runtime after every mutation.
+    const output = await this.compose(['exec', '-T', 'runtime', '/bin/sh', '-lc', `apt-cache search '^lsphp${php}-' | awk -F ' - ' '$1 ~ /^lsphp${php}-/ && $2 !~ /(Common files|Debug symbols|development|runtime|PEAR|source package)/ { sub(/^lsphp${php}-/, "", $1); print $1 }' | sort -u`])
     return output.split('\n').map(value => value.trim()).filter(value => /^[a-z0-9][a-z0-9-]*$/.test(value))
+  }
+  private async installedPhpPackages() {
+    const state = await this.getState(); const php = state.settings.selectedPhpVersion.replace('.', '')
+    const output = await this.compose(['exec', '-T', 'runtime', '/bin/sh', '-lc', `dpkg-query -W -f='${'${binary:Package}'}\\n' 'lsphp${php}-*' 2>/dev/null | sed 's/^lsphp${php}-//' | sed 's/:.*$//' | sort -u`], true)
+    return output.split('\n').map(value => value.trim()).filter(value => /^[a-z0-9][a-z0-9-]*$/.test(value))
+  }
+  private async configureRuntimePhpExtension(php: string, extension: string, enabled: boolean) {
+    // LiteSpeed scans mods-available directly. Toggle the exact package INI
+    // atomically so a disabled extension cannot stay loaded through that scan.
+    const command = `dir=/usr/local/lsws/lsphp${php}/etc/php/${php.slice(0, 1)}.${php.slice(1)}/mods-available; source=$(find "$dir" -maxdepth 1 -type f -name '*${extension}*.ini' -print -quit); disabled=$(find "$dir" -maxdepth 1 -type f -name '*${extension}*.ini.disabled' -print -quit); if [ ${enabled ? 'true' : 'false'} = true ]; then if [ -n "$disabled" ]; then mv "$disabled" "${'${disabled%.disabled}'}"; elif [ -z "$source" ]; then exit 65; fi; else if [ -n "$source" ]; then mv "$source" "$source.disabled"; elif [ -z "$disabled" ]; then exit 65; fi; fi`
+    await this.compose(['exec', '-T', 'runtime', '/bin/sh', '-lc', command])
   }
   private async reconcileHtaccessWatchers(running: boolean) {
     const state = await this.getState()
@@ -414,6 +493,7 @@ const parseHttpJson = <T>(value: string): T | null => {
   const body = value.slice(value.indexOf('\r\n\r\n') + 4).trim()
   try { return JSON.parse(body) as T } catch { return null }
 }
+const normalizeExtensionId = (value: string) => value.trim().toLowerCase().replace(/^zend[ _-]?/, '').replace(/[ _]/g, '-').replace(/[^a-z0-9-]/g, '')
 const extensionLabel = (id: string) => id === 'opcache' ? 'Zend OPcache' : id.replace(/(^|[-_])(.)/g, (_match, prefix: string, letter: string) => `${prefix ? ' ' : ''}${letter.toUpperCase()}`)
 const wait = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds))
 const validatePort = (port: number) => { if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('A port must be an integer from 1 to 65535.') }
@@ -447,8 +527,9 @@ const dockerMessage = (error: unknown) => `Docker is unavailable: ${error instan
 
 function apacheConfig(mounts: Array<{ host: AppState['virtualHosts'][number]; container: string }>) { return `ServerTokens Prod\nServerSignature Off\nTraceEnable Off\nLoadModule rewrite_module modules/mod_rewrite.so\n${mounts.map(({ host, container }) => `<VirtualHost *:80>\n  ServerName ${host.hostname}\n  ${host.aliases.map(alias => `ServerAlias ${alias}`).join('\n  ')}\n  DocumentRoot ${container}\n  <Directory ${container}>\n    Options FollowSymLinks\n    AllowOverride ${host.rewriteEnabled === false ? 'None' : 'FileInfo'}\n    Require all granted\n  </Directory>\n  ${host.rewriteEnabled === false ? 'RewriteEngine Off' : 'RewriteEngine On'}\n  ErrorLog /var/log/apache2/${host.id}-error.log\n  CustomLog /var/log/apache2/${host.id}-access.log combined\n</VirtualHost>`).join('\n\n')}\n` }
 function nginxConfig(mounts: Array<{ host: AppState['virtualHosts'][number]; container: string }>) { return `server_tokens off;\n${mounts.map(({ host, container }) => `server {\n  listen 80;\n  server_name ${[host.hostname, ...host.aliases].join(' ')};\n  root ${container};\n  index index.php index.html;\n  access_log /var/log/nginx/${host.id}-access.log;\n  error_log /var/log/nginx/${host.id}-error.log;\n  # Vhostra managed WordPress-compatible front controller. Unsupported .htaccess directives remain reported in the neutral model.\n  location / { try_files $uri $uri/ ${host.rewriteEnabled === false ? '=404' : '/index.php?$query_string'}; }\n  location ~ \\.php$ { include fastcgi_params; fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name; fastcgi_pass php:9000; }\n}\n`).join('\n')}` }
-function openLiteSpeedConfig(mounts: Array<{ host: AppState['virtualHosts'][number]; container: string }>) { return `serverName Vhostra\nhttpdWorkers 1\nlistener Default {\n  address *:8088\n  secure 0\n${mounts.map(({ host }) => `  map ${host.hostname} ${host.id}\n${host.aliases.map(alias => `  map ${alias} ${host.id}`).join('\n')}`).join('\n')}\n}\n${mounts.map(({ host, container }) => `virtualhost ${host.id} {\n  vhRoot ${container}/\n  configFile /usr/local/lsws/conf/vhostra-vhosts.conf\n  allowSymbolLink 1\n  enableScript 1\n}\n`).join('')}` }
-function openLiteSpeedVirtualHosts(mounts: Array<{ host: AppState['virtualHosts'][number]; container: string }>) { return mounts.map(({ host, container }) => `virtualhost ${host.id} {\n  docRoot ${container}/\n  indexFiles index.php,index.html\n  extprocessor php { type fcgi; address php:9000; maxConns 10; initTimeout 60; retryTimeout 0; }\n  scripthandler { add fcgi:php php }\n  accesslog /usr/local/lsws/logs/${host.id}-access.log { }\n  errorlog /usr/local/lsws/logs/${host.id}-error.log { }\n}\n`).join('\n') }
+function openLiteSpeedConfig(mounts: Array<{ host: AppState['virtualHosts'][number]; container: string }>) { return `${mounts.flatMap(({ host }) => [`map ${host.hostname} ${host.id}`, ...host.aliases.map(alias => `map ${alias} ${host.id}`)]).join('\n')}\n` }
+function openLiteSpeedVirtualHosts(mounts: Array<{ host: AppState['virtualHosts'][number]; container: string }>) { return mounts.map(({ host, container }) => `virtualHost ${host.id}{\n    vhRoot                   ${container}/\n    allowSymbolLink          1\n    enableScript             1\n    configFile               /etc/vhostra/openlitespeed/sites/${host.id}.conf\n}\n`).join('\n') }
+function openLiteSpeedSiteConfig(host: AppState['virtualHosts'][number], container: string) { return `docRoot ${container}/\nindex {\n  indexFiles index.php,index.html\n}\nrewrite {\n  enable ${host.rewriteEnabled === false ? '0' : '1'}\n  autoLoadHtaccess ${host.rewriteEnabled === false ? '0' : '1'}\n}\ncontext / {\n  allowBrowse 1\n  location $DOC_ROOT/\n}\naccessControl {\n  deny\n  allow *\n}\n` }
 
 function singleRuntimeComposeYaml(state: AppState, layout: StoreLayout) {
   const php = state.settings.selectedPhpVersion.replace('.', '')
@@ -459,7 +540,7 @@ services:
       context: ./image
       args:
         LSPHP_VERSION: ${q(php)}
-        LSPHP_EXTENSIONS: ${q(state.settings.php.extensions.join(','))}
+        LSPHP_EXTENSIONS: ${q([...new Set([...state.settings.php.extensions, ...state.settings.php.disabledExtensions])].join(','))}
         VHOSTRA_CWEBP: ${q(state.settings.php.cwebpEnabled)}
     image: ${q(`vhostra-runtime:ols-lsphp${php}`)}
     labels:
@@ -473,11 +554,14 @@ services:
       VHOSTRA_REDIS: ${q(state.settings.optionalServices.redis)}
       VHOSTRA_MEMCACHED: ${q(state.settings.optionalServices.memcached)}
       VHOSTRA_PHP_EXTENSIONS: ${q(state.settings.php.extensions.join(','))}
+      VHOSTRA_PHP_DISABLED_EXTENSIONS: ${q(state.settings.php.disabledExtensions.join(','))}
       VHOSTRA_OPCACHE: ${q(state.settings.php.opcacheEnabled)}
       VHOSTRA_PMA_BLOWFISH_SECRET: \${VHOSTRA_PMA_BLOWFISH_SECRET}
       VHOSTRA_PMA_PASSWORD: \${VHOSTRA_PMA_PASSWORD}
     volumes:
       - ${q(`${path.join(layout.sites, 'localhost', 'public')}:/var/www/html`)}
+      - ${q(`${layout.runtime.openLiteSpeed}:/etc/vhostra/openlitespeed:ro`)}
+      ${state.sites.filter(site => !site.builtIn).map(site => `- ${q(`${site.documentRoot}:/var/www/vhostra/${site.vhostId}:ro`)}`).join('\n      ')}
       - ${q(`${layout.persistentData.mariaDb}:/var/lib/mysql`)}
       - ${q(`${layout.logs}:/var/log/vhostra`)}
     networks: [vhostra]

@@ -1,10 +1,10 @@
 import apache from '../assets/services/apache_feather_bullet.gif'
 import mariadb from '../assets/services/mariadb-icon.svg'
 import memcached from '../assets/services/memcached-icon.svg'
-import nginx from '../assets/services/nginx-icon.svg'
+import nginx from '../assets/services/nginx.ico'
 import openlitespeed from '../assets/services/openlitespeed.png'
 import php from '../assets/services/php.svg'
-import phpmyadmin from '../assets/services/phpmyadmin-logo-right.png'
+import phpmyadmin from '../assets/services/phpmyadmin.ico'
 import redis from '../assets/services/redis-icon.svg'
 
 export const serviceBrandAssets = {
@@ -22,5 +22,5 @@ export type ServiceBrandName = keyof typeof serviceBrandAssets
 
 /** The one local asset mapping used for service identity throughout the desktop UI. */
 export function ServiceBrand({ name }: { name: ServiceBrandName }) {
-  return <span className="service-brand"><img src={serviceBrandAssets[name]} alt={`${name} logo`} /></span>
+  return <span className={`service-brand${name === 'MariaDB' ? ' service-brand-mariadb' : ''}`}><img src={serviceBrandAssets[name]} alt={`${name} logo`} /></span>
 }
