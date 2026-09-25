@@ -1,11 +1,11 @@
 import apache from '../assets/services/apache_feather_bullet.gif'
-import mariadb from '../assets/services/mariadb.svg'
-import memcached from '../assets/services/memcached.jpg'
-import nginx from '../assets/services/nginx.svg'
+import mariadb from '../assets/services/mariadb-icon.svg'
+import memcached from '../assets/services/memcached-icon.svg'
+import nginx from '../assets/services/nginx-icon.svg'
 import openlitespeed from '../assets/services/openlitespeed.png'
 import php from '../assets/services/php.svg'
 import phpmyadmin from '../assets/services/phpmyadmin-logo-right.png'
-import redis from '../assets/services/redis.svg'
+import redis from '../assets/services/redis-icon.svg'
 
 export const serviceBrandAssets = {
   OpenLiteSpeed: openlitespeed,
