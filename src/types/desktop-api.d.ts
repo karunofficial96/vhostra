@@ -25,6 +25,7 @@ export interface VhostraDesktopApi {
   startServices(): Promise<void>
   stopServices(): Promise<void>
   restartServices(): Promise<void>
+  quitApplication(mode: 'keep-services' | 'stop-services' | 'minimize-to-tray'): Promise<void>
   checkPort(port: number): Promise<{ port: number; available: boolean; owner: string | null }>
   findAvailablePort(port: number): Promise<number>
   reloadWebServer(): Promise<void>

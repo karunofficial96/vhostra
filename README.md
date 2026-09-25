@@ -91,9 +91,9 @@ Dashboard previews use a screenshot only when a site's definition references a r
 
 ## Tray and application lifecycle
 
-Vhostra creates a platform tray/menu-bar icon from the exact branded application artwork. Closing the primary window hides it and leaves Vhostra available in the tray; it does not stop future local services. The tray can reopen Vhostra, securely open localhost in the operating system's default browser, or quit the desktop application.
+Vhostra creates a platform tray/menu-bar icon and keeps the application available after its primary window is hidden. Settings provides a persisted close-button policy: minimize to the tray (the default), quit while keeping the Vhostra runtime running, or stop only Vhostra-managed services and then quit. The tray and Settings each provide the two explicit quit actions: **Quit Vhostra, Keep Services Running** and **Quit Vhostra and Stop Services**.
 
-Start, Stop, and Restart actions use the same Vhostra-only runtime controller as the dashboard. They operate only against the generated `vhostra` project and never target unrelated Docker resources. Quit Vhostra exits the desktop application; it does not imply a runtime shutdown policy.
+Start, Stop, and Restart actions—including individual active-web-server, MariaDB, Redis, and Memcached controls when the runtime supports them—use the same Vhostra-only runtime controller in the Dashboard, Services workspace, tray, and CLI. They operate only against the generated `vhostra` project and never target unrelated Docker resources.
 
 ## Bind mounts
 

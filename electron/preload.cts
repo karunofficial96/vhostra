@@ -20,6 +20,7 @@ const api = Object.freeze({
   startServices: () => ipcRenderer.invoke('vhostra:start-services'),
   stopServices: () => ipcRenderer.invoke('vhostra:stop-services'),
   restartServices: () => ipcRenderer.invoke('vhostra:restart-services'),
+  quitApplication: (mode: 'keep-services' | 'stop-services' | 'minimize-to-tray') => ipcRenderer.invoke('vhostra:quit-application', mode),
   checkPort: (port: number) => ipcRenderer.invoke('vhostra:check-port', port),
   findAvailablePort: (port: number) => ipcRenderer.invoke('vhostra:find-available-port', port),
   reloadWebServer: () => ipcRenderer.invoke('vhostra:reload-web-server'),

@@ -51,7 +51,11 @@ const createWindow = () => {
   })
   primaryWindow = window
   window.on('closed', () => { primaryWindow = null })
-  window.on('close', event => { if (!isQuitting && tray) { event.preventDefault(); window.hide() } })
+  window.on('close', event => {
+    if (isQuitting) return
+    event.preventDefault()
+    void store.getState().then(state => requestShutdown(state.settings.startup.closeBehavior)).catch(error => console.error('[Vhostra] Could not apply close behavior:', error))
+  })
   window.webContents.on('preload-error', (_event, failedPath, error) => console.error(`[Vhostra] Failed to load preload script at ${failedPath}:`, error))
   window.webContents.on('console-message', (_event, _level, message, line, sourceId) => {
     if (message.includes('[Vhostra preload]')) console.error(`[Vhostra] Preload diagnostic (${sourceId}:${line}): ${message}`)
@@ -134,6 +138,7 @@ function registerIpc() {
   ipcMain.handle('vhostra:start-services', () => services.start())
   ipcMain.handle('vhostra:stop-services', () => services.stop())
   ipcMain.handle('vhostra:restart-services', () => services.restart())
+  ipcMain.handle('vhostra:quit-application', (_event, mode: 'keep-services' | 'stop-services' | 'minimize-to-tray') => requestShutdown(mode))
   ipcMain.handle('vhostra:check-port', (_event, port: number) => services.checkPort(port))
   ipcMain.handle('vhostra:find-available-port', (_event, port: number) => services.findAvailablePort(port))
   ipcMain.handle('vhostra:reload-web-server', () => services.reloadWebServer())
@@ -188,6 +193,16 @@ async function configureLaunchAtLogin(enabled: boolean) {
 async function openApplicationWindow() { const window = createWindow(); window.show(); window.focus() }
 async function openExternal(value: string) { VhostraStore.validateUrl(value); await shell.openExternal(value) }
 
+async function requestShutdown(mode: 'keep-services' | 'stop-services' | 'minimize-to-tray') {
+  if (mode === 'minimize-to-tray') { const window = createWindow(); window.hide(); return }
+  if (mode === 'stop-services') {
+    const runtime = await services.refresh()
+    if (runtime.state === 'running' || runtime.state === 'starting' || runtime.state === 'stopping') await services.stop()
+  }
+  isQuitting = true
+  app.quit()
+}
+
 function createTray() {
   const image = nativeImage.createFromPath(trayIcon)
   tray = new Tray(image)
@@ -212,7 +227,8 @@ function updateTrayMenu() {
     { label: 'Stop Services', enabled: controlsAvailable && state === 'running', click: action('stop') },
     { label: 'Restart Services', enabled: controlsAvailable && state === 'running', click: action('restart') },
     { type: 'separator' },
-    { label: 'Quit Vhostra', click: () => { isQuitting = true; app.quit() } },
+    { label: 'Quit Vhostra, Keep Services Running', click: () => { void requestShutdown('keep-services') } },
+    { label: 'Quit Vhostra and Stop Services', click: () => { void requestShutdown('stop-services').catch(error => console.error('[Vhostra] Stopping services before quit failed:', error)) } },
   ]
   tray.setContextMenu(Menu.buildFromTemplate(items))
   tray.setToolTip(state === 'unavailable' ? 'Vhostra — Docker unavailable' : `Vhostra — services ${state}`)
@@ -237,7 +253,9 @@ function updateTrayMenuWithManaged(managed: Awaited<ReturnType<typeof services.l
     { label: 'Start Services', enabled: !['unavailable', 'starting', 'stopping'].includes(state) && (state === 'stopped' || state === 'not-created' || state === 'error'), click: action('start') },
     { label: 'Stop Services', enabled: state === 'running', click: action('stop') },
     { label: 'Restart Services', enabled: state === 'running', click: action('restart') },
-    { type: 'separator' }, { label: 'Quit Vhostra', click: () => { isQuitting = true; app.quit() } },
+    { type: 'separator' },
+    { label: 'Quit Vhostra, Keep Services Running', click: () => { void requestShutdown('keep-services') } },
+    { label: 'Quit Vhostra and Stop Services', click: () => { void requestShutdown('stop-services').catch(error => console.error('[Vhostra] Stopping services before quit failed:', error)) } },
   ]))
 }
 
