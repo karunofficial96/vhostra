@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { createReadStream, createWriteStream, existsSync } from 'node:fs'
+import { createReadStream, createWriteStream, existsSync, watch, type FSWatcher } from 'node:fs'
 import { promises as fs } from 'node:fs'
 import { finished } from 'node:stream/promises'
 import net from 'node:net'
@@ -21,6 +21,8 @@ export class DockerRuntimeController {
   private listeners = new Set<() => void>()
   private operation: Promise<void> | null = null
   private httpsWarning = ''
+  private htaccessWatchers = new Map<string, FSWatcher>()
+  private htaccessDebounce: ReturnType<typeof setTimeout> | null = null
 
   constructor(private readonly layout: StoreLayout, private readonly getState: () => Promise<AppState>, private readonly updateWelcome?: (message: string) => Promise<void>) {}
 
@@ -36,7 +38,9 @@ export class DockerRuntimeController {
       const services = rows.map((row: { Service?: string }) => row.Service).filter((value): value is string => Boolean(value))
       const running = rows.length > 0 && rows.every((row: { State?: string }) => row.State === 'running')
       const state: RuntimeState = running ? 'running' : 'stopped'
-      return this.set({ state, message: running ? 'Vhostra services are running.' : 'Vhostra runtime is stopped.', services })
+      const snapshot = this.set({ state, message: running ? 'Vhostra services are running.' : 'Vhostra runtime is stopped.', services })
+      void this.reconcileHtaccessWatchers(running)
+      return snapshot
     } catch (error) {
       return this.set({ state: 'unavailable', message: dockerMessage(error), services: [] })
     }
@@ -121,19 +125,36 @@ export class DockerRuntimeController {
     const output = await this.compose(['exec', '-T', 'runtime', 'mariadb', '-uroot', '-N', '-e', 'SHOW DATABASES'])
     return output.split('\n').map(name => name.trim()).filter(name => name && !['information_schema', 'mysql', 'performance_schema', 'sys'].includes(name))
   }
+  dispose() { this.clearHtaccessWatchers() }
   async listPhpExtensions() {
     const state = await this.getState()
     const selected = new Set(state.settings.php.extensions)
-    const catalog = [
-      { id: 'opcache', label: 'Zend OPcache', required: false, enabled: state.settings.php.opcacheEnabled },
-      { id: 'mysqli', label: 'MySQLi', required: true, enabled: true },
-      { id: 'pdo_mysql', label: 'PDO MySQL', required: true, enabled: true },
-      { id: 'redis', label: 'Redis', required: false, enabled: selected.has('redis') || state.settings.optionalServices.redis },
-      { id: 'memcached', label: 'Memcached', required: false, enabled: selected.has('memcached') || state.settings.optionalServices.memcached },
+    const core = new Set(['mysqli', 'pdo_mysql', 'pdo', 'mysqlnd', 'json', 'mbstring', 'curl', 'openssl', 'xml', 'zip'])
+    const fixed = [
+      { id: 'opcache', label: 'Zend OPcache', required: false, enabled: state.settings.php.opcacheEnabled, installed: true },
+      ...[...core].map(id => ({ id, label: extensionLabel(id), required: true, enabled: true, installed: true })),
+      { id: 'redis', label: 'Redis', required: false, enabled: selected.has('redis') || state.settings.optionalServices.redis, installed: false },
+      { id: 'memcached', label: 'Memcached', required: false, enabled: selected.has('memcached') || state.settings.optionalServices.memcached, installed: false },
     ]
-    if (this.snapshot.state !== 'running') return catalog.map(extension => ({ ...extension, status: extension.enabled ? 'Requires runtime start' : 'Disabled' }))
-    const health = await requestLocalHttp(state.settings.ports.http, '/vhostra-extensions.php')
-    return catalog.map(extension => ({ ...extension, status: health.includes(`${extension.id}:1`) ? 'Enabled' : extension.enabled ? 'Unavailable or failed' : 'Disabled' }))
+    if (this.snapshot.state !== 'running') return fixed.map(extension => ({ ...extension, status: extension.required ? 'Built-in and required' : extension.enabled ? 'Selected — starts with the next runtime build' : 'Available to install after runtime start' }))
+    const raw = await requestLocalHttp(state.settings.ports.http, '/vhostra-extension-state.php')
+    const loaded = new Set(parseHttpJson<string[]>(raw) ?? [])
+    const available = await this.availablePhpPackages().catch(() => [])
+    const all = new Map(fixed.map(extension => [extension.id, extension]))
+    for (const id of available) if (!all.has(id)) all.set(id, { id, label: extensionLabel(id), required: false, enabled: selected.has(id), installed: false })
+    return [...all.values()].sort((a, b) => a.label.localeCompare(b.label)).map(extension => {
+      const actual = extension.id === 'opcache' ? state.settings.php.opcacheEnabled && loaded.has('Zend OPcache') : loaded.has(extension.id)
+      const dependency = (extension.id === 'redis' && state.settings.optionalServices.redis) || (extension.id === 'memcached' && state.settings.optionalServices.memcached)
+      const installed = extension.id === 'opcache' || extension.required || actual || selected.has(extension.id) || dependency
+      const enabled = extension.required || actual || (extension.id === 'opcache' ? state.settings.php.opcacheEnabled : dependency || selected.has(extension.id))
+      return { ...extension, enabled, installed, status: extension.required ? 'Built-in and required' : dependency ? 'Enabled by the matching Vhostra service' : actual ? 'Installed and enabled' : installed ? 'Installed but disabled or unavailable' : 'Available to install' }
+    })
+  }
+  async getCwebpStatus() {
+    const enabled = (await this.getState()).settings.php.cwebpEnabled
+    if (this.snapshot.state !== 'running') return { enabled, installed: false }
+    const version = await this.compose(['exec', '-T', 'runtime', '/bin/sh', '-lc', 'command -v cwebp >/dev/null && cwebp -version'], true)
+    return { enabled, installed: Boolean(version.trim()), ...(version.trim() ? { version: version.trim().split('\n')[0] } : {}) }
   }
   async createDatabase(input: { name: string; charset: string; username: string; password: string }) {
     const name = sqlIdentifier(input.name, 'database name'); const username = sqlIdentifier(input.username, 'username')
@@ -207,6 +228,7 @@ export class DockerRuntimeController {
     await Promise.all([
       fs.writeFile(path.join(this.layout.sites, 'localhost', 'public', 'vhostra-health.php'), '<?php echo "vhostra-lsphp:" . PHP_VERSION;\n', { mode: 0o600 }),
       fs.writeFile(path.join(this.layout.sites, 'localhost', 'public', 'vhostra-extensions.php'), '<?php foreach (["mysqli", "pdo_mysql", "redis", "memcached"] as $extension) { echo $extension . ":" . (extension_loaded($extension) ? "1" : "0") . "\\n"; } echo "opcache:" . ((function_exists("opcache_get_status") && ini_get("opcache.enable")) ? "1" : "0") . "\\n";\n', { mode: 0o600 }),
+      fs.writeFile(path.join(this.layout.sites, 'localhost', 'public', 'vhostra-extension-state.php'), '<?php header("Content-Type: application/json"); echo json_encode(get_loaded_extensions());\n', { mode: 0o600 }),
     ])
     const mounts = state.virtualHosts.map(host => ({ host, container: `/var/www/vhostra/${host.id}` }))
     await Promise.all([
@@ -293,7 +315,38 @@ export class DockerRuntimeController {
     if (state.settings.optionalServices.redis) await this.compose(['exec', '-T', 'runtime', 'redis-cli', 'PING'])
     if (state.settings.optionalServices.memcached) await this.compose(['exec', '-T', 'runtime', '/bin/sh', '-lc', "printf 'version\\r\\n' | nc -w 3 127.0.0.1 11211 | grep -q '^VERSION'"])
     if (!await ready(ports.phpMyAdmin, '/phpmyadmin/index.php')) throw new Error('phpMyAdmin did not pass its shared-runtime health check.')
+    if (state.settings.php.cwebpEnabled) {
+      const output = await this.compose(['exec', '-T', 'runtime', '/bin/sh', '-lc', 'command -v cwebp >/dev/null && cwebp -version'])
+      if (!output.trim()) throw new Error('The requested cwebp binary is unavailable in the Vhostra runtime.')
+    }
   }
+  private async availablePhpPackages() {
+    const state = await this.getState(); const php = state.settings.selectedPhpVersion.replace('.', '')
+    const output = await this.compose(['exec', '-T', 'runtime', '/bin/sh', '-lc', `apt-cache search '^lsphp${php}-' | awk '{print $1}' | sed 's/^lsphp${php}-//' | sort -u`])
+    return output.split('\n').map(value => value.trim()).filter(value => /^[a-z0-9][a-z0-9-]*$/.test(value))
+  }
+  private async reconcileHtaccessWatchers(running: boolean) {
+    const state = await this.getState()
+    if (!running || state.settings.selectedWebServer !== 'openlitespeed') { this.clearHtaccessWatchers(); return }
+    const desired = new Map(state.virtualHosts.filter(host => host.rewriteEnabled !== false).map(host => [host.id, host.documentRoot]))
+    for (const [id, watcher] of this.htaccessWatchers) if (!desired.has(id)) { watcher.close(); this.htaccessWatchers.delete(id) }
+    for (const [id, root] of desired) {
+      if (this.htaccessWatchers.has(id)) continue
+      try {
+        const watcher = watch(root, { persistent: false }, (_event, filename) => {
+          if (String(filename) !== '.htaccess') return
+          if (this.htaccessDebounce) clearTimeout(this.htaccessDebounce)
+          this.htaccessDebounce = setTimeout(() => {
+            this.htaccessDebounce = null
+            void this.reloadWebServer().catch(error => this.set({ state: 'error', message: `OpenLiteSpeed could not reload after a .htaccess change: ${error instanceof Error ? error.message : String(error)}`, services: ['runtime'] }))
+          }, 600)
+        })
+        watcher.on('error', error => this.set({ state: 'error', message: `Vhostra could not watch ${root}/.htaccess: ${error.message}`, services: ['runtime'] }))
+        this.htaccessWatchers.set(id, watcher)
+      } catch (error) { this.set({ state: 'error', message: `Vhostra could not watch ${root}/.htaccess: ${error instanceof Error ? error.message : String(error)}`, services: ['runtime'] }) }
+    }
+  }
+  private clearHtaccessWatchers() { for (const watcher of this.htaccessWatchers.values()) watcher.close(); this.htaccessWatchers.clear(); if (this.htaccessDebounce) clearTimeout(this.htaccessDebounce); this.htaccessDebounce = null }
   private async docker(args: string[]) { return execute('docker', args) }
   private async compose(args: string[], allowFailure = false) { return execute('docker', this.composeArguments(args), allowFailure) }
   private composeArguments(args: string[]) { return ['compose', '--project-name', projectName, '--project-directory', this.runtimeRoot, '--env-file', this.environmentFile, '--file', this.composeFile, ...args] }
@@ -314,6 +367,11 @@ const executeWithOutput = async (command: string, args: string[], output: string
   await Promise.all([finished(destination), new Promise<void>((resolve, reject) => { child.once('error', reject); child.once('close', code => code === 0 ? resolve() : reject(new Error(stderr.trim() || `${command} export failed with ${code}`))) })])
 }
 const parseJsonLines = (value: string) => value.split('\n').flatMap(line => { try { return [JSON.parse(line)] } catch { return [] } })
+const parseHttpJson = <T>(value: string): T | null => {
+  const body = value.slice(value.indexOf('\r\n\r\n') + 4).trim()
+  try { return JSON.parse(body) as T } catch { return null }
+}
+const extensionLabel = (id: string) => id === 'opcache' ? 'Zend OPcache' : id.replace(/(^|[-_])(.)/g, (_match, prefix: string, letter: string) => `${prefix ? ' ' : ''}${letter.toUpperCase()}`)
 const wait = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds))
 const validatePort = (port: number) => { if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('A port must be an integer from 1 to 65535.') }
 const sqlIdentifier = (value: string, label: string) => { const normalized = value.trim(); if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(normalized)) throw new Error(`Invalid ${label}. Use letters, digits, and underscores only.`); return normalized }
@@ -358,6 +416,8 @@ services:
       context: ./image
       args:
         LSPHP_VERSION: ${q(php)}
+        LSPHP_EXTENSIONS: ${q(state.settings.php.extensions.join(','))}
+        VHOSTRA_CWEBP: ${q(state.settings.php.cwebpEnabled)}
     image: ${q(`vhostra-runtime:ols-lsphp${php}`)}
     labels:
       ${managedLabel.split('=').map(q).join(': ')}

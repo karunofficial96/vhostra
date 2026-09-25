@@ -2,7 +2,7 @@
 
 Vhostra is a lightweight, cross-platform graphical local PHP development environment. It is designed around one shared runtime: many local websites use one selected web server, one selected PHP version, and shared supporting services.
 
-> Development status: Vhostra persists settings and site/neutral-vhost definitions locally, creates a protected localhost welcome page, and manages a dedicated Docker Compose runtime. Configuration import/apply, HTTPS provisioning, vhost import parsing, screenshot capture, and database-management UI remain planned.
+> Development status: Vhostra persists settings and site/neutral-vhost definitions locally, creates a protected localhost welcome page, and manages its dedicated single-container runtime. The current desktop UI includes real MariaDB management, phpMyAdmin launching, port checks, hosts-file integration, PHP extension discovery, and runtime lifecycle controls. Full configuration import/apply, HTTPS provisioning, vhost import parsing, screenshot capture, and arbitrary external backup restore remain planned.
 
 ## Features
 
@@ -21,6 +21,10 @@ Vhostra is a lightweight, cross-platform graphical local PHP development environ
 - Typed local-first storage layout, configuration ownership, snapshot, and portable bundle models
 - Exact-source macOS, Windows, Linux, window, and favicon application icons
 - Authoritative branding assets derived directly from `logo/logos.png`
+- PHP extension inventory obtained from the selected LSPHP package catalog when the runtime is running; selected optional extensions are installed into the replacement image and checked through the real PHP request path
+- Zend OPcache preference and `cwebp` support (enabled by default); `cwebp` is supplied by the runtime’s `webp` package and validated in the runtime health check
+- Hosts-file mappings for virtual-host hostnames and aliases, using a narrow elevation prompt rather than running the app with permanent administrator privileges
+- Launch-on-login and optional runtime-start-on-launch preferences
 
 ## Architecture summary
 
@@ -89,7 +93,7 @@ Dashboard previews use a screenshot only when a site's definition references a r
 
 Vhostra creates a platform tray/menu-bar icon from the exact branded application artwork. Closing the primary window hides it and leaves Vhostra available in the tray; it does not stop future local services. The tray can reopen Vhostra, securely open localhost in the operating system's default browser, or quit the desktop application.
 
-Start, Stop, and Restart actions are present but accurately disabled until the Docker runtime controller is implemented. They will be connected only to Vhostra-owned services and will never operate unrelated Docker resources. Quit Vhostra exits the desktop application; it does not imply a future runtime shutdown policy.
+Start, Stop, and Restart actions use the same Vhostra-only runtime controller as the dashboard. They operate only against the generated `vhostra` project and never target unrelated Docker resources. Quit Vhostra exits the desktop application; it does not imply a runtime shutdown policy.
 
 ## Bind mounts
 
@@ -162,6 +166,16 @@ logo/logos.png     Authoritative user-supplied branding source
 test/               Persistent-store and URL-safety tests
 ```
 
-## Limitations in this iteration
+## Current limitations
 
-Vhostra does not yet modify hosts files, provision HTTPS certificates, capture screenshots, parse imported server configuration, apply configuration imports, or create recovery snapshots. Custom local hostnames must already resolve on the computer before a browser can reach their generated vhost.
+Vhostra can request elevation to create/remove only its own marked hosts-file mappings for sites and aliases. It does not yet provision HTTPS certificates, capture screenshots, parse imported server configuration, apply configuration imports, or create recovery snapshots. A cancelled elevation request leaves the site definition intact but reports that the hostname could not be mapped.
+
+## PHP extensions and cwebp
+
+The PHP screen reports the selected LSPHP package catalog from the running Vhostra image and distinguishes required modules, installed/enabled modules, selected modules awaiting a rebuild, and packages available for installation. Core MariaDB modules cannot be disabled. Redis and Memcached PHP modules are dependency-managed when their corresponding Vhostra service is enabled.
+
+Changing an optional extension, OPcache, or `cwebp` preference persists the desired state and rebuilds only the Vhostra runtime when it is currently running. The candidate image fails with an explicit package error if an extension is not offered for the selected LSPHP version. `cwebp` defaults to enabled and is provided by Debian/Ubuntu’s `webp` package inside the disposable runtime image.
+
+## Startup
+
+Settings can register Vhostra at login. macOS and Windows use Electron’s native login-item support; Linux writes only Vhostra’s own XDG autostart desktop entry. The separate “Start configured services when Vhostra opens” setting starts only the Vhostra-managed runtime and respects the persisted Redis/Memcached selections.

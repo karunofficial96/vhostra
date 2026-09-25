@@ -3,6 +3,8 @@
 FROM litespeedtech/openlitespeed:latest
 
 ARG LSPHP_VERSION
+ARG LSPHP_EXTENSIONS=""
+ARG VHOSTRA_CWEBP=true
 RUN test -n "$LSPHP_VERSION" && case "$LSPHP_VERSION" in 81|82|83|84|85) ;; *) echo "Unsupported Vhostra LSPHP version: $LSPHP_VERSION" >&2; exit 64 ;; esac
 
 # LiteSpeed's repository is required because the upstream OLS image only bundles
@@ -13,14 +15,21 @@ RUN apt-get update \
  && apt-get update \
  && apt-cache show "lsphp${LSPHP_VERSION}" >/dev/null \
  && for package in redis memcached; do apt-cache show "lsphp${LSPHP_VERSION}-${package}" >/dev/null || { echo "Vhostra build error: LSPHP ${LSPHP_VERSION} does not provide ${package}" >&2; exit 65; }; done \
+ && extension_packages='' \
+ && for extension in $(printf '%s' "$LSPHP_EXTENSIONS" | tr ',' ' '); do \
+      case "$extension" in '' ) ;; *[!a-z0-9-]* ) echo "Invalid Vhostra LSPHP extension: $extension" >&2; exit 66 ;; \
+        *) package="lsphp${LSPHP_VERSION}-${extension}"; apt-cache show "$package" >/dev/null || { echo "Vhostra build error: LSPHP ${LSPHP_VERSION} does not provide ${extension}" >&2; exit 65; }; extension_packages="$extension_packages $package" ;; esac; \
+    done \
+ && cwebp_package='' \
+ && if [ "$VHOSTRA_CWEBP" = true ]; then apt-cache show webp >/dev/null || { echo 'Vhostra build error: the webp package is unavailable' >&2; exit 67; }; cwebp_package='webp'; fi \
  && apt-get install -y --no-install-recommends \
       "lsphp${LSPHP_VERSION}" "lsphp${LSPHP_VERSION}-mysql" "lsphp${LSPHP_VERSION}-redis" "lsphp${LSPHP_VERSION}-memcached" \
+      $extension_packages $cwebp_package \
  && test -x "/usr/local/lsws/lsphp${LSPHP_VERSION}/bin/lsphp" \
  && curl -fsSL --retry 3 -o /tmp/phpmyadmin.tar.gz https://files.phpmyadmin.net/phpMyAdmin/5.2.2/phpMyAdmin-5.2.2-all-languages.tar.gz \
  && mkdir -p /usr/share/phpmyadmin \
  && tar -xzf /tmp/phpmyadmin.tar.gz --strip-components=1 -C /usr/share/phpmyadmin \
- && rm -f /tmp/phpmyadmin.tar.gz \
- && rm -rf /var/lib/apt/lists/*
+ && rm -f /tmp/phpmyadmin.tar.gz
 
 COPY phpmyadmin-config.inc.php /usr/share/phpmyadmin/config.inc.php
 COPY supervisor.conf /etc/supervisor/conf.d/vhostra.conf

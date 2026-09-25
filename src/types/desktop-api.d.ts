@@ -24,7 +24,8 @@ export interface VhostraDesktopApi {
   findAvailablePort(port: number): Promise<number>
   reloadWebServer(): Promise<void>
   listDatabases(): Promise<string[]>
-  listPhpExtensions(): Promise<Array<{ id: string; label: string; required: boolean; enabled: boolean; status: string }>>
+  listPhpExtensions(): Promise<Array<{ id: string; label: string; required: boolean; enabled: boolean; installed: boolean; status: string }>>
+  getCwebpStatus(): Promise<{ enabled: boolean; installed: boolean; version?: string }>
   createDatabase(input: { name: string; charset: string; username: string; password: string }): Promise<{ name: string; username: string; host: string; port: number; charset: string }>
   openPhpMyAdmin(database?: string): Promise<void>
   importDatabase(database: string): Promise<{ database: string; message: string } | null>
@@ -32,6 +33,8 @@ export interface VhostraDesktopApi {
   repairDatabase(database: string): Promise<{ database: string; message: string }>
   deleteDatabase(database: string): Promise<{ database: string; message: string }>
   syncHosts(id: string): Promise<{ message: string }>
+  getAppInfo(): Promise<{ name: string; version: string }>
+  checkForUpdates(): Promise<{ state: 'unconfigured' | 'up-to-date' | 'available' | 'error'; currentVersion: string; availableVersion?: string; notes?: string; url?: string; message: string }>
   onRuntimeStatus(listener: (status: RuntimeSnapshot) => void): () => void
 }
 

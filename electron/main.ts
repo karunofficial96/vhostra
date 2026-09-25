@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, shell, Tray, type MenuItemConstructorOptions } from 'electron'
 import { existsSync } from 'node:fs'
+import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { VhostraStore } from './store.js'
@@ -70,17 +71,20 @@ app.whenReady().then(() => {
   createTray()
   createWindow()
   void services.refresh()
+  void store.getState().then(state => { if (state.settings.startup.startServicesOnLaunch) return services.start().catch(error => console.error('[Vhostra] Startup service launch failed:', error)) }).catch(error => console.error('[Vhostra] Startup preferences could not be read:', error))
   app.on('activate', () => { void openApplicationWindow() })
 })
-app.on('before-quit', () => { isQuitting = true })
+app.on('before-quit', () => { isQuitting = true; services?.dispose() })
 
 function registerIpc() {
   ipcMain.handle('vhostra:get-state', () => store.getState())
-  ipcMain.handle('vhostra:save-settings', async (_event, settings) => { const result = await store.saveSettings(settings); await services.applyConfiguration(); return result })
+  ipcMain.handle('vhostra:save-settings', async (_event, settings) => { const result = await store.saveSettings(settings); await configureLaunchAtLogin(result.startup.launchAtLogin); await services.applyConfiguration(); return result })
   ipcMain.handle('vhostra:add-site', async (_event, input) => { const result = await store.addSite(input); await services.applyConfiguration(); const mapping = await hosts.ensureLocalhostMappings([new URL(input.url).hostname, ...(input.aliases ?? [])]); return { state: result, mapping } })
   ipcMain.handle('vhostra:update-site', async (_event, input) => { const result = await store.updateSite(input); await services.applyConfiguration(); const mapping = await hosts.ensureLocalhostMappings([new URL(input.url).hostname, ...(input.aliases ?? [])]); return { state: result, mapping } })
   ipcMain.handle('vhostra:remove-site', async (_event, id: string) => { const before = await store.getState(); const site = before.sites.find(item => item.id === id); const host = before.virtualHosts.find(item => item.id === site?.vhostId); const result = await store.removeSite(id); if (host) await hosts.removeVhostraMappings([host.hostname, ...host.aliases]); await services.applyConfiguration(); return result })
   ipcMain.handle('vhostra:sync-hosts', async (_event, id: string) => { const state = await store.getState(); const host = state.virtualHosts.find(item => item.id === id); if (!host) throw new Error('Virtual-host definition not found.'); return hosts.ensureLocalhostMappings([host.hostname, ...host.aliases]) })
+  ipcMain.handle('vhostra:get-app-info', () => ({ name: 'Vhostra', version: app.getVersion() }))
+  ipcMain.handle('vhostra:check-for-updates', () => checkForUpdates())
   ipcMain.handle('vhostra:set-vhost-rewrite', async (_event, id: string, enabled: boolean) => { const result = await store.setVirtualHostRewrite(id, enabled); await services.setOpenLiteSpeedRewrite(enabled); return result })
   ipcMain.handle('vhostra:choose-document-root', async event => {
     const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender)!, { properties: ['openDirectory', 'createDirectory'] })
@@ -114,6 +118,7 @@ function registerIpc() {
   ipcMain.handle('vhostra:reload-web-server', () => services.reloadWebServer())
   ipcMain.handle('vhostra:list-databases', () => services.listDatabases())
   ipcMain.handle('vhostra:list-php-extensions', () => services.listPhpExtensions())
+  ipcMain.handle('vhostra:get-cwebp-status', () => services.getCwebpStatus())
   ipcMain.handle('vhostra:create-database', (_event, input) => services.createDatabase(input))
   ipcMain.handle('vhostra:open-phpmyadmin', async (_event, database?: string) => { await openExternal(await services.phpMyAdminUrl(database)) })
   ipcMain.handle('vhostra:import-database', async (_event, database: string) => {
@@ -126,6 +131,35 @@ function registerIpc() {
   })
   ipcMain.handle('vhostra:repair-database', (_event, database: string) => services.repairDatabase(database))
   ipcMain.handle('vhostra:delete-database', (_event, database: string) => services.deleteDatabase(database))
+}
+
+async function checkForUpdates() {
+  const currentVersion = app.getVersion(); const source = process.env.VHOSTRA_UPDATE_URL
+  if (!source) return { state: 'unconfigured' as const, currentVersion, message: 'No production update source is configured for this build.' }
+  try {
+    const endpoint = new URL(source); if (endpoint.protocol !== 'https:') throw new Error('The configured update source must use HTTPS.')
+    const response = await fetch(endpoint, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(8_000) })
+    if (!response.ok) throw new Error(`Update server returned HTTP ${response.status}.`)
+    const release = await response.json() as { version?: unknown; notes?: unknown; url?: unknown }
+    if (typeof release.version !== 'string' || !semver(release.version)) throw new Error('Update metadata does not contain a valid semantic version.')
+    const url = typeof release.url === 'string' && /^https:\/\//.test(release.url) ? release.url : undefined
+    const notes = typeof release.notes === 'string' ? release.notes.slice(0, 12_000) : undefined
+    return semverCompare(release.version, currentVersion) > 0 ? { state: 'available' as const, currentVersion, availableVersion: release.version, notes, url, message: `Vhostra ${release.version} is available.` } : { state: 'up-to-date' as const, currentVersion, message: 'Vhostra is up to date.' }
+  } catch (error) { return { state: 'error' as const, currentVersion, message: error instanceof Error ? error.message : 'Vhostra could not check for updates.' } }
+}
+const semver = (value: string) => /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value)
+const semverCompare = (left: string, right: string) => { const parse = (value: string) => value.replace(/^v/, '').split(/[.+-]/).slice(0, 3).map(Number); const [a, b, c] = parse(left); const [x, y, z] = parse(right); return a - x || b - y || c - z }
+
+async function configureLaunchAtLogin(enabled: boolean) {
+  if (process.platform === 'linux') {
+    const directory = path.join(app.getPath('home'), '.config', 'autostart'); const file = path.join(directory, 'vhostra.desktop')
+    if (!enabled) { await fs.rm(file, { force: true }); return }
+    await fs.mkdir(directory, { recursive: true })
+    const executable = process.execPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+    await fs.writeFile(file, `[Desktop Entry]\nType=Application\nName=Vhostra\nExec=\"${executable}\"\nX-GNOME-Autostart-enabled=true\n`, { mode: 0o600 })
+    return
+  }
+  app.setLoginItemSettings({ openAtLogin: enabled })
 }
 
 async function openApplicationWindow() { const window = createWindow(); window.show(); window.focus() }

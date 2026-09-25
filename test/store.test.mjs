@@ -13,6 +13,7 @@ test('persists site definitions and preserves document-root files on removal', a
     const first = await store.getState()
     assert.equal(first.settings.selectedWebServer, 'openlitespeed')
     assert.equal(first.settings.selectedPhpVersion, '8.5')
+    assert.equal(first.settings.php.cwebpEnabled, true)
     const localhost = first.sites.find(site => site.builtIn === 'localhost')
     assert.ok(localhost)
     assert.equal(localhost.url, 'http://localhost/')

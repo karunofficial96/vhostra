@@ -6,7 +6,7 @@ not recolored, converted to `currentColor`, or fetched at runtime.
 | Service | Source |
 | --- | --- |
 | OpenLiteSpeed | [OpenLiteSpeed branding](https://openlitespeed.org/branding/) — `openlitespeed-icon.png` |
-| Apache HTTP Server | [Apache HTTP Server images](https://httpd.apache.org/images/) — `httpd_logo_wide.png` |
+| Apache HTTP Server | [Apache HTTP Server images](https://httpd.apache.org/images/) — `apache_feather.gif` (the official compact feather mark) |
 | Nginx | [nginx.org](https://nginx.org/) — `img/nginx_logo.svg` |
 | PHP | [PHP logo downloads](https://www.php.net/download-logos.php) — `new-php-logo.svg` |
 | MariaDB | [MariaDB Foundation](https://mariadb.org/) — `mariadb_org_rgb_h.svg` |

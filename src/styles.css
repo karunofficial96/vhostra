@@ -28,11 +28,9 @@ html[data-theme="dark"] button:disabled { background-color: var(--v-disabled); }
 button { font: inherit; cursor: pointer; }
 button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--v-focus); outline-offset: 2px; }
 button:disabled { cursor: not-allowed; }
-.service-brand { align-items: center; display: inline-flex; flex: 0 0 auto; height: 36px; justify-content: center; width: 36px; }
-.service-brand img { display: block; height: 100%; max-width: 100%; object-fit: contain; width: 100%; }
-.service-brand--wide { width: 96px; }
-/* Official brand artwork is never recolored. A neutral surface is only supplied in dark
-   mode for the project logos whose original dark wordmarks need separation. */
-html[data-theme="dark"] .service-brand--wide { background: #f6f6f6; border: 1px solid #d5d5d5; border-radius: 6px; padding: 4px 6px; }
+.service-brand { align-items: center; display: inline-flex; flex: 0 0 36px; height: 36px; justify-content: center; width: 36px; }
+.service-brand img { display: block; height: 100%; max-height: 30px; max-width: 30px; object-fit: contain; width: 100%; }
+/* Official artwork stays unmodified. The square viewport gives each mark the same
+   visual footprint without stretching naturally rectangular project artwork. */
 .input { height: 40px; width: 100%; border: 1px solid var(--v-border); border-radius: 4px; background: var(--v-control); padding: 0 12px; color: var(--v-text); font: inherit; font-size: 14px; }
 .input:focus { outline: 2px solid var(--v-focus); outline-offset: 1px; }

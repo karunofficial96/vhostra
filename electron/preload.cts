@@ -21,6 +21,7 @@ const api = Object.freeze({
   reloadWebServer: () => ipcRenderer.invoke('vhostra:reload-web-server'),
   listDatabases: () => ipcRenderer.invoke('vhostra:list-databases'),
   listPhpExtensions: () => ipcRenderer.invoke('vhostra:list-php-extensions'),
+  getCwebpStatus: () => ipcRenderer.invoke('vhostra:get-cwebp-status'),
   createDatabase: (input: unknown) => ipcRenderer.invoke('vhostra:create-database', input),
   openPhpMyAdmin: (database?: string) => ipcRenderer.invoke('vhostra:open-phpmyadmin', database),
   importDatabase: (database: string) => ipcRenderer.invoke('vhostra:import-database', database),
@@ -28,6 +29,8 @@ const api = Object.freeze({
   repairDatabase: (database: string) => ipcRenderer.invoke('vhostra:repair-database', database),
   deleteDatabase: (database: string) => ipcRenderer.invoke('vhostra:delete-database', database),
   syncHosts: (id: string) => ipcRenderer.invoke('vhostra:sync-hosts', id),
+  getAppInfo: () => ipcRenderer.invoke('vhostra:get-app-info'),
+  checkForUpdates: () => ipcRenderer.invoke('vhostra:check-for-updates'),
   onRuntimeStatus: (listener: (status: unknown) => void) => { const handler = (_event: IpcRendererEvent, status: unknown) => listener(status); ipcRenderer.on('vhostra:runtime-status', handler); return () => ipcRenderer.removeListener('vhostra:runtime-status', handler) },
 })
 
