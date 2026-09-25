@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { promises as fs } from 'node:fs'
+import { existsSync, promises as fs, readFileSync } from 'node:fs'
 import path from 'node:path'
 
 export type WebServer = 'apache' | 'nginx' | 'openlitespeed'
@@ -29,12 +29,37 @@ const validServers = new Set<WebServer>(['apache', 'nginx', 'openlitespeed'])
 const validPhp = new Set<PhpVersion>(['8.1', '8.2', '8.3', '8.4', '8.5'])
 
 export class VhostraStore {
-  readonly layout: StoreLayout
+  layout: StoreLayout
   private initialized: Promise<void> | null = null
-  constructor(userData: string, private readonly welcomeTemplateDirectory?: string) {
-    const root = path.join(userData, 'Vhostra')
+  private readonly locationFile: string
+  constructor(private readonly userData: string, private readonly welcomeTemplateDirectory?: string) {
+    this.locationFile = path.join(userData, 'vhostra-location.json')
+    let root = path.join(userData, 'Vhostra')
+    try { const saved = JSON.parse(readFileSync(this.locationFile, 'utf8')) as { root?: unknown }; if (typeof saved.root === 'string' && path.isAbsolute(saved.root)) root = saved.root } catch { /* default location */ }
+    this.layout = this.layoutFor(root)
+  }
+  async migrateConfiguration(destinationDirectory: string) {
+    await this.initialize()
+    const oldLayout = this.layout; const root = path.resolve(destinationDirectory, 'Vhostra')
+    if (root === oldLayout.root) return { root, message: 'Vhostra is already using this local configuration path.' }
+    if (root === this.userData || root === path.parse(root).root) throw new Error('Choose a dedicated directory for Vhostra configuration.')
+    try { const entries = await fs.readdir(root); if (entries.length) throw new Error('The selected destination already contains files. Choose an empty directory to avoid overwriting data.') } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+    await fs.mkdir(path.dirname(root), { recursive: true })
+    await fs.cp(oldLayout.root, root, { recursive: true, force: false, errorOnExist: true })
+    const copiedSettings = path.join(root, 'settings.json')
+    try { await fs.access(copiedSettings); JSON.parse(await fs.readFile(copiedSettings, 'utf8')) } catch (error) { await fs.rm(root, { recursive: true, force: true }); throw new Error(`Vhostra could not verify the copied configuration: ${error instanceof Error ? error.message : String(error)}`) }
+    const temporaryPointer = `${this.locationFile}.new`
+    await fs.writeFile(temporaryPointer, `${JSON.stringify({ root }, null, 2)}\n`, { mode: 0o600 })
+    await fs.rename(temporaryPointer, this.locationFile)
+    this.layout = this.layoutFor(root); this.initialized = null; await this.initialize()
+    // The verified copy is now authoritative. Remove only Vhostra's old root;
+    // selected site document roots are separate paths and are never traversed.
+    await fs.rm(oldLayout.root, { recursive: true, force: true })
+    return { root, message: 'Vhostra configuration was copied, verified, switched, and removed from the old Vhostra-only location.' }
+  }
+  private layoutFor(root: string): StoreLayout {
     const runtime = path.join(root, 'runtime')
-    this.layout = {
+    return {
       root, settings: path.join(root, 'settings.json'), sites: path.join(root, 'sites'), virtualHosts: path.join(root, 'virtual-hosts'), screenshots: path.join(root, 'cache', 'screenshots'), exports: path.join(root, 'exports'), backups: path.join(root, 'backups'),
       configuration: { source: path.join(root, 'configuration', 'source'), custom: path.join(root, 'configuration', 'custom'), imported: path.join(root, 'configuration', 'imported'), generated: path.join(root, 'configuration', 'generated') },
       runtime: { apache: path.join(runtime, 'apache'), nginx: path.join(runtime, 'nginx'), openLiteSpeed: path.join(runtime, 'openlitespeed'), php: path.join(runtime, 'php'), mariaDb: path.join(runtime, 'mariadb'), phpMyAdmin: path.join(runtime, 'phpmyadmin'), redis: path.join(runtime, 'redis'), memcached: path.join(runtime, 'memcached') },
@@ -123,7 +148,7 @@ export class VhostraStore {
       const source = template ? await fs.readFile(template, 'utf8') : fallbackWelcomeTemplate
       const siteLinks = sites.filter(site => site.builtIn !== 'localhost').map(site => `<a class="site-link" href="${escapeHtml(site.url)}">${escapeHtml(site.name)}<span>${escapeHtml(site.url)}</span></a>`).join('') || '<p class="empty">Add a site in the Vhostra desktop app to see it here.</p>'
       const server = settings.selectedWebServer === 'openlitespeed' ? 'OpenLiteSpeed' : settings.selectedWebServer === 'nginx' ? 'Nginx' : 'Apache'
-      const serverIcon = settings.selectedWebServer === 'openlitespeed' ? 'openlitespeed.png' : `${settings.selectedWebServer}.svg`
+      const serverIcon = settings.selectedWebServer === 'apache' ? 'services/apache.gif' : settings.selectedWebServer === 'openlitespeed' ? 'services/openlitespeed.png' : 'services/nginx.svg'
       const html = source.replaceAll('{{server}}', escapeHtml(server)).replaceAll('{{server-icon}}', serverIcon).replaceAll('{{php}}', `PHP ${escapeHtml(settings.selectedPhpVersion)}`).replaceAll('{{runtime}}', escapeHtml(runtimeMessage)).replaceAll('{{redis}}', settings.optionalServices.redis ? 'Enabled when runtime is configured' : 'Disabled').replaceAll('{{memcached}}', settings.optionalServices.memcached ? 'Enabled when runtime is configured' : 'Disabled').replaceAll('{{sites}}', siteLinks)
       await fs.writeFile(path.join(root, 'index.html'), html, { mode: 0o600 })
     } catch { /* A missing development template must not prevent persistent settings/site setup. */ }

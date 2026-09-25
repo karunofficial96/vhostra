@@ -10,7 +10,7 @@ RUN test -n "$LSPHP_VERSION" && case "$LSPHP_VERSION" in 81|82|83|84|85) ;; *) e
 # LiteSpeed's repository is required because the upstream OLS image only bundles
 # one LSPHP version. Fail the build if the requested package cannot be resolved.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl gnupg supervisor mariadb-server redis-server memcached \
+ && apt-get install -y --no-install-recommends ca-certificates curl gnupg supervisor mariadb-server redis-server memcached netcat-openbsd \
  && curl -fsSL https://repo.litespeed.sh | bash \
  && apt-get update \
  && apt-cache show "lsphp${LSPHP_VERSION}" >/dev/null \

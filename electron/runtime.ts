@@ -9,6 +9,7 @@ import type { AppState, PhpVersion, StoreLayout, WebServer } from './store.js'
 
 export type RuntimeState = 'unavailable' | 'not-created' | 'stopped' | 'starting' | 'stopping' | 'running' | 'error'
 export interface RuntimeSnapshot { state: RuntimeState; message: string; services: string[]; updatedAt: string }
+export interface ManagedServiceStatus { id: 'web' | 'mariadb' | 'redis' | 'memcached'; label: string; enabled: boolean; state: 'running' | 'stopped' | 'starting' | 'failed' | 'disabled' | 'unavailable' }
 
 const projectName = 'vhostra'
 const managedLabel = 'com.vhostra.managed=true'
@@ -124,6 +125,46 @@ export class DockerRuntimeController {
     await this.requireDocker()
     const output = await this.compose(['exec', '-T', 'runtime', 'mariadb', '-uroot', '-N', '-e', 'SHOW DATABASES'])
     return output.split('\n').map(name => name.trim()).filter(name => name && !['information_schema', 'mysql', 'performance_schema', 'sys'].includes(name))
+  }
+  async listManagedServices(): Promise<ManagedServiceStatus[]> {
+    const state = await this.getState()
+    if (this.snapshot.state !== 'running') return [
+      { id: 'web', label: state.settings.selectedWebServer === 'openlitespeed' ? 'OpenLiteSpeed' : state.settings.selectedWebServer === 'apache' ? 'Apache' : 'Nginx', enabled: true, state: this.snapshot.state === 'unavailable' ? 'unavailable' : 'stopped' },
+      { id: 'mariadb', label: 'MariaDB', enabled: true, state: this.snapshot.state === 'unavailable' ? 'unavailable' : 'stopped' },
+      { id: 'redis', label: 'Redis', enabled: state.settings.optionalServices.redis, state: state.settings.optionalServices.redis ? 'stopped' : 'disabled' },
+      { id: 'memcached', label: 'Memcached', enabled: state.settings.optionalServices.memcached, state: state.settings.optionalServices.memcached ? 'stopped' : 'disabled' },
+    ]
+    const output = await this.compose(['exec', '-T', 'runtime', 'supervisorctl', 'status'], true)
+    const rows = new Map(output.split('\n').filter(Boolean).map(line => { const [name, status] = line.trim().split(/\s+/, 2); return [name, status] }))
+    const supervisorState = (name: string): ManagedServiceStatus['state'] => {
+      const value = rows.get(name) ?? ''
+      if (value === 'RUNNING') return 'running'
+      if (value === 'STARTING') return 'starting'
+      if (value === 'STOPPED' || value === 'EXITED') return 'stopped'
+      return 'failed'
+    }
+    return [
+      { id: 'web', label: state.settings.selectedWebServer === 'openlitespeed' ? 'OpenLiteSpeed' : state.settings.selectedWebServer === 'apache' ? 'Apache' : 'Nginx', enabled: true, state: supervisorState('openlitespeed') },
+      { id: 'mariadb', label: 'MariaDB', enabled: true, state: supervisorState('mariadb') },
+      { id: 'redis', label: 'Redis', enabled: state.settings.optionalServices.redis, state: state.settings.optionalServices.redis ? supervisorState('redis') : 'disabled' },
+      { id: 'memcached', label: 'Memcached', enabled: state.settings.optionalServices.memcached, state: state.settings.optionalServices.memcached ? supervisorState('memcached') : 'disabled' },
+    ]
+  }
+  async controlManagedService(id: ManagedServiceStatus['id'], action: 'start' | 'stop' | 'restart') {
+    const state = await this.getState()
+    const name = id === 'web' ? 'openlitespeed' : id
+    if ((id === 'redis' && !state.settings.optionalServices.redis) || (id === 'memcached' && !state.settings.optionalServices.memcached)) throw new Error(`${id === 'redis' ? 'Redis' : 'Memcached'} is disabled in Vhostra Settings.`)
+    return this.runExclusive(action === 'stop' ? 'stopping' : 'starting', `${action[0].toUpperCase()}${action.slice(1)}ing ${id === 'web' ? 'the active web server' : id}…`, async () => {
+      await this.requireDocker()
+      if (this.snapshot.state !== 'running') throw new Error('Start the Vhostra runtime before controlling an individual service.')
+      await this.compose(['exec', '-T', 'runtime', 'supervisorctl', action, name])
+      if (id === 'web' && action !== 'stop') await this.healthCheck(state.settings.selectedWebServer)
+      if (id === 'mariadb' && action !== 'stop') await this.compose(['exec', '-T', 'runtime', 'mariadb', '-uroot', '-e', 'SELECT 1'])
+      if (id === 'redis' && action !== 'stop') await this.compose(['exec', '-T', 'runtime', 'redis-cli', 'PING'])
+      if (id === 'memcached' && action !== 'stop') await this.compose(['exec', '-T', 'runtime', '/bin/sh', '-lc', "printf 'version\\r\\n' | nc -w 3 127.0.0.1 11211 | grep -q '^VERSION'"])
+      await this.refresh()
+      return this.listManagedServices()
+    })
   }
   dispose() { this.clearHtaccessWatchers() }
   async listPhpExtensions() {
@@ -312,6 +353,8 @@ export class DockerRuntimeController {
     const extensionHealth = await ready(ports.http, '/vhostra-extensions.php')
     const expectExtension = (extension: string, enabled: boolean) => { if (enabled && !extensionHealth.includes(`${extension}:1`)) throw new Error(`The required PHP extension “${extension}” is not enabled in the selected LSPHP runtime.`) }
     expectExtension('mysqli', true); expectExtension('pdo_mysql', true); expectExtension('opcache', state.settings.php.opcacheEnabled); expectExtension('redis', state.settings.optionalServices.redis || state.settings.php.extensions.includes('redis')); expectExtension('memcached', state.settings.optionalServices.memcached || state.settings.php.extensions.includes('memcached'))
+    const modules = new Set(parseHttpJson<string[]>(await ready(ports.http, '/vhostra-extension-state.php')) ?? [])
+    for (const extension of state.settings.php.extensions) if (!modules.has(extension)) throw new Error(`The selected PHP extension “${extension}” is not enabled in the replacement LSPHP runtime.`)
     if (state.settings.optionalServices.redis) await this.compose(['exec', '-T', 'runtime', 'redis-cli', 'PING'])
     if (state.settings.optionalServices.memcached) await this.compose(['exec', '-T', 'runtime', '/bin/sh', '-lc', "printf 'version\\r\\n' | nc -w 3 127.0.0.1 11211 | grep -q '^VERSION'"])
     if (!await ready(ports.phpMyAdmin, '/phpmyadmin/index.php')) throw new Error('phpMyAdmin did not pass its shared-runtime health check.')

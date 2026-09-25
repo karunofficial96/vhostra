@@ -23,6 +23,13 @@ const applicationIcon = process.platform === 'darwin'
 const preloadPath = path.join(__dirname, 'preload.cjs')
 const trayIcon = path.join(__dirname, '../build/icons/32x32.png')
 
+function createRuntimeController() {
+  services?.dispose()
+  services = new DockerRuntimeController(store.layout, () => store.getState(), message => store.updateLocalhostWelcome(message))
+  hosts = new HostsFileManager(path.join(store.layout.root, 'temporary'))
+  services.subscribe(() => { primaryWindow?.webContents.send('vhostra:runtime-status', services.current()); updateTrayMenu() })
+}
+
 
 const createWindow = () => {
   if (primaryWindow && !primaryWindow.isDestroyed()) { primaryWindow.focus(); return primaryWindow }
@@ -63,9 +70,7 @@ const createWindow = () => {
 
 app.whenReady().then(() => {
   store = new VhostraStore(app.getPath('userData'), path.join(__dirname, '../dist-welcome'))
-  services = new DockerRuntimeController(store.layout, () => store.getState(), message => store.updateLocalhostWelcome(message))
-  hosts = new HostsFileManager(path.join(store.layout.root, 'temporary'))
-  services.subscribe(() => { primaryWindow?.webContents.send('vhostra:runtime-status', services.current()) })
+  createRuntimeController()
   registerIpc()
   registerScreenshotProtocol()
   createTray()
@@ -90,6 +95,20 @@ function registerIpc() {
     const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender)!, { properties: ['openDirectory', 'createDirectory'] })
     return result.canceled ? null : result.filePaths[0] ?? null
   })
+  ipcMain.handle('vhostra:choose-configuration-location', async event => {
+    const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender)!, { title: 'Choose Vhostra configuration destination', properties: ['openDirectory', 'createDirectory'] })
+    return result.canceled ? null : result.filePaths[0] ?? null
+  })
+  ipcMain.handle('vhostra:migrate-configuration-location', async (_event, directory: string) => {
+    if (typeof directory !== 'string' || !path.isAbsolute(directory)) throw new Error('Choose an absolute local configuration destination.')
+    // Coordinate Vhostra's own writer before copying. This stops only the
+    // Vhostra-labeled runtime; host project files and unrelated Docker resources remain untouched.
+    if (services.current().state === 'running') await services.stop()
+    const result = await store.migrateConfiguration(directory)
+    createRuntimeController()
+    await services.refresh()
+    return result
+  })
   ipcMain.handle('vhostra:open-site', async (_event, value: string) => {
     await openExternal(value)
   })
@@ -101,6 +120,8 @@ function registerIpc() {
       runtime: layout.runtime, certificates: layout.certificates, persistentData: layout.persistentData, logs: layout.logs, backups: layout.backups, exports: layout.exports,
     }
   })
+  ipcMain.handle('vhostra:list-persistent-logs', () => listPersistentLogs())
+  ipcMain.handle('vhostra:read-log-tail', (_event, relative: string) => readLogTail(relative))
   ipcMain.handle('vhostra:export-configuration', async () => {
     const result = await dialog.showSaveDialog({ title: 'Export Vhostra configuration', defaultPath: path.join(store.layout.exports, 'vhostra-configuration.json'), filters: [{ name: 'Vhostra configuration', extensions: ['json'] }] })
     return result.canceled || !result.filePath ? null : { path: await store.exportBundle(result.filePath) }
@@ -116,6 +137,8 @@ function registerIpc() {
   ipcMain.handle('vhostra:check-port', (_event, port: number) => services.checkPort(port))
   ipcMain.handle('vhostra:find-available-port', (_event, port: number) => services.findAvailablePort(port))
   ipcMain.handle('vhostra:reload-web-server', () => services.reloadWebServer())
+  ipcMain.handle('vhostra:list-managed-services', () => services.listManagedServices())
+  ipcMain.handle('vhostra:control-managed-service', (_event, id: 'web' | 'mariadb' | 'redis' | 'memcached', action: 'start' | 'stop' | 'restart') => services.controlManagedService(id, action))
   ipcMain.handle('vhostra:list-databases', () => services.listDatabases())
   ipcMain.handle('vhostra:list-php-extensions', () => services.listPhpExtensions())
   ipcMain.handle('vhostra:get-cwebp-status', () => services.getCwebpStatus())
@@ -178,6 +201,8 @@ function updateTrayMenu() {
   if (!tray) return
   const status = services.current(); const state = trayState(status.state); const controlsAvailable = !['unavailable', 'starting', 'stopping'].includes(status.state)
   const action = (operation: 'start' | 'stop' | 'restart') => () => { void services[operation]().catch(error => console.error(`[Vhostra] ${operation} services failed:`, error)).finally(updateTrayMenu); updateTrayMenu() }
+  const managed = status.state === 'running' ? [] as Awaited<ReturnType<typeof services.listManagedServices>> : []
+  void services.listManagedServices().then(rows => { managed.splice(0, managed.length, ...rows); if (tray) updateTrayMenuWithManaged(rows) }).catch(() => {})
   const items: MenuItemConstructorOptions[] = [
     { label: 'Open Vhostra', click: () => { void openApplicationWindow() } },
     { label: 'Open localhost in default browser', click: () => { void store.getLocalhostUrl().then(openExternal).catch(error => console.error('[Vhostra] Opening localhost failed:', error)) } },
@@ -193,6 +218,29 @@ function updateTrayMenu() {
   tray.setToolTip(state === 'unavailable' ? 'Vhostra — Docker unavailable' : `Vhostra — services ${state}`)
 }
 
+function updateTrayMenuWithManaged(managed: Awaited<ReturnType<typeof services.listManagedServices>>) {
+  if (!tray) return
+  const status = services.current(); const state = trayState(status.state); const controlsAvailable = state === 'running'
+  const control = (id: 'web' | 'mariadb' | 'redis' | 'memcached', action: 'start' | 'stop' | 'restart') => () => { void services.controlManagedService(id, action).catch(error => console.error(`[Vhostra] ${action} ${id} failed:`, error)).finally(updateTrayMenu) }
+  const componentMenus: MenuItemConstructorOptions[] = managed.map(service => ({ label: `${service.label}: ${service.state}`, submenu: service.enabled ? [
+    { label: 'Start', enabled: controlsAvailable && service.state !== 'running' && service.state !== 'starting', click: control(service.id, 'start') },
+    { label: 'Stop', enabled: controlsAvailable && service.state === 'running', click: control(service.id, 'stop') },
+    { label: 'Restart', enabled: controlsAvailable && service.state === 'running', click: control(service.id, 'restart') },
+  ] : [{ label: 'Disabled in Vhostra Settings', enabled: false }] }))
+  const action = (operation: 'start' | 'stop' | 'restart') => () => { void services[operation]().catch(error => console.error(`[Vhostra] ${operation} services failed:`, error)).finally(updateTrayMenu) }
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Open Vhostra', click: () => { void openApplicationWindow() } },
+    { label: 'Open localhost in default browser', click: () => { void store.getLocalhostUrl().then(openExternal).catch(error => console.error('[Vhostra] Opening localhost failed:', error)) } },
+    { type: 'separator' },
+    ...componentMenus,
+    { type: 'separator' },
+    { label: 'Start Services', enabled: !['unavailable', 'starting', 'stopping'].includes(state) && (state === 'stopped' || state === 'not-created' || state === 'error'), click: action('start') },
+    { label: 'Stop Services', enabled: state === 'running', click: action('stop') },
+    { label: 'Restart Services', enabled: state === 'running', click: action('restart') },
+    { type: 'separator' }, { label: 'Quit Vhostra', click: () => { isQuitting = true; app.quit() } },
+  ]))
+}
+
 function trayState(state: RuntimeState): RuntimeState { return state }
 
 function registerScreenshotProtocol() {
@@ -204,4 +252,30 @@ function registerScreenshotProtocol() {
       return image ? new Response(image.data, { headers: { 'content-type': image.mime, 'cache-control': 'private, max-age=3600' } }) : new Response('Not found', { status: 404 })
     } catch { return new Response('Not found', { status: 404 }) }
   })
+}
+
+async function listPersistentLogs() {
+  const root = store.layout.logs; const output: Array<{ path: string; size: number; modifiedAt: string }> = []
+  const walk = async (directory: string, prefix = ''): Promise<void> => {
+    if (output.length >= 100) return
+    let entries: import('node:fs').Dirent[]
+    try { entries = await fs.readdir(directory, { withFileTypes: true }) } catch { return }
+    for (const entry of entries) {
+      if (output.length >= 100) return
+      const relative = path.join(prefix, entry.name); const file = path.join(directory, entry.name)
+      if (entry.isDirectory()) await walk(file, relative)
+      else if (entry.isFile()) { const details = await fs.stat(file); output.push({ path: relative, size: details.size, modifiedAt: details.mtime.toISOString() }) }
+    }
+  }
+  await walk(root)
+  return output.sort((left, right) => right.modifiedAt.localeCompare(left.modifiedAt))
+}
+
+async function readLogTail(relative: string) {
+  if (!relative || path.isAbsolute(relative) || relative.split(path.sep).includes('..')) throw new Error('Invalid persistent log path.')
+  const root = path.resolve(store.layout.logs); const file = path.resolve(root, relative)
+  if (!file.startsWith(`${root}${path.sep}`)) throw new Error('Invalid persistent log path.')
+  const details = await fs.stat(file); if (!details.isFile()) throw new Error('Log file was not found.')
+  const length = Math.min(details.size, 64 * 1024); const handle = await fs.open(file, 'r')
+  try { const buffer = Buffer.alloc(length); await handle.read(buffer, 0, length, Math.max(0, details.size - length)); return { path: relative, text: buffer.toString('utf8'), truncated: details.size > length, size: details.size } } finally { await handle.close() }
 }

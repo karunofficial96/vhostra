@@ -46,12 +46,20 @@ export class HostsFileManager {
   async removeVhostraMappings(hostnames: string[]) {
     const requested = new Set(hostnames.map(value => value.toLowerCase()))
     const source = await fs.readFile(this.hostsPath, 'utf8')
-    const retained = source.split(/\r?\n/).filter(line => {
-      if (!/#\s*Vhostra\b/i.test(line)) return true
-      const tokens = line.replace(/#.*/, '').trim().split(/\s+/)
-      return !tokens.slice(1).some(hostname => requested.has(hostname.toLowerCase()))
+    let changed = false
+    const retained = source.split(/\r?\n/).flatMap(line => {
+      if (!/#\s*Vhostra\b/i.test(line)) return [line]
+      const [entry, comment = ''] = line.split(/#(.*)/s)
+      const tokens = entry.trim().split(/\s+/).filter(Boolean)
+      if (tokens.length < 2) return [line]
+      const [address, ...names] = tokens
+      const keep = names.filter(hostname => !requested.has(hostname.toLowerCase()))
+      if (keep.length === names.length) return [line]
+      changed = true
+      // The marker stays with any aliases that originated on this Vhostra line.
+      return keep.length ? [`${address} ${keep.join(' ')} #${comment.trim()}`] : []
     }).join(os.EOL)
-    if (retained === source) return false
+    if (!changed) return false
     await this.replaceWithElevation(`${retained.replace(/\n*$/, '')}${os.EOL}`)
     return true
   }

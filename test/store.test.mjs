@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { access, mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -52,10 +52,28 @@ test('copies offline welcome fonts, logos and service assets into the localhost 
     const localhost = state.sites.find(site => site.builtIn === 'localhost')
     assert.ok(localhost)
     const page = await readFile(path.join(localhost.documentRoot, 'index.html'), 'utf8')
-    assert.match(page, /openlitespeed\.png/)
-    assert.match(page, /vhostra-logo-dark-[\w-]+\.png/)
-    await access(path.join(localhost.documentRoot, 'openlitespeed.png'))
-    await access(path.join(localhost.documentRoot, 'assets', 'roboto-400-BKwBj7lc.ttf'))
-    assert.ok((await readdir(path.join(localhost.documentRoot, 'assets'))).some(file => /^vhostra-logo-dark-[\w-]+\.png$/.test(file)))
+    assert.match(page, /services\/openlitespeed\.png/)
+    assert.match(page, /vhostra-logo-dark\.png/)
+    await access(path.join(localhost.documentRoot, 'services', 'openlitespeed.png'))
+    await access(path.join(localhost.documentRoot, 'fonts', 'roboto-400.ttf'))
+    assert.ok((await readdir(localhost.documentRoot)).includes('vhostra-logo-dark.png'))
   } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
+test('migrates only Vhostra-owned configuration after a verified copy', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'vhostra-migrate-'))
+  const destination = await mkdtemp(path.join(os.tmpdir(), 'vhostra-migrate-destination-'))
+  try {
+    const store = new VhostraStore(directory)
+    await store.getState()
+    const externalRoot = path.join(directory, 'external-site')
+    await mkdir(externalRoot)
+    await writeFile(path.join(externalRoot, 'keep.txt'), 'site files stay external')
+    const result = await store.migrateConfiguration(destination)
+    assert.equal(result.root, path.join(destination, 'Vhostra'))
+    await access(path.join(result.root, 'settings.json'))
+    assert.equal(await readFile(path.join(externalRoot, 'keep.txt'), 'utf8'), 'site files stay external')
+    const reloaded = new VhostraStore(directory)
+    assert.equal(reloaded.layout.root, result.root)
+  } finally { await rm(directory, { recursive: true, force: true }); await rm(destination, { recursive: true, force: true }) }
 })

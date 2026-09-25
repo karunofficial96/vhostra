@@ -54,7 +54,4 @@ if [ ! -d /var/lib/mysql/mysql ]; then
   mariadb-install-db --user=mysql --datadir=/var/lib/mysql
 fi
 chown -R mysql:mysql /var/lib/mysql
-if [ "${VHOSTRA_REDIS:-false}" = true ]; then redis-server /etc/redis/redis.conf --daemonize yes; fi
-if [ "${VHOSTRA_MEMCACHED:-false}" = true ]; then memcached -u root -d; fi
-
 exec /usr/bin/supervisord -c /etc/supervisor/supervisord.conf

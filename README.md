@@ -179,3 +179,61 @@ Changing an optional extension, OPcache, or `cwebp` preference persists the desi
 ## Startup
 
 Settings can register Vhostra at login. macOS and Windows use Electron’s native login-item support; Linux writes only Vhostra’s own XDG autostart desktop entry. The separate “Start configured services when Vhostra opens” setting starts only the Vhostra-managed runtime and respects the persisted Redis/Memcached selections.
+
+## Local configuration path and logs
+
+Settings shows Vhostra's active local configuration path and can move it to an
+empty destination. Vhostra stops only its own runtime writers, copies its
+settings, generated configuration, certificates, logs, backups, and MariaDB
+data, verifies the copied settings, atomically switches its local pointer, and
+only then removes the prior Vhostra-owned copy. It never moves external site
+document roots or unrelated Docker data.
+
+The Logs page reads persistent host-side logs incrementally: it lists a bounded
+set of files and loads at most the newest 64 KiB of one selected file into the
+renderer. This avoids retaining huge log files in Electron memory.
+
+## Tray component controls
+
+When the single Vhostra runtime is running, the tray obtains actual Supervisor
+state for the active web server, MariaDB, and enabled Redis/Memcached services.
+It exposes only meaningful Start, Stop, and Restart actions for those
+Vhostra-managed processes. PHP/LSPHP remains controlled by its active web
+server rather than being represented as a misleading separate generic-PHP
+container or tray process.
+
+## Terminal commands
+
+Vhostra also exposes the same local runtime controller through its CLI. From a
+development checkout, use `npm run cli -- …`; after installation the package
+provides the `vhostra` command. The CLI never uses global Docker cleanup and
+only invokes Vhostra's generated, labeled Compose project.
+
+```bash
+vhostra status
+vhostra runtime status
+vhostra runtime start
+vhostra runtime stop
+vhostra runtime restart
+vhostra service list
+vhostra service web restart
+vhostra service mariadb restart
+vhostra service redis stop
+
+vhostra php extensions list
+vhostra php extension enable imagick
+vhostra php extension disable imagick
+vhostra opcache status
+vhostra opcache enable
+vhostra cwebp status
+vhostra cwebp disable
+vhostra redis status
+vhostra redis enable
+vhostra memcached restart
+```
+
+Commands return non-zero for invalid syntax, unavailable Docker, failed health
+checks, or failed runtime operations. `VHOSTRA_USER_DATA` may be set only when
+the desktop app uses a non-default Electron user-data directory. Hosts-file
+updates remain a desktop UI operation because they require a scoped native
+administrator prompt; the CLI does not bypass that privilege boundary.

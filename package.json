@@ -5,6 +5,7 @@
   "type": "module",
   "description": "A lightweight graphical local PHP development environment.",
   "main": "dist-electron/main.js",
+  "bin": { "vhostra": "scripts/vhostra.mjs" },
   "build": {
     "appId": "com.vhostra.app",
     "productName": "Vhostra",
@@ -22,6 +23,7 @@
     "typecheck": "tsc -b --pretty false",
     "test": "npm run build && node --test test/store.test.mjs",
     "test:bridge": "node scripts/run-bridge-test.mjs",
+    "cli": "node scripts/vhostra.mjs",
     "lint": "eslint . --max-warnings=0"
   },
   "dependencies": {
