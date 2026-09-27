@@ -46,7 +46,7 @@ export interface VhostraDesktopApi {
   deleteDatabase(database: string): Promise<{ database: string; message: string }>
   syncAllHosts(): Promise<HostsMappingResult>
   syncHosts(id: string): Promise<HostsMappingResult>
-  hostsStatus(id: string): Promise<Array<{ hostname: string; state: 'mapped' | 'required' | 'conflict'; address?: string }>>
+  hostsStatus(id: string): Promise<Array<{ hostname: string; state: 'mapped' | 'required' | 'conflict'; address?: string; issue?: string }>>
   getAppInfo(): Promise<{ name: string; version: string }>
   checkForUpdates(): Promise<{ state: 'unconfigured' | 'up-to-date' | 'available' | 'error'; currentVersion: string; availableVersion?: string; notes?: string; url?: string; message: string }>
   onRuntimeStatus(listener: (status: RuntimeSnapshot) => void): () => void

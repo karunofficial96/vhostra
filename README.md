@@ -273,3 +273,40 @@ those systems; this development Mac denied login-item registration. Automatic
 runtime startup failures appear in a native error dialog.
 
 Linux startup quoting follows the [Desktop Entry specification](https://specifications.freedesktop.org/desktop-entry/latest/exec-variables.html). Native login settings use the matching registration arguments when verifying acceptance, as required by [Electron](https://www.electronjs.org/docs/latest/api/app#appgetloginitemsettingsoptions-macos-windows).
+
+
+Runtime operation details are available through **Expand runtime details** only
+while backend work is active. Docker build/start/stop output, candidate validation,
+health stages and configuration migration stages are streamed from real work.
+The panel uses bundled Roboto Mono, keeps a bounded live buffer, preserves
+scroll-back, and offers Follow latest output. Credentials and private material
+are redacted before the desktop bridge; completed output belongs in ordinary
+logs rather than a permanent runtime terminal.
+
+Repeated desktop launches hand off to Electron's single session owner, restoring
+and focusing its existing window. Port checks recognize the exact labeled
+Compose project, runtime service, project directory and published bindings;
+Vhostra's own ports are not external startup conflicts.
+
+Hosts changes preserve unrelated records and formatting, compare the source
+again before writing, create a protected adjacent `.vhostra-<id>.bak` recovery
+copy, and replace the file atomically. Repair all mappings uses one write.
+Renaming verifies new mappings before removing obsolete owned names. Windows
+uses a narrowly elevated encoded PowerShell child with verified exit status;
+macOS uses osascript and Linux pkexec. Native Windows/Linux prompts and approved
+macOS hosts/login acceptance remain platform acceptance checks.
+
+Additional opt-in acceptance scripts (after `npm run build`):
+
+```sh
+node test/extensions-runtime.mjs
+node test/live-owned-ports.mjs  # read-only current macOS profile check
+# Supply an isolated existing temporary directory for these native app harnesses:
+env -u ELECTRON_RUN_AS_NODE node_modules/.bin/electron test/session.electron.mjs --session-root=/private/tmp/vhostra-session-test
+env -u ELECTRON_RUN_AS_NODE node_modules/.bin/electron test/terminal.electron.mjs
+env -u ELECTRON_RUN_AS_NODE node_modules/.bin/electron test/migration-progress.electron.mjs --profile=/private/tmp/vhostra-migration-profile
+```
+
+The session/migration harnesses remove only their explicitly supplied test
+profiles. Never pass a real user-data directory to them. Full audit evidence is
+recorded in `VHOSTRA_FUNCTIONAL_AUDIT.md`.

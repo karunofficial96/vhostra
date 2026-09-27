@@ -1,24 +1,31 @@
 # Vhostra Execution State
 
-Current workstream: Implementable completion queue finished; local final validation passed; native startup acceptance remains external.
+Current workstream: Requested functional fixes implemented; comprehensive local final acceptance complete.
 
 Completed substeps:
-- Prior isolated live acceptance passed migration/database/phpMyAdmin, OLS/Apache/Nginx, rewrites, TLS/port conflicts, PHP promotion, optional-service lifecycle, and forced promotion rollback. Test Docker resources removed; do not repeat without a relevant runtime change.
-- Native close/quit policies and 20px/40px transparent tray acceptance passed; original user preferences restored.
-- All eight service marks rendered and visually inspected in light/dark themes.
-- Offline Help/About/privacy/log viewer accepted; local welcome font paths fixed; offline asset/resource test passed.
-- Linux XDG startup lifecycle/escaping and macOS/Windows API acceptance/refusal tests passed. OS failures and automatic-runtime startup failures now display feedback.
-- Regression fix retains runtime backup if recovery or candidate cleanup fails; targeted failure/recovery tests passed.
+- Inspected actual source and handoff; initial working tree was clean. Continued existing project without resets, overwrites or commits.
+- Fixed managed-port ownership with exact project/service/managed labels, project directory and structured host bindings. Start accepts current own bindings; external conflicts remain protected. Actual current runtime 80/9080/3306/443 checked read-only.
+- Fixed single-instance lifecycle gating and restore/show/focus. Actual native two-launch test retained one window/tray and exited losing launches.
+- Implemented bounded real stage/Docker output, candidate forwarding, split-secret/private-material redaction and active-only terminal. Roboto Mono, native scrolling/follow, Light/Dark/System and responsive bounds accepted.
+- Completed hosts workflow preflight/serialization/import consistency, add-before-remove rename, shared-name deletion protection, atomic repair-all, UUID record ownership, retained cancellation/failure feedback, and IPv4 mapping for IPv6-only hosts.
+- Hosts native implementations use scoped elevation, expected-source comparison, metadata-preserving staging, backups, atomic replacement and read-back. Windows encoded elevated child verifies exit and preserves bytes. Linux/macOS write plans executed against temporary files; Windows contract/cancellation tested.
+- Functional audit found and fixed fresh PHP 8.3 OPcache package absence and rebuilt APCu disable failure. Catalog reports actual package/module state; protected controls match service policy; purge refuses collateral dependency removal.
+- Native migration found and fixed background welcome-write race: coalesced refresh and serialized welcome writes drained before copy. Real migration stages remain one progress session across controllers; concurrent writes rejected.
 
-Current substep: Final validation and TODO/placeholder/regression/DESIGN audit complete.
+Current substep: Final validation complete. The last catalog correction passed the renewed production build and all 35 tests. All 16 exact session test image tags and test containers/networks are cleaned; original runtime remains running.
 
 Next exact action:
-The remaining unchecked startup item requires native platform acceptance; there is no remaining local implementation action. Preserve this workspace. External release acceptance needs native Windows/Linux login launch and a signed Mac build with OS login approval; release packaging/update metadata require a release environment.
+Run target-platform acceptance listed in VHOSTRA_COMPLETION_CHECKLIST.md: Windows/Linux UAC/pkexec protected-host add/edit/alias/delete/repair/cancel and native login launch; macOS real administrator hosts prompt and approved/signed login build; signed installer/update endpoint release acceptance. Implementation and local tests are complete; do not claim those unavailable native tests passed. No remaining requested local implementation item was identified in the source/vertical audit.
 
-Relevant files: electron/startup.ts, electron/main.ts, electron/runtime.ts, electron/logs.ts, src/welcome/styles.css, test/*.test.mjs, test/artwork.electron.mjs, README.md, DESIGN.md.
+Files involved: electron/{main,runtime,progress,hosts,store}.ts; runtime-image/{Dockerfile,entrypoint.sh}; src/{App,styles,components/RuntimeProgress,components/VirtualHostsWorkspace,components/ServicesWorkspace,types}; test/*; README; checklist and functional audit.
 
-External acceptance limits: Native Windows/Linux login launches require those OSes. This Mac denied login-item registration; refusal now surfaces and saved preference rolls back. No signed installer/release update source is configured. These are release environment checks, not silently claimed as tested.
+Validation completed (2026-09-27):
+- npm test: production desktop/welcome/Electron/preload build and 35/35 tests.
+- Native session, terminal, migration IPC, bridge, tray and artwork; final screenshots inspected. Terminal includes minimum-width and system-theme acceptance.
+- Final isolated servers-runtime and migration-runtime suites; dedicated extensions-runtime lifecycle suite. Fresh OPcache and APCu failures were resolved before the final gate.
+- CLI help, runtime shell/JS syntax and git diff --check.
+- Existing managed runtime read-only ownership/status checks; original runtime left running.
 
-Preserve all uncommitted work. Do not reset/revert/stash/discard or touch unrelated Docker resources.
+External boundary: Target OS environments, interactive protected-host administrator approval, approved/signed macOS login build, signing credentials and production update metadata are still required for external acceptance. Implementations are present; acceptance pending is recorded explicitly.
 
-Final validation (2026-09-27): npm test passed (production desktop/welcome/Electron/preload build; 21/21 tests), native bridge passed, native tray passed, native artwork harness passed and screenshot inspected, shell/CLI syntax and git diff --check passed. Production TODO/FIXME/dummy/mock audit found none; README retains explicit screenshot capture, arbitrary-config parsing, and external-backup restore limitations outside this checklist. README/DESIGN stale future-runtime/font claims corrected. Final diff/status inspected; all changes remain uncommitted.
+Preserve all current uncommitted changes. Do not reset/revert/stash/discard, commit, or touch unrelated Docker resources.

@@ -15,10 +15,11 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { VhostraStore } from "./store.js";
-import { DockerRuntimeController, type RuntimeState } from "./runtime.js";
+import { DockerRuntimeController, type RuntimeState, type RuntimeSnapshot } from "./runtime.js";
 import { HostsFileManager } from "./hosts.js";
 import { listPersistentLogs, readLogTail } from "./logs.js";
 import { createShutdownManager } from "./shutdown.js";
+import { redactProgress } from "./progress.js";
 import { configureStartup } from "./startup.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -29,6 +30,22 @@ let hosts: HostsFileManager;
 let primaryWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
+let migrationProgress: RuntimeSnapshot["progress"];
+let migrationMessage = "";
+const migrationSeen = new Map<DockerRuntimeController, { id: number; total: number }>();
+function desktopRuntimeSnapshot(): RuntimeSnapshot {
+    const snapshot = services.current();
+    return migrationProgress ? { ...snapshot, state: "starting", message: migrationMessage, progress: { ...migrationProgress, lines: [...migrationProgress.lines] } } : snapshot;
+}
+function publishRuntimeStatus() { primaryWindow?.webContents.send("vhostra:runtime-status", desktopRuntimeSnapshot()); }
+function recordMigrationStage(message: string) {
+    if (!migrationProgress) return;
+    migrationMessage = redactProgress(message);
+    migrationProgress.lines = [...migrationProgress.lines, migrationMessage].slice(-300);
+    migrationProgress.total++;
+    publishRuntimeStatus();
+}
+
 const applicationIcon =
     process.platform === "darwin"
         ? path.join(__dirname, "../build/icon.icns")
@@ -50,11 +67,19 @@ function createRuntimeController() {
         (message) => store.updateLocalhostWelcome(message),
     );
     hosts = new HostsFileManager(path.join(store.layout.root, "temporary"));
+    const controller = services;
     services.subscribe(() => {
-        primaryWindow?.webContents.send(
-            "vhostra:runtime-status",
-            services.current(),
-        );
+        if (controller !== services && !migrationProgress) return;
+        const snapshot = controller.current();
+        if (migrationProgress && snapshot.progress) {
+            const seen = migrationSeen.get(controller);
+            const count = seen?.id === snapshot.progress.id ? seen.total : 0;
+            const lines = snapshot.progress.lines.slice(Math.max(0, snapshot.progress.lines.length - (snapshot.progress.total - count)));
+            migrationSeen.set(controller, { id: snapshot.progress.id, total: snapshot.progress.total });
+            for (const line of lines) recordMigrationStage(line);
+            migrationMessage = snapshot.message;
+        }
+        publishRuntimeStatus();
         updateTrayMenu();
     });
 }
@@ -136,7 +161,8 @@ const createWindow = () => {
     );
     window.webContents.on(
         "console-message",
-        (_event, _level, message, line, sourceId) => {
+        (details) => {
+            const { message, lineNumber: line, sourceId } = details;
             if (message.includes("[Vhostra preload]"))
                 console.error(
                     `[Vhostra] Preload diagnostic (${sourceId}:${line}): ${message}`,
@@ -169,15 +195,19 @@ if (!hasSingleInstanceLock) {
     app.quit();
 } else {
     app.on("second-instance", () => {
-        if (!app.isReady()) return;
-        void openApplicationWindow();
+        void app.whenReady().then(openApplicationWindow);
     });
 }
 
-app.whenReady().then(() => {
+if (hasSingleInstanceLock) app.whenReady().then(() => {
     store = new VhostraStore(
         app.getPath("userData"),
         path.join(__dirname, "../dist-welcome"),
+        async names => {
+            const statuses = await hosts.mappingStatus(names);
+            const conflicts = statuses.filter(item => item.state === "conflict");
+            if (conflicts.length) throw new Error(`Hosts-file conflict: ${conflicts.map(item => `${item.hostname} maps to ${item.address}`).join(", ")}. The site was not saved.`);
+        },
     );
     createRuntimeController();
     registerIpc();
@@ -214,8 +244,18 @@ app.on("before-quit", () => {
 });
 
 function registerIpc() {
-    ipcMain.handle("vhostra:get-state", () => store.getState());
-    ipcMain.handle("vhostra:save-settings", async (_event, settings) => {
+    const migrationMutations = new Set([
+        "save-settings", "add-site", "update-site", "remove-site", "sync-all-hosts", "sync-hosts",
+        "set-virtual-host-rewrite", "import-configuration", "start-services", "stop-services", "restart-services",
+        "reload-web-server", "set-optional-service", "control-managed-service", "manage-php-extension",
+        "configure-cwebp", "create-database", "import-database", "repair-database", "delete-database", "quit-application",
+    ]);
+    const handle = (channel: string, listener: Parameters<typeof ipcMain.handle>[1]) => ipcMain.handle(channel, (event, ...args) => {
+        if (migrationProgress && migrationMutations.has(channel.replace("vhostra:", ""))) throw new Error("Configuration migration is in progress; wait for completion before changing the runtime or definitions.");
+        return listener(event, ...args);
+    });
+    handle("vhostra:get-state", () => store.getState());
+    handle("vhostra:save-settings", async (_event, settings) => {
         const previous = (await store.getState()).settings;
         const result = await store.saveSettings(settings);
         const loginChanged =
@@ -237,16 +277,17 @@ function registerIpc() {
             throw error;
         }
     });
-    ipcMain.handle("vhostra:add-site", async (_event, input) => {
+    handle("vhostra:add-site", async (_event, input) => {
         const result = await store.addSite(input);
         const mapping = await safelyEnsureHosts([
             new URL(input.url).hostname,
             ...(input.aliases ?? []),
         ]);
-        await services.applyConfiguration();
+        try { await services.applyConfiguration(); }
+        catch (error) { mapping.message += ` The definition was saved, but runtime configuration requires retry: ${error instanceof Error ? error.message : String(error)}`; }
         return { state: result, mapping };
     });
-    ipcMain.handle("vhostra:update-site", async (_event, input) => {
+    handle("vhostra:update-site", async (_event, input) => {
         const before = await store.getState();
         const previous = before.sites.find((site) => site.id === input.id);
         const previousHost = before.virtualHosts.find(
@@ -259,7 +300,9 @@ function registerIpc() {
         const names = savedHost
             ? [savedHost.hostname, ...savedHost.aliases]
             : [new URL(input.url).hostname];
-        if (previousHost) {
+        const mapping = await safelyEnsureHosts(names);
+        const desiredMapped = await hosts.mappingStatus(names).then(statuses => statuses.every(item => item.state === "mapped")).catch(() => false);
+        if (previousHost && desiredMapped) {
             const retainedNames = new Set(
                 result.virtualHosts
                     .flatMap((host) => [host.hostname, ...host.aliases])
@@ -280,11 +323,11 @@ function registerIpc() {
                         ),
                     );
         }
-        const mapping = await safelyEnsureHosts(names);
-        await services.applyConfiguration();
+        try { await services.applyConfiguration(); }
+        catch (error) { mapping.message += ` The definition was saved, but runtime configuration requires retry: ${error instanceof Error ? error.message : String(error)}`; }
         return { state: result, mapping };
     });
-    ipcMain.handle("vhostra:remove-site", async (_event, id: string) => {
+    handle("vhostra:remove-site", async (_event, id: string) => {
         const before = await store.getState();
         const site = before.sites.find((item) => item.id === id);
         const host = before.virtualHosts.find(
@@ -315,7 +358,7 @@ function registerIpc() {
         }
         return { ...result, mappingNotice };
     });
-    ipcMain.handle("vhostra:sync-all-hosts", async () => {
+    handle("vhostra:sync-all-hosts", async () => {
         const state = await store.getState();
         return hosts.reconcileMappings(
             state.virtualHosts
@@ -323,24 +366,24 @@ function registerIpc() {
                 .flatMap((host) => [host.hostname, ...host.aliases]),
         );
     });
-    ipcMain.handle("vhostra:sync-hosts", async (_event, id: string) => {
+    handle("vhostra:sync-hosts", async (_event, id: string) => {
         const state = await store.getState();
         const host = state.virtualHosts.find((item) => item.id === id);
         if (!host) throw new Error("Virtual-host definition not found.");
         return hosts.ensureLocalhostMappings([host.hostname, ...host.aliases]);
     });
-    ipcMain.handle("vhostra:hosts-status", async (_event, id: string) => {
+    handle("vhostra:hosts-status", async (_event, id: string) => {
         const state = await store.getState();
         const host = state.virtualHosts.find((item) => item.id === id);
         if (!host) throw new Error("Virtual-host definition not found.");
         return hosts.mappingStatus([host.hostname, ...host.aliases]);
     });
-    ipcMain.handle("vhostra:get-app-info", () => ({
+    handle("vhostra:get-app-info", () => ({
         name: "Vhostra",
         version: app.getVersion(),
     }));
-    ipcMain.handle("vhostra:check-for-updates", () => checkForUpdates());
-    ipcMain.handle(
+    handle("vhostra:check-for-updates", () => checkForUpdates());
+    handle(
         "vhostra:set-vhost-rewrite",
         async (_event, id: string, enabled: boolean) => {
             const result = await store.setVirtualHostRewrite(id, enabled);
@@ -348,14 +391,14 @@ function registerIpc() {
             return result;
         },
     );
-    ipcMain.handle("vhostra:choose-document-root", async (event) => {
+    handle("vhostra:choose-document-root", async (event) => {
         const result = await dialog.showOpenDialog(
             BrowserWindow.fromWebContents(event.sender)!,
             { properties: ["openDirectory", "createDirectory"] },
         );
         return result.canceled ? null : (result.filePaths[0] ?? null);
     });
-    ipcMain.handle("vhostra:choose-configuration-location", async (event) => {
+    handle("vhostra:choose-configuration-location", async (event) => {
         const result = await dialog.showOpenDialog(
             BrowserWindow.fromWebContents(event.sender)!,
             {
@@ -365,18 +408,22 @@ function registerIpc() {
         );
         return result.canceled ? null : (result.filePaths[0] ?? null);
     });
-    ipcMain.handle(
+    handle(
         "vhostra:migrate-configuration-location",
         async (_event, directory: string) => {
             if (typeof directory !== "string" || !path.isAbsolute(directory))
                 throw new Error(
                     "Choose an absolute local configuration destination.",
                 );
+            if (migrationProgress || services.current().progress) throw new Error("A Vhostra operation is already in progress.");
+            migrationProgress = { id: -Date.now(), lines: [], total: 0 };
+            recordMigrationStage("Preparing configuration migration…");
             // Coordinate Vhostra's own writer before copying. This stops only the
             // Vhostra-labeled runtime; host project files and unrelated Docker resources remain untouched.
             const wasRunning = services.current().state === "running";
-            if (wasRunning) await services.stop();
             try {
+                if (wasRunning) await services.stop();
+                await services.pauseBackgroundWork();
                 const result = await store.migrateConfiguration(
                     directory,
                     async () => {
@@ -384,6 +431,7 @@ function registerIpc() {
                         await services.refresh();
                         if (wasRunning) await services.start();
                     },
+                    recordMigrationStage,
                 );
                 return {
                     ...result,
@@ -408,13 +456,18 @@ function registerIpc() {
                             ),
                         );
                 throw error;
+            } finally {
+                migrationProgress = undefined;
+                migrationSeen.clear();
+                publishRuntimeStatus();
+                updateTrayMenu();
             }
         },
     );
-    ipcMain.handle("vhostra:open-site", async (_event, value: string) => {
+    handle("vhostra:open-site", async (_event, value: string) => {
         await openExternal(value);
     });
-    ipcMain.handle("vhostra:get-storage-layout", () => {
+    handle("vhostra:get-storage-layout", () => {
         const layout = store.layout;
         return {
             root: layout.root,
@@ -433,13 +486,13 @@ function registerIpc() {
             exports: layout.exports,
         };
     });
-    ipcMain.handle("vhostra:list-persistent-logs", () =>
+    handle("vhostra:list-persistent-logs", () =>
         listPersistentLogs(store.layout.logs),
     );
-    ipcMain.handle("vhostra:read-log-tail", (_event, relative: string) =>
+    handle("vhostra:read-log-tail", (_event, relative: string) =>
         readLogTail(store.layout.logs, relative),
     );
-    ipcMain.handle("vhostra:export-configuration", async () => {
+    handle("vhostra:export-configuration", async () => {
         const result = await dialog.showSaveDialog({
             title: "Export Vhostra configuration",
             defaultPath: path.join(
@@ -452,7 +505,7 @@ function registerIpc() {
             ? null
             : { path: await store.exportBundle(result.filePath) };
     });
-    ipcMain.handle("vhostra:preview-configuration-import", async () => {
+    handle("vhostra:preview-configuration-import", async () => {
         const result = await dialog.showOpenDialog({
             title: "Preview Vhostra configuration import",
             properties: ["openFile"],
@@ -462,7 +515,7 @@ function registerIpc() {
             ? null
             : store.previewBundle(result.filePaths[0]);
     });
-    ipcMain.handle("vhostra:import-configuration", async () => {
+    handle("vhostra:import-configuration", async () => {
         const result = await dialog.showOpenDialog({
             title: "Import Vhostra configuration",
             properties: ["openFile"],
@@ -476,30 +529,31 @@ function registerIpc() {
                 ...site.aliases,
             ]),
         );
-        await services.applyConfiguration();
+        try { await services.applyConfiguration(); }
+        catch (error) { mapping.message += ` Imported definitions were saved, but runtime configuration requires retry: ${error instanceof Error ? error.message : String(error)}`; }
         return { ...imported, mapping };
     });
-    ipcMain.handle("vhostra:get-runtime-status", () => services.current());
-    ipcMain.handle("vhostra:start-services", () => services.start());
-    ipcMain.handle("vhostra:stop-services", () => services.stop());
-    ipcMain.handle("vhostra:restart-services", () => services.restart());
-    ipcMain.handle(
+    handle("vhostra:get-runtime-status", desktopRuntimeSnapshot);
+    handle("vhostra:start-services", () => services.start());
+    handle("vhostra:stop-services", () => services.stop());
+    handle("vhostra:restart-services", () => services.restart());
+    handle(
         "vhostra:quit-application",
         (
             _event,
             mode: "keep-services" | "stop-services" | "minimize-to-tray",
         ) => requestShutdown(mode),
     );
-    ipcMain.handle("vhostra:check-port", (_event, port: number) =>
+    handle("vhostra:check-port", (_event, port: number) =>
         services.checkPort(port),
     );
-    ipcMain.handle("vhostra:find-available-port", (_event, port: number) =>
+    handle("vhostra:find-available-port", (_event, port: number) =>
         services.findAvailablePort(port),
     );
-    ipcMain.handle("vhostra:reload-web-server", () =>
+    handle("vhostra:reload-web-server", () =>
         services.reloadWebServer(),
     );
-    ipcMain.handle(
+    handle(
         "vhostra:set-optional-service",
         async (_event, id: "redis" | "memcached", enabled: boolean) => {
             if (id !== "redis" && id !== "memcached")
@@ -510,10 +564,10 @@ function registerIpc() {
             return services.listManagedServices();
         },
     );
-    ipcMain.handle("vhostra:list-managed-services", () =>
+    handle("vhostra:list-managed-services", () =>
         services.listManagedServices(),
     );
-    ipcMain.handle(
+    handle(
         "vhostra:control-managed-service",
         (
             _event,
@@ -521,11 +575,11 @@ function registerIpc() {
             action: "start" | "stop" | "restart",
         ) => services.controlManagedService(id, action),
     );
-    ipcMain.handle("vhostra:list-databases", () => services.listDatabases());
-    ipcMain.handle("vhostra:list-php-extensions", () =>
+    handle("vhostra:list-databases", () => services.listDatabases());
+    handle("vhostra:list-php-extensions", () =>
         services.listPhpExtensions(),
     );
-    ipcMain.handle(
+    handle(
         "vhostra:manage-php-extension",
         async (
             _event,
@@ -560,8 +614,8 @@ function registerIpc() {
             return catalog;
         },
     );
-    ipcMain.handle("vhostra:get-cwebp-status", () => services.getCwebpStatus());
-    ipcMain.handle(
+    handle("vhostra:get-cwebp-status", () => services.getCwebpStatus());
+    handle(
         "vhostra:configure-cwebp",
         async (_event, enabled: boolean) => {
             const result = await services.configureCwebp(Boolean(enabled));
@@ -573,16 +627,16 @@ function registerIpc() {
             return result;
         },
     );
-    ipcMain.handle("vhostra:create-database", (_event, input) =>
+    handle("vhostra:create-database", (_event, input) =>
         services.createDatabase(input),
     );
-    ipcMain.handle(
+    handle(
         "vhostra:open-phpmyadmin",
         async (_event, database?: string) => {
             await openExternal(await services.phpMyAdminUrl(database));
         },
     );
-    ipcMain.handle(
+    handle(
         "vhostra:import-database",
         async (_event, database: string) => {
             const result = await dialog.showOpenDialog({
@@ -595,7 +649,7 @@ function registerIpc() {
                 : services.importDatabase(database, result.filePaths[0]);
         },
     );
-    ipcMain.handle(
+    handle(
         "vhostra:export-database",
         async (_event, database: string) => {
             const result = await dialog.showSaveDialog({
@@ -608,10 +662,10 @@ function registerIpc() {
                 : services.exportDatabase(database, result.filePath);
         },
     );
-    ipcMain.handle("vhostra:repair-database", (_event, database: string) =>
+    handle("vhostra:repair-database", (_event, database: string) =>
         services.repairDatabase(database),
     );
-    ipcMain.handle("vhostra:delete-database", (_event, database: string) =>
+    handle("vhostra:delete-database", (_event, database: string) =>
         services.deleteDatabase(database),
     );
 }
@@ -705,7 +759,9 @@ async function configureLaunchAtLogin(enabled: boolean) {
 
 async function openApplicationWindow() {
     const window = createWindow();
+    if (window.isMinimized()) window.restore();
     window.show();
+    app.focus({ steal: true });
     window.focus();
 }
 async function openExternal(value: string) {
@@ -1015,7 +1071,7 @@ function updateTrayMenuWithManaged(
 }
 
 function trayState(state: RuntimeState): RuntimeState {
-    return state;
+    return migrationProgress ? "starting" : state;
 }
 
 function registerScreenshotProtocol() {
@@ -1038,3 +1094,6 @@ function registerScreenshotProtocol() {
         }
     });
 }
+
+/** Read-only native acceptance diagnostics; no IPC surface. */
+export function applicationSession() { return { window: primaryWindow, tray, hasSingleInstanceLock }; }

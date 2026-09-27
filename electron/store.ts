@@ -31,15 +31,22 @@ const validPhp = new Set<PhpVersion>(['8.1', '8.2', '8.3', '8.4', '8.5'])
 
 export class VhostraStore {
   layout: StoreLayout
+  private mutation: Promise<unknown> = Promise.resolve()
+  private serialize<T>(task: () => Promise<T>): Promise<T> {
+    const result = this.mutation.then(task, task)
+    this.mutation = result.catch(() => undefined)
+    return result
+  }
   private initialized: Promise<void> | null = null
   private readonly locationFile: string
-  constructor(private readonly userData: string, private readonly welcomeTemplateDirectory?: string) {
+  constructor(private readonly userData: string, private readonly welcomeTemplateDirectory?: string, private readonly validateHostMappings?: (names: string[]) => Promise<void>) {
     this.locationFile = path.join(userData, 'vhostra-location.json')
     let root = path.join(userData, 'Vhostra')
     try { const saved = JSON.parse(readFileSync(this.locationFile, 'utf8')) as { root?: unknown }; if (typeof saved.root === 'string' && path.isAbsolute(saved.root)) root = saved.root } catch { /* default location */ }
     this.layout = this.layoutFor(root)
   }
-  async migrateConfiguration(destinationDirectory: string, validateDestination?: () => Promise<void>) {
+  migrateConfiguration(destinationDirectory: string, validateDestination?: () => Promise<void>, progress?: (message: string) => void) { return this.serialize(() => this.migrateConfigurationRecords(destinationDirectory, validateDestination, progress)) }
+  private async migrateConfigurationRecords(destinationDirectory: string, validateDestination?: () => Promise<void>, progress?: (message: string) => void) {
     await this.initialize()
     const oldLayout = this.layout; const root = path.resolve(destinationDirectory, 'Vhostra')
     if (root === oldLayout.root) return { root, message: 'Vhostra is already using this local configuration path.' }
@@ -47,6 +54,7 @@ export class VhostraStore {
     if (root === this.userData || root === path.parse(root).root) throw new Error('Choose a dedicated directory for Vhostra configuration.')
     try { const entries = await fs.readdir(root); if (entries.length) throw new Error('The selected destination already contains files. Choose an empty directory to avoid overwriting data.') } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
     await fs.mkdir(path.dirname(root), { recursive: true })
+    progress?.('Copying Vhostra configuration and persistent data…')
     await fs.cp(oldLayout.root, root, { recursive: true, force: false, errorOnExist: true, verbatimSymlinks: true })
     const copiedSettings = path.join(root, 'settings.json')
     const digest = async (file: string) => { const hash = createHash('sha256'); for await (const chunk of createReadStream(file)) hash.update(chunk); return hash.digest('hex') }
@@ -61,7 +69,9 @@ export class VhostraStore {
         }
       }
     }
+    progress?.('Verifying copied files and settings…')
     try { await verifyCopy(oldLayout.root, root); JSON.parse(await fs.readFile(copiedSettings, 'utf8')) } catch (error) { await fs.rm(root, { recursive: true, force: true }); throw new Error(`Vhostra could not verify the copied configuration: ${error instanceof Error ? error.message : String(error)}`) }
+    progress?.('Switching to verified configuration location…')
     const temporaryPointer = `${this.locationFile}.new`
     await fs.writeFile(temporaryPointer, `${JSON.stringify({ root }, null, 2)}\n`, { mode: 0o600 })
     await fs.rename(temporaryPointer, this.locationFile)
@@ -81,8 +91,10 @@ export class VhostraStore {
           }
         }
       }
+      progress?.('Validating runtime at the new configuration location…')
       await validateDestination?.()
     } catch (error) {
+      progress?.('Rolling back configuration location; preserving original data…')
       // Source remains authoritative until both local reads and the caller's
       // runtime validation succeed. Restore the pointer before allowing retry.
       await fs.writeFile(temporaryPointer, `${JSON.stringify({ root: oldLayout.root }, null, 2)}\n`, { mode: 0o600 })
@@ -93,6 +105,7 @@ export class VhostraStore {
     }
     // The verified copy is now authoritative. Remove only Vhostra's old root;
     // selected site document roots are separate paths and are never traversed.
+    progress?.('Removing the verified previous Vhostra configuration copy…')
     await fs.rm(oldLayout.root, { recursive: true, force: true })
     return { root, message: 'Vhostra configuration was copied, verified, switched, and removed from the old Vhostra-only location.' }
   }
@@ -111,7 +124,8 @@ export class VhostraStore {
   async getState(): Promise<AppState> { await this.initialize(); return { settings: await this.readSettings(), sites: await this.readRecords<Site>(this.layout.sites), virtualHosts: await this.readRecords<VirtualHost>(this.layout.virtualHosts) } }
   async getLocalhostUrl() { return localUrl((await this.readSettings()).ports.http) }
   async saveSettings(settings: Settings) { const normalized = this.normalizeSettings(settings); this.validateSettings(normalized); await this.initialize(); await this.writeJson(this.layout.settings, normalized); await this.updateDefaultSiteUrls(normalized.ports.http); await this.writeLocalhostWelcome(); return normalized }
-  async addSite(input: Pick<Site, 'name' | 'documentRoot' | 'url' | 'framework'> & { aliases?: string[] }) {
+  addSite(input: Pick<Site, 'name' | 'documentRoot' | 'url' | 'framework'> & { aliases?: string[] }) { return this.serialize(() => this.addSiteRecord(input)) }
+  private async addSiteRecord(input: Pick<Site, 'name' | 'documentRoot' | 'url' | 'framework'> & { aliases?: string[] }) {
     this.validateSiteInput(input); await this.initialize()
     await this.assertAvailableHostnames([new URL(input.url).hostname, ...(input.aliases ?? [])])
     const now = new Date().toISOString(); const id = randomUUID(); const vhostId = randomUUID(); const hostname = new URL(input.url).hostname
@@ -120,7 +134,8 @@ export class VhostraStore {
     await Promise.all([this.writeJson(this.recordPath(this.layout.sites, id), site), this.writeJson(this.recordPath(this.layout.virtualHosts, vhostId), vhost)])
     await this.writeLocalhostWelcome(); return this.getState()
   }
-  async updateSite(input: Pick<Site, 'id' | 'name' | 'documentRoot' | 'url' | 'framework'> & { aliases?: string[] }) {
+  updateSite(input: Pick<Site, 'id' | 'name' | 'documentRoot' | 'url' | 'framework'> & { aliases?: string[] }) { return this.serialize(() => this.updateSiteRecord(input)) }
+  private async updateSiteRecord(input: Pick<Site, 'id' | 'name' | 'documentRoot' | 'url' | 'framework'> & { aliases?: string[] }) {
     this.validateSiteInput(input); const state = await this.getState(); const current = state.sites.find(site => site.id === input.id); if (!current) throw new Error('Site definition not found.')
     if (current.builtIn) throw new Error('The built-in localhost site is protected.')
     const existingHost = state.virtualHosts.find(host => host.id === current.vhostId)
@@ -130,7 +145,8 @@ export class VhostraStore {
     await Promise.all([this.writeJson(this.recordPath(this.layout.sites, current.id), updated), this.writeJson(this.recordPath(this.layout.virtualHosts, vhost.id), { ...vhost, hostname: new URL(input.url).hostname, aliases: input.aliases === undefined ? vhost.aliases : this.validateAliases(input.aliases), documentRoot: input.documentRoot, https: { enabled: new URL(input.url).protocol === 'https:' } })])
     await this.writeLocalhostWelcome(); return this.getState()
   }
-  async removeSite(id: string) {
+  removeSite(id: string) { return this.serialize(() => this.removeSiteRecord(id)) }
+  private async removeSiteRecord(id: string) {
     const state = await this.getState(); const site = state.sites.find(item => item.id === id); if (!site) throw new Error('Site definition not found.'); if (site.builtIn === 'localhost') throw new Error('The built-in localhost vhost is protected. Its document root and configuration remain inspectable.')
     await Promise.all([fs.rm(this.recordPath(this.layout.sites, site.id), { force: true }), fs.rm(this.recordPath(this.layout.virtualHosts, site.vhostId), { force: true })])
     await this.writeLocalhostWelcome(); return this.getState()
@@ -165,7 +181,8 @@ export class VhostraStore {
   }
   /** Imports portable site definitions only. Website files, database data, and
    * secrets are intentionally outside configuration bundles and are never copied. */
-  async importBundle(source: string) {
+  importBundle(source: string) { return this.serialize(() => this.importBundleRecords(source)) }
+  private async importBundleRecords(source: string) {
     const raw = await fs.readFile(source, 'utf8')
     const candidate = JSON.parse(raw) as { manifest?: { format?: unknown; schemaVersion?: unknown }; configuration?: Partial<AppState> }
     if (candidate.manifest?.format !== 'vhostra/config-bundle' || candidate.manifest.schemaVersion !== 1 || !candidate.configuration || !Array.isArray(candidate.configuration.sites) || !Array.isArray(candidate.configuration.virtualHosts)) throw new Error('This file is not a supported Vhostra configuration bundle.')
@@ -175,13 +192,21 @@ export class VhostraStore {
     const imported: Array<{ name: string; hostname: string; aliases: string[] }> = []
     const existing = await this.getState()
     const knownHostnames = new Set(existing.virtualHosts.flatMap(host => [host.hostname, ...host.aliases]).map(name => name.toLowerCase()))
+    const planned: Array<{ incoming: Site; host: VirtualHost }> = []
     for (const site of candidate.configuration.sites) {
       if (!site || typeof site !== 'object' || (site as Site).builtIn === 'localhost') continue
       const incoming = site as Site
       const host = candidate.configuration.virtualHosts.find(item => item && typeof item === 'object' && (item as VirtualHost).id === incoming.vhostId) as VirtualHost | undefined
       if (!host || [host.hostname, ...(host.aliases ?? [])].some(name => knownHostnames.has(name?.toLowerCase()))) continue
-      await this.addSite({ name: incoming.name, documentRoot: incoming.documentRoot, url: incoming.url, framework: incoming.framework, aliases: host.aliases })
+      if (new URL(incoming.url).hostname.toLowerCase() !== host.hostname.toLowerCase()) throw new Error('Imported site URL and virtual-host hostname disagree.')
+      const input = { name: incoming.name, documentRoot: incoming.documentRoot, url: incoming.url, framework: incoming.framework, aliases: host.aliases }
+      this.validateSiteInput(input)
+      await this.assertAvailableHostnames([host.hostname, ...host.aliases])
+      planned.push({ incoming, host })
       for (const name of [host.hostname, ...host.aliases]) knownHostnames.add(name.toLowerCase())
+    }
+    for (const { incoming, host } of planned) {
+      await this.addSiteRecord({ name: incoming.name, documentRoot: incoming.documentRoot, url: incoming.url, framework: incoming.framework, aliases: host.aliases })
       imported.push({ name: incoming.name, hostname: host.hostname, aliases: host.aliases })
     }
     return { imported, backup: snapshot, message: imported.length ? `Imported ${imported.length} portable site definition${imported.length === 1 ? '' : 's'}.` : 'No new portable site definitions were found in this bundle.' }
@@ -226,10 +251,13 @@ export class VhostraStore {
     if (settings.schemaVersion !== 1 || !validServers.has(settings.selectedWebServer) || !validPhp.has(settings.selectedPhpVersion) || typeof settings.optionalServices?.redis !== 'boolean' || typeof settings.optionalServices?.memcached !== 'boolean' || typeof settings.php?.opcacheEnabled !== 'boolean' || typeof settings.php?.cwebpEnabled !== 'boolean' || !Array.isArray(settings.php?.extensions) || !Array.isArray(settings.php?.disabledExtensions) || [...settings.php.extensions, ...settings.php.disabledExtensions].some(extension => !/^[a-z0-9-]+$/i.test(extension)) || settings.php.extensions.some(extension => settings.php.disabledExtensions.includes(extension)) || typeof settings.startup?.launchAtLogin !== 'boolean' || typeof settings.startup?.startServicesOnLaunch !== 'boolean' || !['keep-services', 'stop-services', 'minimize-to-tray'].includes(settings.startup?.closeBehavior) || !Object.values(settings.ports ?? {}).every(port => Number.isInteger(port) && port > 0 && port <= 65535)) throw new Error('Invalid Vhostra settings.') }
   private validateSiteInput(input: Pick<Site, 'name' | 'documentRoot' | 'url' | 'framework'> & { aliases?: string[] }) { if (!input.name?.trim() || !input.documentRoot?.trim()) throw new Error('A site name and document root are required.'); this.validateUrl(input.url); this.validateAliases([new URL(input.url).hostname, ...(input.aliases ?? [])]) }
   private async assertAvailableHostnames(names: string[], excludeId?: string) {
-    const requested = new Set(names.map(name => name.toLowerCase()))
+    const normalized = names.map(name => name.trim().toLowerCase())
+    if (new Set(normalized).size !== normalized.length) throw new Error('Duplicate hostname or alias in this virtual host.')
+    const requested = new Set(normalized)
     const state = await this.getState()
     const conflict = state.virtualHosts.filter(host => host.id !== excludeId).flatMap(host => [host.hostname, ...host.aliases]).find(name => requested.has(name.toLowerCase()))
     if (conflict) throw new Error(`The hostname or alias “${conflict}” already belongs to another virtual host.`)
+    await this.validateHostMappings?.(normalized)
   }
   private validateAliases(aliases: string[]) {
     const hostname = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i

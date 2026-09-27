@@ -31,17 +31,20 @@ OPCACHE_ENABLED=1
 [ "${VHOSTRA_OPCACHE:-true}" = true ] || OPCACHE_ENABLED=0
 printf '\nexpose_php=Off\nopcache.enable=%s\n' "$OPCACHE_ENABLED" >> "/usr/local/lsws/lsphp${VHOSTRA_LSPHP_VERSION}/etc/php/${PHP_VERSION}/litespeed/php.ini"
 
-# Packages are installed once in the selected disposable image. LiteSpeed scans
-# its package-provided module files, so toggle only those exact files instead
-# of loading an extension twice through a generic PHP mechanism.
+# LiteSpeed scans mods-available directly, including separately packaged Zend
+# modules. Remove legacy duplicate directives and toggle the package INI itself.
+PHP_INI="/usr/local/lsws/lsphp${VHOSTRA_LSPHP_VERSION}/etc/php/${PHP_VERSION}/litespeed/php.ini"
+sed -i '/; Vhostra OPcache module$/d' "$PHP_INI"
 configure_extension() {
   extension="$1"; enabled="$2"
-  source="$(find "/usr/local/lsws/lsphp${VHOSTRA_LSPHP_VERSION}" -path "*/mods-available/*${extension}.ini" -type f -print -quit)"
-  [ -n "$source" ] || { [ "$enabled" = true ] && { echo "Vhostra build error: selected LSPHP extension ${extension} is unavailable" >&2; exit 65; }; return 0; }
-  ini="/usr/local/lsws/lsphp${VHOSTRA_LSPHP_VERSION}/etc/php/${PHP_VERSION}/litespeed/php.ini"
-  sed -i "/; Vhostra extension ${extension}$/d" "$ini"
+  dir="/usr/local/lsws/lsphp${VHOSTRA_LSPHP_VERSION}/etc/php/${PHP_VERSION}/mods-available"
+  source="$(find "$dir" -maxdepth 1 -type f -name "*${extension}.ini" -print -quit)"
+  disabled="$(find "$dir" -maxdepth 1 -type f -name "*${extension}.ini.disabled" -print -quit)"
+  sed -i "/; Vhostra extension ${extension}$/d" "$PHP_INI"
   if [ "$enabled" = true ]; then
-    grep -E '^[[:space:]]*extension[[:space:]]*=' "$source" | head -n 1 | sed 's/[[:space:]]*$//' | sed "s/$/ ; Vhostra extension ${extension}/" >> "$ini"
+    if [ -n "$disabled" ]; then mv "$disabled" "${disabled%.disabled}";
+    elif [ -z "$source" ]; then echo "Vhostra build error: selected LSPHP extension ${extension} is unavailable" >&2; exit 65; fi
+  elif [ -n "$source" ]; then mv "$source" "$source.disabled";
   fi
 }
 # Apply the persisted selection to every optional package included by the image,

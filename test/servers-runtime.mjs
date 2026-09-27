@@ -27,7 +27,16 @@ const siteRoot = await mkdtemp(path.join(os.tmpdir(), 'vhostra-permalinks-'))
 const scope = `vhostra-servers-${process.pid}`
 const store = new VhostraStore(root)
 const runtime = new DockerRuntimeController(store.layout, () => store.getState(), undefined, scope)
-runtime.subscribe(() => console.log(runtime.current().message))
+let lastMessage = ''
+let streamedLines = 0
+runtime.subscribe(() => {
+  const snapshot = runtime.current()
+  if (snapshot.message !== lastMessage) { lastMessage = snapshot.message; console.log(snapshot.message) }
+  if (snapshot.progress) {
+    streamedLines = Math.max(streamedLines, snapshot.progress.total)
+    assert.doesNotMatch(snapshot.progress.lines.join('\n'), /(?:MARIADB_ROOT_PASSWORD|VHOSTRA_PMA_PASSWORD|VHOSTRA_PMA_BLOWFISH_SECRET)=[^*\s]/)
+  }
+})
 let httpsOwner
 try {
   const { settings } = await store.getState()
@@ -49,6 +58,9 @@ try {
     await store.saveSettings({ ...current.settings, selectedWebServer: server })
     if (server === 'openlitespeed') {
       await runtime.start()
+      await runtime.start() // Already-running owned ports must remain valid for Start.
+      assert.equal(runtime.current().progress, undefined)
+      assert.ok(streamedLines > 5, 'Actual Docker/stage output must have streamed')
       assert.match(runtime.current().message, /HTTPS is unavailable/)
       assert.ok(httpsOwner.listening, 'HTTPS owner must be preserved')
       await close(httpsOwner)

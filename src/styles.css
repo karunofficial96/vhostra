@@ -5,7 +5,7 @@
 @font-face { font-family: "Roboto"; src: url("./assets/fonts/roboto-700.ttf") format("truetype"); font-style: normal; font-weight: 700; font-display: swap; }
 @font-face { font-family: "Roboto Mono"; src: url("./assets/fonts/roboto-mono-400.ttf") format("truetype"); font-style: normal; font-weight: 400; font-display: swap; }
 
-@theme { --font-roboto: "Roboto", ui-sans-serif, system-ui, sans-serif; }
+@theme { --font-mono: "Roboto Mono", monospace; --font-roboto: "Roboto", ui-sans-serif, system-ui, sans-serif; }
 
 :root { --v-bg: #ffffff; --v-surface: #f2f2f2; --v-control: #ffffff; --v-text: #0f0f0f; --v-muted: #606060; --v-border: #e5e5e5; --v-link: #065fd4; --v-focus: #065fd4; --v-hover: #f2f2f2; --v-disabled: #d9d9d9; }
 html[data-theme="dark"] { color-scheme: dark; --v-bg: #181818; --v-surface: #292929; --v-control: #242424; --v-text: #f1f1f1; --v-muted: #b8b8b8; --v-border: #454545; --v-link: #7ab4ff; --v-focus: #7ab4ff; --v-hover: #343434; --v-disabled: #515151; }
@@ -36,3 +36,13 @@ html[data-theme="dark"] .service-brand-mariadb img { filter: brightness(0) inver
    visual footprint without stretching naturally rectangular project artwork. */
 .input { height: 40px; width: 100%; border: 1px solid var(--v-border); border-radius: 4px; background: var(--v-control); padding: 0 12px; color: var(--v-text); font: inherit; font-size: 14px; }
 .input:focus { outline: 2px solid var(--v-focus); outline-offset: 1px; }
+
+.runtime-progress { flex-basis: 100%; min-width: 0; }
+.runtime-expand { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 16px; border: 1px solid var(--v-border, #E5E5E5); border-radius: 9999px; font-size: 14px; font-weight: 500; }
+.runtime-expand:hover { background: var(--v-hover, #E5E5E5); }
+.runtime-terminal { margin-top: 8px; max-height: 240px; overflow-y: auto; background: var(--v-bg, #FFFFFF); color: var(--v-text, #0F0F0F); border: 1px solid var(--v-border, #E5E5E5); border-radius: 8px; padding: 12px; font-family: 'Roboto Mono', monospace; font-size: 14px; line-height: 20px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.runtime-line-success { color: #217d30; }
+html[data-theme="dark"] .runtime-line-success { color: #65cb77; }
+.runtime-line-error { color: var(--v-error, #CC0000); }
+html[data-theme="dark"] .runtime-line-error { color: #ff7373; }
+.runtime-expand:focus-visible, .runtime-terminal:focus-visible { outline: 2px solid #065FD4; outline-offset: 2px; }

@@ -20,11 +20,13 @@ RUN apt-get update \
       case "$extension" in '' ) ;; *[!a-z0-9-]* ) echo "Invalid Vhostra LSPHP extension: $extension" >&2; exit 66 ;; \
         *) package="lsphp${LSPHP_VERSION}-${extension}"; apt-cache show "$package" >/dev/null || { echo "Vhostra build error: LSPHP ${LSPHP_VERSION} does not provide ${extension}" >&2; exit 65; }; extension_packages="$extension_packages $package" ;; esac; \
     done \
+ && opcache_package='' \
+ && if apt-cache show "lsphp${LSPHP_VERSION}-opcache" >/dev/null 2>&1; then opcache_package="lsphp${LSPHP_VERSION}-opcache"; fi \
  && cwebp_package='' \
  && if [ "$VHOSTRA_CWEBP" = true ]; then apt-cache show webp >/dev/null || { echo 'Vhostra build error: the webp package is unavailable' >&2; exit 67; }; cwebp_package='webp'; fi \
  && apt-get install -y --no-install-recommends \
       "lsphp${LSPHP_VERSION}" "lsphp${LSPHP_VERSION}-mysql" "lsphp${LSPHP_VERSION}-redis" "lsphp${LSPHP_VERSION}-memcached" \
-      $extension_packages $cwebp_package \
+      $extension_packages $opcache_package $cwebp_package \
  && test -x "/usr/local/lsws/lsphp${LSPHP_VERSION}/bin/lsphp" \
  && curl -fsSL --retry 3 -o /tmp/phpmyadmin.tar.gz https://files.phpmyadmin.net/phpMyAdmin/5.2.2/phpMyAdmin-5.2.2-all-languages.tar.gz \
  && mkdir -p /usr/share/phpmyadmin \

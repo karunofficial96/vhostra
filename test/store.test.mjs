@@ -123,3 +123,47 @@ test('site saves reject hostname and alias collisions and protect localhost upda
     assert.deepEqual((await store.getState()).virtualHosts.find(host => host.id === first.vhostId).aliases, ['shared.test'])
   } finally { await rm(directory, { recursive: true, force: true }) }
 })
+
+test('duplicate aliases and external hosts conflicts reject saves before writing', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'vhostra-host-preflight-'))
+  try {
+    const store = new VhostraStore(directory, undefined, async names => { if (names.includes('external.test')) throw Error('Hosts-file conflict') })
+    await store.getState()
+    await assert.rejects(store.addSite({ name: 'Duplicate', documentRoot: '/projects/test', url: 'http://one.test', aliases: ['ONE.TEST'] }), /Duplicate/)
+    await assert.rejects(store.addSite({ name: 'Conflict', documentRoot: '/projects/test', url: 'http://external.test' }), /Hosts-file conflict/)
+    assert.equal((await store.getState()).sites.length, 1)
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
+test('concurrent site creation cannot acquire the same hostname twice', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'vhostra-concurrent-hosts-'))
+  try {
+    const store = new VhostraStore(directory)
+    const input = { name: 'Concurrent', documentRoot: '/projects/example', url: 'http://same.test' }
+    const results = await Promise.allSettled([store.addSite(input), store.addSite(input)])
+    assert.equal(results.filter(result => result.status === 'fulfilled').length, 1)
+    assert.equal((await store.getState()).virtualHosts.filter(host => host.hostname === 'same.test').length, 1)
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
+test('configuration import preflights every host before saving any definition', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'vhostra-import-hosts-'))
+  try {
+    const store = new VhostraStore(directory, undefined, async names => { if (names.includes('conflict.test')) throw Error('Hosts-file conflict') })
+    const sites = ['valid.test', 'conflict.test'].map((hostname, index) => ({ id: String(index), vhostId: String(index), name: hostname, url: `http://${hostname}`, documentRoot: '/projects/test' }))
+    const source = path.join(directory, 'import.json')
+    await writeFile(source, JSON.stringify({ manifest: { format: 'vhostra/config-bundle', schemaVersion: 1 }, configuration: { sites, virtualHosts: sites.map(site => ({ id: site.vhostId, hostname: site.name, aliases: [] })) } }))
+    await assert.rejects(store.importBundle(source), /Hosts-file conflict/)
+    assert.equal((await store.getState()).sites.length, 1)
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
+test('migration emits real copy, verification, switch and rollback stages', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'vhostra-migration-stage-'))
+  const destination = await mkdtemp(path.join(os.tmpdir(), 'vhostra-migration-stage-destination-'))
+  try {
+    const store = new VhostraStore(directory); const stages = []
+    await assert.rejects(store.migrateConfiguration(destination, async () => { throw Error('health failure') }, message => stages.push(message)), /rolled back/)
+    assert.match(stages.join('\n'), /Copying.*\nVerifying.*\nSwitching.*\nValidating.*\nRolling back/s)
+  } finally { await rm(directory, { recursive: true, force: true }); await rm(destination, { recursive: true, force: true }) }
+})

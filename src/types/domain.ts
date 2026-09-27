@@ -7,6 +7,7 @@ export interface RuntimeSnapshot {
   state: RuntimeStatus
   message: string
   services: string[]
+  progress?: { id: number; lines: string[] }
   updatedAt: string
 }
 

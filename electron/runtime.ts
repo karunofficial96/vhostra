@@ -1,3 +1,4 @@
+import { redactProgress } from "./progress.js";
 import { randomBytes } from "node:crypto";
 import {
     createReadStream,
@@ -27,6 +28,7 @@ export interface RuntimeSnapshot {
     message: string;
     services: string[];
     updatedAt: string;
+    progress?: { id: number; lines: string[]; total: number };
 }
 export interface ManagedServiceStatus {
     id: "web" | "mariadb" | "redis" | "memcached";
@@ -41,6 +43,8 @@ export interface ManagedServiceStatus {
         | "unavailable";
 }
 
+let progressSequence = Date.now();
+const actionLabel = (action: string) => ({ start: "Starting", stop: "Stopping", restart: "Restarting", install: "Installing", enable: "Enabling", disable: "Disabling", remove: "Removing" }[action] ?? action);
 const projectName = "vhostra";
 const managedLabel = "com.vhostra.managed=true";
 const requiredHostPorts = (state: AppState) => [
@@ -58,8 +62,13 @@ export class DockerRuntimeController {
         services: [],
         updatedAt: new Date().toISOString(),
     };
+    private progress: { id: number; lines: string[]; total: number } | undefined;
+    private hiddenProgressMaterial = false;
+    private secrets = new Set<string>();
     private listeners = new Set<() => void>();
     private operation: Promise<void> | null = null;
+    private refreshOperation: Promise<RuntimeSnapshot> | null = null;
+    private welcomeWrites: Promise<void> = Promise.resolve();
     private httpsWarning = "";
     private htaccessWatchers = new Map<string, FSWatcher>();
     private htaccessDebounce: ReturnType<typeof setTimeout> | null = null;
@@ -82,6 +91,20 @@ export class DockerRuntimeController {
         return this.snapshot;
     }
     async refresh() {
+        if (this.refreshOperation) return this.refreshOperation;
+        const result = this.refreshInternal();
+        this.refreshOperation = result;
+        try { return await result; }
+        finally { if (this.refreshOperation === result) this.refreshOperation = null; }
+    }
+    async pauseBackgroundWork() {
+        this.clearHtaccessWatchers();
+        await this.refreshOperation;
+        await this.operation;
+        await this.welcomeWrites;
+        this.clearHtaccessWatchers();
+    }
+    private async refreshInternal() {
         try {
             await this.docker(["info"]);
             await this.checkOptionalHttpsPort(true);
@@ -140,7 +163,7 @@ export class DockerRuntimeController {
                     message: "Checking configured service ports…",
                     services: [],
                 });
-                await this.ensurePortsAvailable(requiredHostPorts(state));
+                await this.ensurePortsAvailable(requiredHostPorts(state), true);
                 await this.checkOptionalHttpsPort(true);
                 this.set({
                     state: "starting",
@@ -228,6 +251,7 @@ export class DockerRuntimeController {
                 );
                 const candidateScope = `${this.scope}-candidate-${randomBytes(4).toString("hex")}`;
                 let candidate: DockerRuntimeController | null = null;
+                let candidateLineCount = 0;
                 let recoveredOrPromoted = false;
                 let candidateRemoved = true;
                 try {
@@ -331,6 +355,15 @@ export class DockerRuntimeController {
                             undefined,
                             candidateScope,
                         );
+                        candidate.subscribe(() => {
+                            const next = candidate!.current().progress;
+                            if (next) {
+                                const lines = next.lines;
+                                const seen = candidateLineCount;
+                                candidateLineCount = next.total;
+                                for (const line of lines.slice(Math.max(0, lines.length - (next.total - seen)))) this.appendProgress(`Candidate: ${line}`);
+                            }
+                        });
                         await candidate.start();
                         await candidate.stop();
                         await candidate.compose(["down"]);
@@ -354,6 +387,7 @@ export class DockerRuntimeController {
                     await this.refresh();
                     recoveredOrPromoted = true;
                 } catch (error) {
+                    this.set({ state: "starting", message: "Recovering runtime replacement; rolling back to verified configuration…", services: ["runtime"] });
                     if (candidate)
                         await candidate
                             .compose(["down"])
@@ -631,7 +665,7 @@ export class DockerRuntimeController {
             );
         return this.runExclusive(
             action === "stop" ? "stopping" : "starting",
-            `${action[0].toUpperCase()}${action.slice(1)}ing ${id === "web" ? "the active web server" : id}…`,
+            `${actionLabel(action)} ${id === "web" ? "the active web server" : id}…`,
             async () => {
                 await this.requireDocker();
                 await this.compose([
@@ -682,7 +716,7 @@ export class DockerRuntimeController {
     async listPhpExtensions() {
         const state = await this.getState();
         const selected = new Set(state.settings.php.extensions);
-        const required = new Set(["mysqli", "pdo_mysql"]);
+        const required = new Set(["mysqli", "pdo-mysql", "mysql"]);
         const disabled = new Set(state.settings.php.disabledExtensions);
         const configured = new Set([
             "opcache",
@@ -715,6 +749,7 @@ export class DockerRuntimeController {
             "/vhostra-extension-state.php",
         );
         const loaded = new Set(parseHttpJson<string[]>(raw) ?? []);
+        const extensionFlags = await requestLocalHttp(state.settings.ports.http, "/vhostra-extensions.php");
         const available: string[] = await this.availablePhpPackages().catch(
             (): string[] => [],
         );
@@ -731,27 +766,18 @@ export class DockerRuntimeController {
             .map((id) => {
                 const actual =
                     id === "opcache"
-                        ? loaded.has("Zend OPcache")
-                        : [...loaded].map(normalizeExtensionId).includes(id);
+                        ? loaded.has("Zend OPcache") && extensionFlags.includes("opcache:1")
+                        : id === "mysql"
+                          ? loaded.has("mysqli") && loaded.has("pdo_mysql")
+                          : [...loaded].map(normalizeExtensionId).includes(id);
                 const dependency =
                     (id === "redis" && state.settings.optionalServices.redis) ||
                     (id === "memcached" &&
                         state.settings.optionalServices.memcached);
                 const isRequired = required.has(id);
                 const managedPackage = packageInstalled.has(id);
-                const installed =
-                    managedPackage ||
-                    isRequired ||
-                    selected.has(id) ||
-                    disabled.has(id) ||
-                    dependency;
-                const enabled =
-                    isRequired ||
-                    actual ||
-                    dependency ||
-                    (id === "opcache"
-                        ? state.settings.php.opcacheEnabled
-                        : selected.has(id));
+                const installed = managedPackage || actual || (id === "opcache" && loaded.has("Zend OPcache"));
+                const enabled = actual;
                 const supported =
                     available.includes(id) ||
                     actual ||
@@ -760,7 +786,7 @@ export class DockerRuntimeController {
                     id === "opcache";
                 const category = isRequired
                     ? "required"
-                    : dependency
+                    : dependency || id === "redis" || id === "memcached"
                       ? "dependency-managed"
                       : !supported
                         ? "unsupported"
@@ -780,8 +806,8 @@ export class DockerRuntimeController {
                     category,
                     status: isRequired
                         ? "Required by Vhostra"
-                        : dependency
-                          ? "Dependency-managed by the matching Vhostra service"
+                        : dependency || id === "redis" || id === "memcached"
+                          ? `Managed with the matching service in Services — ${actual ? "enabled" : "disabled"}`
                           : !supported
                             ? "Unsupported or unavailable for the selected LSPHP version"
                             : actual && !managedPackage
@@ -832,7 +858,7 @@ export class DockerRuntimeController {
         const packageName = `lsphp${php}-${extension}`;
         return this.runExclusive(
             "starting",
-            `${action[0].toUpperCase()}${action.slice(1)}ing PHP extension ${extensionLabel(extension)}…`,
+            `${actionLabel(action)} PHP extension ${extensionLabel(extension)}…`,
             async () => {
                 if (action === "install" || action === "enable") {
                     await this.compose([
@@ -868,15 +894,14 @@ export class DockerRuntimeController {
                         extension,
                         false,
                     );
-                } else
-                    await this.compose([
-                        "exec",
-                        "-T",
-                        "runtime",
-                        "/bin/sh",
-                        "-lc",
-                        `DEBIAN_FRONTEND=noninteractive apt-get purge -y ${packageName}`,
-                    ]);
+                } else {
+                    const plan = await this.compose(["exec", "-T", "runtime", "/bin/sh", "-lc", `apt-get --simulate purge ${packageName}`]);
+                    const removals = plan.split(/\r?\n/).filter(line => /^Remv\s/.test(line)).map(line => line.split(/\s+/)[1]);
+                    const dependencies = removals.filter(name => name !== packageName);
+                    if (dependencies.length) throw new Error(`Cannot remove ${extensionLabel(extension)} because other installed packages depend on it: ${dependencies.join(", ")}. No packages were removed.`);
+                    await this.configureRuntimePhpExtension(php, extension, false);
+                    await this.compose(["exec", "-T", "runtime", "/bin/sh", "-lc", `DEBIAN_FRONTEND=noninteractive apt-get purge -y ${packageName}`]);
+                }
                 await this.compose([
                     "exec",
                     "-T",
@@ -1027,6 +1052,7 @@ export class DockerRuntimeController {
             throw new Error(
                 "Database passwords must contain at least 12 characters.",
             );
+        this.secrets.add(input.password);
         const password = sqlLiteral(input.password);
         const sql = `CREATE DATABASE \`${name}\` CHARACTER SET ${input.charset}; CREATE USER '${username}'@'%' IDENTIFIED BY ${password}; GRANT ALL PRIVILEGES ON \`${name}\`.* TO '${username}'@'%'; FLUSH PRIVILEGES;`;
         await this.compose([
@@ -1193,16 +1219,37 @@ export class DockerRuntimeController {
     private get environmentFile() {
         return path.join(this.runtimeRoot, ".env");
     }
+    private appendProgress(text: string) {
+        if (!this.progress) return;
+        const safeLines: string[] = [];
+        for (const line of text.split(/\r?\n/)) {
+            if (/-----BEGIN [^-]*(?:PRIVATE KEY|CERTIFICATE)-----/.test(line)) this.hiddenProgressMaterial = true;
+            if (this.hiddenProgressMaterial) {
+                if (/-----END [^-]+-----/.test(line)) this.hiddenProgressMaterial = false;
+                continue;
+            }
+            safeLines.push(line);
+        }
+        const lines = redactProgress(safeLines.join("\n"), this.secrets).split(/\r?\n/).filter(line => line.trim());
+        this.progress.total += lines.length;
+        this.progress.lines = [...this.progress.lines, ...lines.map(line => line.slice(0, 2000))].slice(-300);
+        this.snapshot = { ...this.snapshot, progress: { ...this.progress, lines: [...this.progress.lines] } };
+        this.listeners.forEach(listener => listener());
+    }
     private set(next: Omit<RuntimeSnapshot, "updatedAt">) {
         const message = this.httpsWarning
             ? `${next.message} HTTPS is unavailable: ${this.httpsWarning}`
             : next.message;
+        this.appendProgress(message);
         this.snapshot = {
             ...next,
-            message,
+            progress: this.progress ? { ...this.progress, lines: [...this.progress.lines] } : undefined,
+            message: redactProgress(message, this.secrets),
             updatedAt: new Date().toISOString(),
         };
-        void this.updateWelcome?.(this.snapshot.message);
+        const welcomeMessage = this.snapshot.message;
+        this.welcomeWrites = this.welcomeWrites.then(async () => { await this.updateWelcome?.(welcomeMessage); })
+            .catch(error => { console.error("Vhostra welcome update failed:", redactProgress(error instanceof Error ? error.message : String(error), this.secrets)); });
         this.listeners.forEach((listener) => listener());
         return this.snapshot;
     }
@@ -1215,14 +1262,25 @@ export class DockerRuntimeController {
             throw new Error(
                 "A Vhostra service operation is already in progress.",
             );
+        this.hiddenProgressMaterial = false;
+        this.progress = { id: ++progressSequence, lines: [], total: 0 };
         this.set({ state, message, services: this.snapshot.services });
-        const result = task().catch((error) => {
+        const result = Promise.resolve().then(async () => {
+            try {
+                const environment = await fs.readFile(this.environmentFile, "utf8");
+                for (const line of environment.split(/\r?\n/)) {
+                    const match = line.match(/^[^#=]*(?:PASSWORD|SECRET|TOKEN|KEY)[^=]*=(.*)$/i);
+                    if (match) this.secrets.add(match[1].replace(/^['"]|['"]$/g, ""));
+                }
+            } catch { /* first start has no credentials yet */ }
+            return task();
+        }).catch((error) => {
             this.set({
                 state: "error",
                 message: error instanceof Error ? error.message : String(error),
                 services: [],
             });
-            throw error;
+            throw new Error(redactProgress(error instanceof Error ? error.message : String(error), this.secrets));
         });
         this.operation = result
             .then(
@@ -1231,11 +1289,15 @@ export class DockerRuntimeController {
             )
             .finally(() => {
                 this.operation = null;
+                this.progress = undefined;
+                this.snapshot = { ...this.snapshot, progress: undefined };
+                this.listeners.forEach(listener => listener());
             });
         return result;
     }
     private async requireDocker() {
         await this.docker(["info"]);
+        this.appendProgress("✓ Docker runtime available");
     }
     private async generate(state: AppState) {
         await fs.mkdir(this.runtimeRoot, { recursive: true });
@@ -1360,6 +1422,10 @@ export class DockerRuntimeController {
             contents += `VHOSTRA_PMA_BLOWFISH_SECRET=${randomBytes(32).toString("base64url")}\n`;
         if (missing("VHOSTRA_PMA_PASSWORD"))
             contents += `VHOSTRA_PMA_PASSWORD=${randomBytes(32).toString("base64url")}\n`;
+        for (const line of contents.split(/\r?\n/)) {
+            const match = line.match(/^[^#=]*(?:PASSWORD|SECRET|TOKEN|KEY)[^=]*=(.*)$/i);
+            if (match) this.secrets.add(match[1]);
+        }
         await fs.writeFile(this.environmentFile, contents, { mode: 0o600 });
     }
     private async provisionPhpMyAdmin() {
@@ -1565,31 +1631,35 @@ export class DockerRuntimeController {
         const conflicts: string[] = [];
         for (const port of ports) {
             const occupied = await isPortOccupied(port);
-            if (!occupied) continue;
+            if (!occupied) { this.appendProgress(`✓ localhost:${port} available`); continue; }
             const ownedByVhostra =
                 allowProjectPorts && (await this.vhostraOwnsPort(port));
             if (!ownedByVhostra) conflicts.push(await describePort(port));
+            else this.appendProgress(`✓ localhost:${port} belongs to the current managed runtime`);
         }
         return conflicts;
     }
     private async vhostraOwnsPort(port: number) {
         try {
-            return (
-                await this.docker([
-                    "ps",
-                    "--filter",
-                    `label=${managedLabel}`,
-                    "--filter",
-                    `label=com.docker.compose.project=${this.scope}`,
-                    "--format",
-                    "{{.Ports}}",
-                ])
-            )
-                .split("\n")
-                .some((line) => line.includes(`:${port}->`));
-        } catch {
-            return false;
-        }
+            const ids = (await this.docker(["ps", "--filter", `label=${managedLabel}`,
+                "--filter", `label=com.docker.compose.project=${this.scope}`, "--quiet"]))
+                .trim().split(/\s+/).filter(Boolean);
+            if (!ids.length) return false;
+            const containers = JSON.parse(await this.docker(["inspect", ...ids]));
+            return containers.some((container: { Config?: { Labels?: Record<string, string> }; NetworkSettings?: { Ports?: Record<string, Array<{ HostIp: string; HostPort: string }> | null> } }) => {
+                const labels = container.Config?.Labels;
+                return labels?.["com.vhostra.managed"] === "true"
+                    && labels["com.docker.compose.project"] === this.scope
+                    && labels["com.docker.compose.service"] === "runtime"
+                    && Boolean(labels["com.docker.compose.project.working_dir"])
+                    && (process.platform === "win32"
+                        ? path.resolve(labels["com.docker.compose.project.working_dir"]).toLowerCase() === path.resolve(this.runtimeRoot).toLowerCase()
+                        : path.resolve(labels["com.docker.compose.project.working_dir"]) === path.resolve(this.runtimeRoot))
+                    && Object.values(container.NetworkSettings?.Ports ?? {}).some(bindings =>
+                        bindings?.some(binding => Number(binding.HostPort) === port
+                            && ["127.0.0.1", "0.0.0.0", "::", "::1", ""].includes(binding.HostIp)));
+            });
+        } catch { return false; }
     }
     private async healthCheck(server: WebServer, verifiedState?: AppState) {
         const state = verifiedState ?? (await this.getState());
@@ -1602,10 +1672,13 @@ export class DockerRuntimeController {
             return "";
         };
         const ports = state.settings.ports;
+        this.appendProgress(`Checking ${server} HTTP health…`);
         if (!(await ready(ports.http)))
             throw new Error(
                 `The ${server} runtime did not pass its localhost health check.`,
             );
+        this.appendProgress(`✓ ${server} HTTP healthy`);
+        this.appendProgress("Checking selected PHP runtime…");
         const php = await ready(ports.http, "/vhostra-health.php");
         if (!php.includes(`vhostra-lsphp:${state.settings.selectedPhpVersion}`))
             throw new Error(
@@ -1620,6 +1693,8 @@ export class DockerRuntimeController {
             "-e",
             "SELECT 1",
         ]);
+        this.appendProgress("✓ Selected PHP and MariaDB healthy");
+        this.appendProgress("Checking PHP extensions and optional services…");
         const extensionHealth = await ready(
             ports.http,
             "/vhostra-extensions.php",
@@ -1633,6 +1708,7 @@ export class DockerRuntimeController {
         expectExtension("mysqli", true);
         expectExtension("pdo_mysql", true);
         expectExtension("opcache", state.settings.php.opcacheEnabled);
+        if (!state.settings.php.opcacheEnabled && extensionHealth.includes("opcache:1")) throw new Error("OPcache remains enabled despite the saved disabled preference.");
         expectExtension(
             "redis",
             state.settings.optionalServices.redis ||
@@ -1646,13 +1722,15 @@ export class DockerRuntimeController {
         const modules = new Set(
             parseHttpJson<string[]>(
                 await ready(ports.http, "/vhostra-extension-state.php"),
-            ) ?? [],
+            )?.map(normalizeExtensionId) ?? [],
         );
         for (const extension of state.settings.php.extensions)
-            if (!modules.has(extension))
+            if (!modules.has(normalizeExtensionId(extension)))
                 throw new Error(
                     `The selected PHP extension “${extension}” is not enabled in the replacement LSPHP runtime.`,
                 );
+        for (const extension of state.settings.php.disabledExtensions)
+            if ([...modules].map(normalizeExtensionId).includes(normalizeExtensionId(extension))) throw new Error(`The disabled PHP extension “${extension}” is still loaded in the replacement runtime.`);
         if (state.settings.optionalServices.redis)
             await this.compose(["exec", "-T", "runtime", "redis-cli", "PING"]);
         if (state.settings.optionalServices.memcached)
@@ -1664,10 +1742,13 @@ export class DockerRuntimeController {
                 "-lc",
                 "printf 'version\\r\\n' | nc -w 3 127.0.0.1 11211 | grep -q '^VERSION'",
             ]);
+        this.appendProgress("✓ Required extensions and optional services healthy");
+        this.appendProgress("Checking phpMyAdmin HTTP health…");
         if (!(await ready(ports.phpMyAdmin, "/phpmyadmin/index.php")))
             throw new Error(
                 "phpMyAdmin did not pass its shared-runtime health check.",
             );
+        this.appendProgress("✓ phpMyAdmin healthy");
         if (state.settings.php.cwebpEnabled) {
             const output = await this.compose([
                 "exec",
@@ -1713,7 +1794,7 @@ export class DockerRuntimeController {
                 "runtime",
                 "/bin/sh",
                 "-lc",
-                `dpkg-query -W -f='${"${binary:Package}"}\\n' 'lsphp${php}-*' 2>/dev/null | sed 's/^lsphp${php}-//' | sed 's/:.*$//' | sort -u`,
+                `dpkg-query -W -f='${"${db:Status-Status}"} ${"${binary:Package}"}\\n' 'lsphp${php}-*' 2>/dev/null | awk '$1 == "installed" { print $2 }' | sed 's/^lsphp${php}-//' | sed 's/:.*$//' | sort -u`,
             ],
             true,
         );
@@ -1729,7 +1810,7 @@ export class DockerRuntimeController {
     ) {
         // LiteSpeed scans mods-available directly. Toggle the exact package INI
         // atomically so a disabled extension cannot stay loaded through that scan.
-        const command = `dir=/usr/local/lsws/lsphp${php}/etc/php/${php.slice(0, 1)}.${php.slice(1)}/mods-available; source=$(find "$dir" -maxdepth 1 -type f -name '*${extension}*.ini' -print -quit); disabled=$(find "$dir" -maxdepth 1 -type f -name '*${extension}*.ini.disabled' -print -quit); if [ ${enabled ? "true" : "false"} = true ]; then if [ -n "$disabled" ]; then mv "$disabled" "${"${disabled%.disabled}"}"; elif [ -z "$source" ]; then exit 65; fi; else if [ -n "$source" ]; then mv "$source" "$source.disabled"; elif [ -z "$disabled" ]; then exit 65; fi; fi`;
+        const command = `ini=/usr/local/lsws/lsphp${php}/etc/php/${php.slice(0, 1)}.${php.slice(1)}/litespeed/php.ini; sed -i '/; Vhostra extension ${extension}$/d' "$ini"; dir=/usr/local/lsws/lsphp${php}/etc/php/${php.slice(0, 1)}.${php.slice(1)}/mods-available; source=$(find "$dir" -maxdepth 1 -type f -name '*${extension}*.ini' -print -quit); disabled=$(find "$dir" -maxdepth 1 -type f -name '*${extension}*.ini.disabled' -print -quit); if [ ${enabled ? "true" : "false"} = true ]; then if [ -n "$disabled" ]; then mv "$disabled" "${"${disabled%.disabled}"}"; elif [ -z "$source" ]; then exit 65; fi; else if [ -n "$source" ]; then mv "$source" "$source.disabled"; elif [ -z "$disabled" ]; then exit 65; fi; fi`;
         await this.compose([
             "exec",
             "-T",
@@ -1804,7 +1885,14 @@ export class DockerRuntimeController {
         return execute("docker", args);
     }
     private async compose(args: string[], allowFailure = false) {
-        return execute("docker", this.composeArguments(args), allowFailure);
+        const action = args[0];
+        const safeExec = action === "exec" && (args.includes("supervisorctl") || args.includes("redis-cli") || args.some(arg => /^DEBIAN_FRONTEND=noninteractive apt-get (?:update|purge)/.test(arg)));
+        const streamable = safeExec || ["up", "build", "pull", "stop", "down", "restart", "start"].includes(action);
+        if (this.progress && streamable) this.appendProgress(`Docker Compose: ${action} (${this.scope})`);
+        const result = await execute("docker", this.composeArguments(args), allowFailure,
+            streamable ? text => this.appendProgress(text) : undefined);
+        if (this.progress && streamable) this.appendProgress(`✓ Docker Compose ${action} completed`);
+        return result;
     }
     private composeArguments(args: string[]) {
         return [
@@ -1822,30 +1910,49 @@ export class DockerRuntimeController {
     }
 }
 
-const execute = (command: string, args: string[], allowFailure = false) =>
+const execute = (command: string, args: string[], allowFailure = false, output?: (text: string) => void) =>
     new Promise<string>((resolve, reject) => {
         const child = spawn(command, args, {
             stdio: ["ignore", "pipe", "pipe"],
         });
         let stdout = "";
         let stderr = "";
+        let pending = "";
+        let discardingLine = false;
+        const stream = (data: unknown) => {
+            let incoming = String(data);
+            if (discardingLine) {
+                const boundary = incoming.search(/[\r\n]/);
+                if (boundary < 0) return;
+                incoming = incoming.slice(boundary + 1);
+                discardingLine = false;
+            }
+            pending += incoming;
+            const lines = pending.split(/\r\n|\r|\n/);
+            pending = lines.pop() ?? "";
+            if (lines.length) output?.(lines.join("\n"));
+            if (pending.length > 65536) { pending = ""; discardingLine = true; output?.("[Oversized output line omitted]"); }
+        };
         child.stdout.on("data", (data) => {
-            stdout += String(data);
+            stdout = (stdout + String(data)).slice(-1048576);
+            stream(data);
         });
         child.stderr.on("data", (data) => {
-            stderr += String(data);
+            stderr = (stderr + String(data)).slice(-1048576);
+            stream(data);
         });
         child.once("error", reject);
-        child.once("close", (code) =>
+        child.once("close", (code) => {
+            if (pending) output?.(pending);
             code === 0 || allowFailure
                 ? resolve(stdout)
                 : reject(
                       new Error(
                           stderr.trim() ||
-                              `${command} ${args.join(" ")} exited with ${code}`,
+                              `${command} operation exited with ${code}`,
                       ),
-                  ),
-        );
+                  );
+        });
     });
 const executeWithInput = async (
     command: string,
@@ -1927,7 +2034,8 @@ const normalizeExtensionId = (value: string) =>
         .toLowerCase()
         .replace(/^zend[ _-]?/, "")
         .replace(/[ _]/g, "-")
-        .replace(/[^a-z0-9-]/g, "");
+        .replace(/[^a-z0-9-]/g, "")
+        .replace(/^ioncube(?:-php)?-loader$/, "ioncube");
 const extensionLabel = (id: string) =>
     id === "opcache"
         ? "Zend OPcache"

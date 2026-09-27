@@ -22,6 +22,8 @@ app.whenReady().then(async () => {
         const dimensions = await window.webContents.executeJavaScript(`[...document.querySelectorAll('iframe')].flatMap(f=>[...f.contentDocument.images].map(i=>({loaded:i.naturalWidth>0,width:i.getBoundingClientRect().width,height:i.getBoundingClientRect().height})))`);
         assert.equal(dimensions.length, 16);
         assert.ok(dimensions.every(i => i.loaded && i.width <= 30 && i.height <= 30));
+        window.showInactive();
+        await window.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
         await writeFile('/private/tmp/vhostra-service-artwork.png', (await window.webContents.capturePage()).toPNG());
         console.log('All eight service marks loaded at compact bounds in both themes. Screenshot: /private/tmp/vhostra-service-artwork.png');
     } finally {
