@@ -10,7 +10,7 @@ export interface VhostraDesktopApi {
   saveSettings(settings: VhostraSettings): Promise<VhostraSettings>
   addSite(input: SiteInput): Promise<{ state: VhostraState; mapping?: HostsMappingResult }>
   updateSite(input: SiteUpdate): Promise<{ state: VhostraState; mapping?: HostsMappingResult }>
-  removeSite(id: string): Promise<VhostraState>
+  removeSite(id: string): Promise<VhostraState & { mappingNotice?: string }>
   setVirtualHostRewrite(id: string, enabled: boolean): Promise<VhostraState>
   chooseDocumentRoot(): Promise<string | null>
   chooseConfigurationLocation(): Promise<string | null>
@@ -44,6 +44,7 @@ export interface VhostraDesktopApi {
   exportDatabase(database: string): Promise<{ database: string; message: string } | null>
   repairDatabase(database: string): Promise<{ database: string; message: string }>
   deleteDatabase(database: string): Promise<{ database: string; message: string }>
+  syncAllHosts(): Promise<HostsMappingResult>
   syncHosts(id: string): Promise<HostsMappingResult>
   hostsStatus(id: string): Promise<Array<{ hostname: string; state: 'mapped' | 'required' | 'conflict'; address?: string }>>
   getAppInfo(): Promise<{ name: string; version: string }>

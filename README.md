@@ -2,7 +2,7 @@
 
 Vhostra is a lightweight, cross-platform graphical local PHP development environment. It is designed around one shared runtime: many local websites use one selected web server, one selected PHP version, and shared supporting services.
 
-> Development status: Vhostra persists settings and site/neutral-vhost definitions locally, creates a protected localhost welcome page, and manages its dedicated single-container runtime. The current desktop UI includes real MariaDB management, phpMyAdmin launching, port checks, hosts-file integration, PHP extension discovery, and runtime lifecycle controls. Full configuration import/apply, HTTPS provisioning, vhost import parsing, screenshot capture, and arbitrary external backup restore remain planned.
+> Development status: Vhostra persists settings and site/neutral-vhost definitions locally, creates a protected localhost welcome page, and manages its dedicated single-container runtime. The current desktop UI includes real MariaDB management, phpMyAdmin launching, port checks, hosts-file integration, PHP extension discovery, and runtime lifecycle controls. Portable JSON configuration import/apply and verified configuration-location migration are implemented. Arbitrary server-config parsing, screenshot capture, and external backup restore remain pending.
 
 ## Features
 
@@ -16,8 +16,8 @@ Vhostra is a lightweight, cross-platform graphical local PHP development environ
 - First-run defaults of OpenLiteSpeed and the latest supported PHP policy (currently PHP 8.5)
 - Protected, server-neutral `http://localhost/` definition with a static host-side Vhostra welcome page
 - System tray/menu-bar entry that keeps Vhostra available after its window closes
-- Configuration bundle export and import-bundle validation preview
-- Typed, server-neutral virtual-host model ready for future import/conversion work
+- Configuration bundle export, validation preview, and import
+- Typed, server-neutral virtual-host model used for portable imports and server configuration generation
 - Typed local-first storage layout, configuration ownership, snapshot, and portable bundle models
 - Exact-source macOS, Windows, Linux, window, and favicon application icons
 - Authoritative branding assets derived directly from `logo/logos.png`
@@ -28,7 +28,7 @@ Vhostra is a lightweight, cross-platform graphical local PHP development environ
 
 ## Architecture summary
 
-Vhostra will run exactly one global web server and exactly one global PHP runtime at a time. Websites are vhosts within that shared environment—not individual stacks. MariaDB and phpMyAdmin are required shared services; Redis and Memcached are optional shared services.
+Vhostra runs exactly one global web server and exactly one global PHP runtime at a time. Websites are vhosts within that shared environment—not individual stacks. MariaDB and phpMyAdmin are required shared services; Redis and Memcached are optional shared services.
 
 Supported web servers: Apache, Nginx, and OpenLiteSpeed. Only the selected implementation is used.
 
@@ -48,13 +48,13 @@ Docker Desktop (or a compatible Docker Engine with the Compose plugin) is requir
 - `http://localhost/` is the Vhostra managed local web-server entry point.
 - `http://localhost:9080/` is phpMyAdmin. Its image keeps internal port 80; only the host binding is 9080.
 
-Vhostra requires ports 80 and 9080 at startup. Port 443 is checked only as an optional HTTPS capability: if another application such as Tailscale Serve owns it, Vhostra starts HTTP normally on port 80 and reports HTTPS as unavailable without touching the owner.
+Vhostra checks the configured HTTP, phpMyAdmin, and MariaDB ports before startup (defaults 80, 9080, and 3306). Port 443 is checked only as an optional HTTPS capability: if another application such as Tailscale Serve owns it, Vhostra starts HTTP normally on port 80 and reports HTTPS as unavailable without touching the owner.
 
 ## Local-first storage and persistence
 
-Vhostra keeps its application data in Electron's platform-specific `userData` location, under a `Vhostra` directory. Website document roots are normal user-selected or user-created host directories, not application-managed container paths. The future runtime will bind-mount each document root and only the required Vhostra-managed host locations into disposable containers.
+Vhostra keeps its application data in Electron's platform-specific `userData` location, under a `vhostra` directory. Website document roots are normal user-selected or user-created host directories, not application-managed container paths. The runtime bind-mounts each document root and only the required Vhostra-managed host locations into disposable containers.
 
-The typed storage layout is platform-aware: an Electron platform adapter will provide the platform's application-data root for macOS, Windows, or Linux, and the layout derives Vhostra paths from that input. The code does not assume a macOS-only path. Planned persistent locations include:
+The typed storage layout is platform-aware: Electron provides the platform's application-data root for macOS, Windows, or Linux, and the layout derives Vhostra paths from that input. The code does not assume a macOS-only path. Persistent locations include:
 
 - Vhostra settings; site definitions; and neutral virtual-host definitions
 - source, imported, custom, and generated configuration
@@ -69,17 +69,17 @@ The built-in localhost definition is intentionally protected from normal deletio
 
 ### Configuration ownership
 
-Vhostra will distinguish three layers rather than merging them silently:
+Vhostra distinguishes three configuration layers:
 
 1. **Vhostra source configuration** — the portable source of truth: settings, sites, and neutral vhosts.
 2. **User-editable/custom configuration** — explicit additions owned by the user and never silently overwritten.
 3. **Generated runtime configuration** — inspectable Apache/Nginx/OpenLiteSpeed/PHP/service files rendered from source configuration for the selected runtime.
 
-Changing the global server will render a new target-server configuration from the neutral vhost model. Imported directives that cannot be made portable are retained as preserved directives and/or reported with compatible, warning, or unsupported classifications.
+Changing the global server renders a new target-server configuration from the neutral vhost model. Imported directives that cannot be made portable are retained as preserved directives and/or reported with compatible, warning, or unsupported classifications.
 
 ## Configuration import, export, and recovery
 
-The architecture defines a portable `vhostra/config-bundle` manifest with schema version `1`. The current Export Configuration action writes an all-configuration JSON bundle containing settings, site definitions, and neutral vhost definitions. The current Preview Import action validates a selected bundle without applying it. Individual-site/vhost/server/PHP/MariaDB/optional-service export scopes are represented in the model and planned for the export UI.
+The architecture defines a portable `vhostra/config-bundle` manifest with schema version `1`. The current Export Configuration action writes an all-configuration JSON bundle containing settings, site definitions, and neutral vhost definitions. Preview Import validates a selected bundle; Import Configuration creates a local backup, adds non-conflicting definitions, refreshes runtime configuration, and requests scoped hosts mappings. Individual-site/vhost/server/PHP/MariaDB/optional-service export scopes are represented in the model and planned for the export UI.
 
 By default, a portable configuration bundle excludes website content, database contents, passwords/secrets, and private TLS keys. Those require separate, explicit backup/export behavior. Before a future import, migration, or important replacement, Vhostra will create a local restorable snapshot. Bundle import is deliberately preview-only today: no imported configuration is applied, replaced, or backed up yet.
 
@@ -97,13 +97,13 @@ Start, Stop, and Restart actions—including individual active-web-server, Maria
 
 ## Bind mounts
 
-Future Docker configuration will use explicit host-to-container mount plans. Host paths and container paths are separate typed values. Document roots, generated runtime configuration, persistent database data, certificates, and persistent logs can be mounted according to their purpose and access mode. Containers remain disposable runtime infrastructure; they are never the sole owner of user data.
+Docker configuration uses explicit host-to-container mount plans. Host paths and container paths are separate typed values. Document roots, generated runtime configuration, persistent database data, certificates, and persistent logs can be mounted according to their purpose and access mode. Containers remain disposable runtime infrastructure; they are never the sole owner of user data.
 
 ## Docker isolation and safety principles
 
-The Docker layer uses the dedicated `vhostra` Compose project, `com.vhostra.managed=true` labels, and `vhostra-network`. It invokes Compose only against Vhostra's generated project file; it never uses global cleanup or broad Docker stop/remove operations. Website roots, generated configuration, database data, logs, certificates, and service configuration are host bind mounts. A running server/PHP change regenerates configuration, validates it, updates only the Vhostra project, removes obsolete project containers with project-scoped orphan removal, and health-checks localhost and phpMyAdmin.
+The Docker layer uses the dedicated `vhostra` Compose project, `com.vhostra.managed=true` labels, and `vhostra-network`. It invokes Compose only against Vhostra's generated project file; it never uses global cleanup or broad Docker stop/remove operations. Website roots, generated configuration, database data, logs, certificates, and service configuration are host bind mounts. A running server/PHP change checks a candidate against an isolated database copy and temporary ports, then promotes the selected configuration and health-checks localhost and phpMyAdmin. Failed promotion restores the verified previous configuration and image. If recovery fails, Vhostra retains recovery files and reports their location.
 
-Security configuration planned for generated runtimes includes `expose_php=Off` and web-server response version hiding where supported.
+Security configuration for generated runtimes includes `expose_php=Off` and web-server response version hiding where supported.
 
 ## Planned vhost import and conversion
 
@@ -158,7 +158,7 @@ src/
   App.tsx          Application shell and persisted-site/dashboard UI
   welcome/         Static localhost welcome-page source
   styles.css       Tailwind entry point and small global rules
-build/             App icon used by Electron packaging later
+build/             Native app and tray packaging assets
   icon.icns         macOS application icon derived from the source artwork
   icon.ico          Windows application icon derived from the source artwork
   icons/            Linux PNG icon sizes derived from the source artwork
@@ -168,7 +168,7 @@ test/               Persistent-store and URL-safety tests
 
 ## Current limitations
 
-Vhostra can request elevation to create/remove only its own marked hosts-file mappings for sites and aliases. It does not yet provision HTTPS certificates, capture screenshots, parse imported server configuration, apply configuration imports, or create recovery snapshots. A cancelled elevation request leaves the site definition intact but reports that the hostname could not be mapped.
+Vhostra can request elevation to create/remove only its own marked hosts-file mappings for sites and aliases. It does not yet capture screenshots, parse arbitrary server configuration or restore arbitrary external backups. Configuration imports create a local backup, and configuration migration retains the source until destination health checks succeed. A cancelled elevation request leaves the site definition intact but reports that the hostname could not be mapped.
 
 ## PHP extensions and cwebp
 
@@ -239,3 +239,37 @@ checks, or failed runtime operations. `VHOSTRA_USER_DATA` may be set only when
 the desktop app uses a non-default Electron user-data directory. Hosts-file
 updates remain a desktop UI operation because they require a scoped native
 administrator prompt; the CLI does not bypass that privilege boundary.
+
+Opt-in runtime acceptance checks use dedicated temporary Docker project, network,
+image, configuration, database, and port scopes. They never migrate the live
+user-data directory:
+
+```sh
+node test/migration-runtime.mjs
+node test/servers-runtime.mjs
+env -u ELECTRON_RUN_AS_NODE node_modules/.bin/electron test/tray.electron.mjs
+```
+
+Build the Electron output before running these checks. The tray harness is a
+native macOS check. Runtime checks require Docker and remove their own test
+containers and networks when finished.
+
+When the configured HTTPS port is available, the managed runtime creates a local
+self-signed certificate for localhost and the configured site names, and serves
+HTTPS through its own TLS gateway. Keys stay in the local private certificate
+directory. Vhostra does not change system certificate trust; browsers require
+user-managed trust for these local certificates. An occupied HTTPS port disables
+only the TLS listener and reports its owner while HTTP continues.
+
+Apache and Nginx now handle the selected public HTTP listener inside the same
+runtime. PHP requests use the selected LSPHP backend over an internal listener.
+Apache applies .htaccess rewrite rules; Nginx uses the generated front-controller
+routing and does not execute arbitrary .htaccess directives.
+
+Startup validation covers Linux XDG entry creation/removal and executable quoting,
+and macOS/Windows native API settings plus refusal feedback. Native login launch
+on Windows/Linux and macOS login approval remain release acceptance checks on
+those systems; this development Mac denied login-item registration. Automatic
+runtime startup failures appear in a native error dialog.
+
+Linux startup quoting follows the [Desktop Entry specification](https://specifications.freedesktop.org/desktop-entry/latest/exec-variables.html). Native login settings use the matching registration arguments when verifying acceptance, as required by [Electron](https://www.electronjs.org/docs/latest/api/app#appgetloginitemsettingsoptions-macos-windows).

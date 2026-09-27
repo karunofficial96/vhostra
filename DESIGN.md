@@ -75,3 +75,18 @@ Elevation is minimal in the content browsing experience. Level 0: flat, no shado
 - Don't auto-play video previews on hover immediately — use a 2-second delay to prevent flickering
 - Do prioritize the comment section with clear threading and easy reply interactions
 - Don't use custom scrollbars — rely on native scrolling for performance
+## Vhostra desktop adaptation
+
+The Vhostra adaptation below governs this application; the original video-product examples above are reference material. Vhostra applies the palette and typography to local development workspaces.
+The sidebar is 240px with an optional compact rail; content uses flat sections,
+quiet dividers, and red primary actions. Service artwork occupies a 36px square
+with a 30px maximum mark, preserving its aspect ratio. MariaDB uses the same
+transparent seal in both themes, with a light silhouette in dark mode.
+All fonts, service artwork, logos, and welcome-page assets ship locally. The Google Fonts references above describe the original reference design; Vhostra loads bundled Roboto and Roboto Mono without network requests.
+
+Services controls represent verified Supervisor process state. Individual
+controls remain disabled until the shared runtime runs. Progress and failure
+feedback use readable inline status text. Quit has two explicit actions for
+keeping or stopping services; window closing follows the saved policy.
+Configuration migration displays the verified destination or recovery error,
+and refreshes the displayed storage location after rollback.

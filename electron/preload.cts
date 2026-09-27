@@ -39,6 +39,7 @@ const api = Object.freeze({
   exportDatabase: (database: string) => ipcRenderer.invoke('vhostra:export-database', database),
   repairDatabase: (database: string) => ipcRenderer.invoke('vhostra:repair-database', database),
   deleteDatabase: (database: string) => ipcRenderer.invoke('vhostra:delete-database', database),
+  syncAllHosts: () => ipcRenderer.invoke('vhostra:sync-all-hosts'),
   syncHosts: (id: string) => ipcRenderer.invoke('vhostra:sync-hosts', id),
   hostsStatus: (id: string) => ipcRenderer.invoke('vhostra:hosts-status', id),
   getAppInfo: () => ipcRenderer.invoke('vhostra:get-app-info'),

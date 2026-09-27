@@ -18,6 +18,12 @@ if [ -s /etc/vhostra/openlitespeed/vhostra-vhosts.conf ]; then
   cat /etc/vhostra/openlitespeed/vhostra-vhosts.conf >> /usr/local/lsws/conf/httpd_config.conf
 fi
 
+# The selected frontend owns the public listener; OLS supplies selected LSPHP
+# over an internal HTTP listener for Apache/Nginx PHP requests.
+if [ "${VHOSTRA_WEB_SERVER:-openlitespeed}" != openlitespeed ]; then
+  sed -i 's/\*:8088/*:8089/g' /usr/local/lsws/conf/httpd_config.conf
+fi
+
 # Keep PHP's implementation details out of HTTP responses for every selected
 # LSPHP package. The version selector is always two digits (81 through 85).
 PHP_VERSION="${VHOSTRA_LSPHP_VERSION%?}.${VHOSTRA_LSPHP_VERSION#?}"
@@ -56,6 +62,21 @@ done
 # page. Keep WordPress-style `.htaccess` permalinks available by default.
 sed -Ei '/^rewrite[[:space:]]*\{/,/^\}/ s/^[[:space:]]*enable[[:space:]]+0[[:space:]]*$/  enable 1\n  autoLoadHtaccess 1/' /usr/local/lsws/conf/vhosts/Example/vhconf.conf
 
+if [ "${VHOSTRA_HTTPS:-false}" = true ]; then
+  mkdir -p /etc/vhostra/certificates/public /etc/vhostra/certificates/private
+  chmod 0700 /etc/vhostra/certificates/private
+  names="${VHOSTRA_TLS_NAMES:?}"
+  saved="$(cat /etc/vhostra/certificates/public/names.txt 2>/dev/null || true)"
+  if [ "$saved" != "$names" ] || ! openssl x509 -checkend 86400 -noout -in /etc/vhostra/certificates/public/localhost.pem >/dev/null 2>&1; then
+    umask 077
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 -subj /CN=localhost -addext "subjectAltName=$names" -keyout /etc/vhostra/certificates/private/localhost.key.new -out /etc/vhostra/certificates/public/localhost.pem.new
+    mv /etc/vhostra/certificates/private/localhost.key.new /etc/vhostra/certificates/private/localhost.key
+    mv /etc/vhostra/certificates/public/localhost.pem.new /etc/vhostra/certificates/public/localhost.pem
+    printf '%s' "$names" > /etc/vhostra/certificates/public/names.txt
+    umask 022
+  fi
+fi
+
 mkdir -p /var/log/vhostra /var/lib/mysql /var/www/html
 # This is a Vhostra-managed built-in document root. OLS deliberately rejects
 # symlinks which leave its vhost root, so seed the immutable bundled source on
@@ -68,6 +89,8 @@ if [ ! -f /var/www/html/phpmyadmin/index.php ]; then cp -a /usr/share/phpmyadmin
 # script) and refresh it on every disposable-container start.
 sed "s/__VHOSTRA_PMA_PASSWORD__/${VHOSTRA_PMA_PASSWORD:?}/g" /usr/share/phpmyadmin/config.inc.php > /var/www/html/phpmyadmin/config.inc.php
 chmod 0644 /var/www/html/phpmyadmin/config.inc.php
+# Public Vhostra-owned files must be readable by the selected frontend worker.
+chmod -R a+rX /var/www/html
 if [ ! -d /var/lib/mysql/mysql ]; then
   mariadb-install-db --user=mysql --datadir=/var/lib/mysql
 fi

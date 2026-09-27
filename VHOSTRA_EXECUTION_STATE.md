@@ -1,33 +1,24 @@
 # Vhostra Execution State
 
-Current workstream:
-Quit and close-policy validation
+Current workstream: Implementable completion queue finished; local final validation passed; native startup acceptance remains external.
 
 Completed substeps:
-- Repository-metadata LSPHP package discovery and runtime loaded-module inventory.
-- Extension install/enable/disable/remove IPC, persistence, UI search/filter/actions.
-- APCu disable and re-enable verified through the active LSPHP HTTP module endpoint.
-- Imported portable Vhostra configuration definitions now create a local backup,
-  add only non-conflicting new sites, refresh generated runtime configuration,
-  and pass every imported hostname and alias through scoped hosts mapping.
-- Fixed service-control state ordering and verified a real Supervisor-managed
-  OpenLiteSpeed restart through the Vhostra CLI.
+- Prior isolated live acceptance passed migration/database/phpMyAdmin, OLS/Apache/Nginx, rewrites, TLS/port conflicts, PHP promotion, optional-service lifecycle, and forced promotion rollback. Test Docker resources removed; do not repeat without a relevant runtime change.
+- Native close/quit policies and 20px/40px transparent tray acceptance passed; original user preferences restored.
+- All eight service marks rendered and visually inspected in light/dark themes.
+- Offline Help/About/privacy/log viewer accepted; local welcome font paths fixed; offline asset/resource test passed.
+- Linux XDG startup lifecycle/escaping and macOS/Windows API acceptance/refusal tests passed. OS failures and automatic-runtime startup failures now display feedback.
+- Regression fix retains runtime backup if recovery or candidate cleanup fails; targeted failure/recovery tests passed.
 
-Current substep:
-- Validate the shared desktop quit actions and persisted native close policy.
+Current substep: Final validation and TODO/placeholder/regression/DESIGN audit complete.
 
 Next exact action:
-- Exercise and tighten the shared shutdown manager without stopping unrelated Docker resources.
+The remaining unchecked startup item requires native platform acceptance; there is no remaining local implementation action. Preserve this workspace. External release acceptance needs native Windows/Linux login launch and a signed Mac build with OS login approval; release packaging/update metadata require a release environment.
 
-Files currently involved:
-- electron/hosts.ts
-- electron/main.ts
-- electron/preload.cts
-- src/App.tsx
-- src/components/VirtualHostsWorkspace.tsx
+Relevant files: electron/startup.ts, electron/main.ts, electron/runtime.ts, electron/logs.ts, src/welcome/styles.css, test/*.test.mjs, test/artwork.electron.mjs, README.md, DESIGN.md.
 
-Validation completed:
-- Active LSPHP catalog query, APCu disable/enable verification, and persisted restore after runtime restart.
-- Typecheck, tests, and production build after live Virtual Hosts mapping status/action feedback was added.
-- Typecheck after import IPC, backup, and Virtual Hosts import action were added.
-- Targeted typecheck and live Vhostra CLI web-service restart after controller state-ordering fix.
+External acceptance limits: Native Windows/Linux login launches require those OSes. This Mac denied login-item registration; refusal now surfaces and saved preference rolls back. No signed installer/release update source is configured. These are release environment checks, not silently claimed as tested.
+
+Preserve all uncommitted work. Do not reset/revert/stash/discard or touch unrelated Docker resources.
+
+Final validation (2026-09-27): npm test passed (production desktop/welcome/Electron/preload build; 21/21 tests), native bridge passed, native tray passed, native artwork harness passed and screenshot inspected, shell/CLI syntax and git diff --check passed. Production TODO/FIXME/dummy/mock audit found none; README retains explicit screenshot capture, arbitrary-config parsing, and external-backup restore limitations outside this checklist. README/DESIGN stale future-runtime/font claims corrected. Final diff/status inspected; all changes remain uncommitted.

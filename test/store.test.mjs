@@ -77,5 +77,49 @@ test('migrates only Vhostra-owned configuration after a verified copy', async ()
     assert.equal(await readFile(path.join(externalRoot, 'keep.txt'), 'utf8'), 'site files stay external')
     const reloaded = new VhostraStore(directory)
     assert.equal(reloaded.layout.root, result.root)
+    const localhost = (await reloaded.getState()).sites.find(site => site.builtIn === 'localhost')
+    assert.ok(localhost.documentRoot.startsWith(result.root + path.sep))
+    await access(path.join(localhost.documentRoot, 'index.html'))
   } finally { await rm(directory, { recursive: true, force: true }); await rm(destination, { recursive: true, force: true }) }
+})
+
+test('configuration migration retains source and restores pointer on runtime validation failure', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'vhostra-rollback-'))
+  const destination = await mkdtemp(path.join(os.tmpdir(), 'vhostra-rollback-destination-'))
+  try {
+    const store = new VhostraStore(directory)
+    await store.getState(); const original = store.layout.root
+    await assert.rejects(store.migrateConfiguration(destination, async () => { throw Error('Health check failed') }), /rolled back/)
+    assert.equal(store.layout.root, original)
+    assert.equal(new VhostraStore(directory).layout.root, original)
+    await access(path.join(original, 'settings.json'))
+    await store.getState()
+  } finally { await rm(directory, { recursive: true, force: true }); await rm(destination, { recursive: true, force: true }) }
+})
+
+
+test('rejects duplicate service ports before saving settings', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'vhostra-ports-'))
+  try {
+    const store = new VhostraStore(directory)
+    const { settings } = await store.getState()
+    await assert.rejects(store.saveSettings({ ...settings, ports: { ...settings.ports, phpMyAdmin: settings.ports.http } }), /distinct host port/)
+    assert.equal((await store.getState()).settings.ports.phpMyAdmin, settings.ports.phpMyAdmin)
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
+test('site saves reject hostname and alias collisions and protect localhost updates', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'vhostra-hostname-'))
+  try {
+    const store = new VhostraStore(directory)
+    const initial = await store.getState()
+    const localhost = initial.sites.find(site => site.builtIn)
+    await assert.rejects(store.updateSite({ ...localhost, url: 'http://renamed.test' }), /protected/)
+    await store.addSite({ name: 'First', documentRoot: '/projects/first', url: 'http://first.test', aliases: ['shared.test'] })
+    await assert.rejects(store.addSite({ name: 'Second', documentRoot: '/projects/second', url: 'http://shared.test' }), /already belongs/)
+    await assert.rejects(store.addSite({ name: 'Second', documentRoot: '/projects/second', url: 'http://second.test', aliases: ['FIRST.TEST'] }), /already belongs/)
+    const first = (await store.getState()).sites.find(site => site.name === 'First')
+    await store.updateSite({ ...first, name: 'First renamed' })
+    assert.deepEqual((await store.getState()).virtualHosts.find(host => host.id === first.vhostId).aliases, ['shared.test'])
+  } finally { await rm(directory, { recursive: true, force: true }) }
 })

@@ -1,4 +1,25 @@
 import AppKit
+import ImageIO
+
+// Tray representations use explicit physical bitmap dimensions. NSImage
+// lockFocus depends on the screen backing scale and silently doubled the old
+// outputs; nearest-neighbour sampling before that draw also discarded detail.
+if CommandLine.arguments.contains("--representation") {
+  let args = CommandLine.arguments
+  guard args.count >= 6, let size = Int(args[3]), let inset = Int(args[4]),
+        let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: args[1]) as CFURL, nil),
+        let master = CGImageSourceCreateImageAtIndex(source, 0, nil),
+        let context = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8,
+          bytesPerRow: size * 4, space: CGColorSpaceCreateDeviceRGB(),
+          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { exit(64) }
+  context.interpolationQuality = .high
+  context.draw(master, in: CGRect(x: inset, y: inset, width: size - 2 * inset, height: size - 2 * inset))
+  guard let image = context.makeImage(),
+        let destination = CGImageDestinationCreateWithURL(URL(fileURLWithPath: args[2]) as CFURL, "public.png" as CFString, 1, nil) else { exit(1) }
+  CGImageDestinationAddImage(destination, image, nil)
+  guard CGImageDestinationFinalize(destination) else { exit(1) }
+  exit(0)
+}
 
 // Generates the native tray-only asset from Vhostra's approved app-mark crop.
 // The artwork remains intact: the white rounded app-icon interior is retained,

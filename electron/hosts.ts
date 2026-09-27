@@ -31,8 +31,9 @@ export class HostsFileManager {
     const alreadyMapped: string[] = []; const missing: string[] = []; const conflicts: Array<{ hostname: string; address: string }> = []
     for (const hostname of requested) {
       const addresses = entries.get(hostname) ?? new Set<string>()
-      if (addresses.has('127.0.0.1')) alreadyMapped.push(hostname)
-      else if (addresses.size) conflicts.push({ hostname, address: [...addresses][0] })
+      const conflicting = [...addresses].find(address => !['127.0.0.1', '::1'].includes(address))
+      if (conflicting) conflicts.push({ hostname, address: conflicting })
+      else if (addresses.has('127.0.0.1') || addresses.has('::1')) alreadyMapped.push(hostname)
       else missing.push(hostname)
     }
     if (conflicts.length) return { installed: [], alreadyMapped, conflicts, message: `Vhostra did not change ${this.hostsPath}: ${conflicts.map(conflict => `${conflict.hostname} already maps to ${conflict.address}`).join(', ')}.` }
@@ -42,11 +43,19 @@ export class HostsFileManager {
     return { installed: missing, alreadyMapped, conflicts: [], message: `Added Vhostra local mapping${missing.length === 1 ? '' : 's'} for ${missing.join(', ')}.` }
   }
 
+  async reconcileMappings(hostnames: string[]) {
+    const desired = new Set(hostnames.map(name => name.toLowerCase()).filter(name => name !== 'localhost'))
+    const source = await fs.readFile(this.hostsPath, 'utf8')
+    const stale = source.split(/\r?\n/).filter(line => /#\s*Vhostra\b/i.test(line)).flatMap(line => line.split('#')[0].trim().split(/\s+/).slice(1)).filter(name => !desired.has(name.toLowerCase()))
+    await this.removeVhostraMappings(stale)
+    return this.ensureLocalhostMappings([...desired])
+  }
+
   async mappingStatus(hostnames: string[]) {
     const entries = parseHosts(await fs.readFile(this.hostsPath, 'utf8'))
     return hostnames.map(hostname => {
       const addresses = entries.get(hostname.toLowerCase()) ?? new Set<string>()
-      return { hostname, state: addresses.has('127.0.0.1') ? 'mapped' as const : addresses.size ? 'conflict' as const : 'required' as const, address: addresses.size ? [...addresses][0] : undefined }
+      return { hostname, state: [...addresses].some(address => !['127.0.0.1', '::1'].includes(address)) ? 'conflict' as const : addresses.size ? 'mapped' as const : 'required' as const, address: addresses.size ? [...addresses][0] : undefined }
     })
   }
 
@@ -68,7 +77,7 @@ export class HostsFileManager {
       return keep.length ? [`${address} ${keep.join(' ')} #${comment.trim()}`] : []
     }).join(os.EOL)
     if (!changed) return false
-    await this.replaceWithElevation(`${retained.replace(/\n*$/, '')}${os.EOL}`)
+    await this.replaceWithElevation(`${retained.replace(/\n*$/, '')}${os.EOL}`, source)
     return true
   }
 
@@ -86,15 +95,16 @@ export class HostsFileManager {
     } catch (error) { throw new Error(`Vhostra created the virtual-host definition but could not add its protected hosts-file mapping. ${errorMessage(error)}`) } finally { await fs.rm(temporary, { force: true }) }
   }
 
-  private async replaceWithElevation(contents: string) {
+  private async replaceWithElevation(contents: string, expectedSource: string) {
     const temporary = await this.writeTemporary(contents)
+    const expected = await this.writeTemporary(expectedSource)
     try {
-      if (process.platform === 'darwin') await execute('osascript', ['-e', `do shell script ${appleScriptString(`/bin/cp ${shellQuote(temporary)} /etc/hosts && /bin/chmod 644 /etc/hosts`)} with administrator privileges`])
+      if (process.platform === 'darwin') await execute('osascript', ['-e', `do shell script ${appleScriptString(`/usr/bin/cmp -s ${shellQuote(expected)} /etc/hosts && /bin/cp ${shellQuote(temporary)} /etc/hosts && /bin/chmod 644 /etc/hosts`)} with administrator privileges`])
       else if (process.platform === 'win32') {
-        const command = `[System.IO.File]::Copy(${powerShellString(temporary)}, ${powerShellString(this.hostsPath)}, $true)`
+        const command = `if ([System.IO.File]::ReadAllText(${powerShellString(this.hostsPath)}) -cne [System.IO.File]::ReadAllText(${powerShellString(expected)})) { throw "Hosts file changed; retry mapping repair" }; [System.IO.File]::Copy(${powerShellString(temporary)}, ${powerShellString(this.hostsPath)}, $true)`
         await execute('powershell.exe', ['-NoProfile', '-Command', `Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile','-Command',${powerShellString(command)}`])
-      } else await execute('pkexec', ['/usr/bin/install', '-m', '644', temporary, this.hostsPath])
-    } catch (error) { throw new Error(`Vhostra could not remove its protected hosts-file mapping. ${errorMessage(error)}`) } finally { await fs.rm(temporary, { force: true }) }
+      } else await execute('pkexec', ['/bin/sh', '-c', `/usr/bin/cmp -s ${shellQuote(expected)} ${shellQuote(this.hostsPath)} && /usr/bin/install -m 644 ${shellQuote(temporary)} ${shellQuote(this.hostsPath)}`])
+    } catch (error) { throw new Error(`Vhostra could not remove its protected hosts-file mapping. The hosts file may have changed while approval was pending; retry Repair all mappings. ${errorMessage(error)}`) } finally { await Promise.all([temporary, expected].map(file => fs.rm(file, { force: true }))) }
   }
 
   private async writeTemporary(contents: string) {

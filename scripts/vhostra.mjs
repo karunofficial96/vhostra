@@ -7,10 +7,10 @@ import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 
 const platformDataRoot = () => process.env.VHOSTRA_USER_DATA || (process.platform === 'darwin'
-  ? path.join(os.homedir(), 'Library', 'Application Support', 'Vhostra')
+  ? path.join(os.homedir(), 'Library', 'Application Support', 'vhostra')
   : process.platform === 'win32'
-    ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Vhostra')
-    : path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'Vhostra'))
+    ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'vhostra')
+    : path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'vhostra'))
 const usage = `Vhostra CLI (local-only)
 
 Usage:
@@ -34,10 +34,11 @@ try {
   // fallback template used only when no distribution assets exist.
   const scriptDirectory = path.dirname(fileURLToPath(import.meta.url))
   const store = new VhostraStore(platformDataRoot(), path.join(scriptDirectory, '..', 'dist-welcome'))
-  const runtime = new DockerRuntimeController(store.layout, () => store.getState(), message => store.updateLocalhostWelcome(message))
+  if (process.env.VHOSTRA_RUNTIME_PROJECT && !process.env.VHOSTRA_USER_DATA) throw new Error('A custom runtime project requires an explicit isolated VHOSTRA_USER_DATA directory.')
+  const runtime = new DockerRuntimeController(store.layout, () => store.getState(), message => store.updateLocalhostWelcome(message), process.env.VHOSTRA_RUNTIME_PROJECT || 'vhostra')
   const [subject = 'status', action] = process.argv.slice(2)
   const print = value => process.stdout.write(`${typeof value === 'string' ? value : JSON.stringify(value, null, 2)}\n`)
-  const save = async mutate => { const current = await store.getState(); await store.saveSettings(mutate(current.settings)); await runtime.applyConfiguration(); print(await runtime.refresh()) }
+  const save = async mutate => { await runtime.refresh(); const current = await store.getState(); await store.saveSettings(mutate(current.settings)); try { await runtime.applyConfiguration(); print(await runtime.refresh()) } catch (error) { await store.saveSettings(current.settings); throw error } }
   if (subject === 'help' || subject === '--help' || subject === '-h') print(usage)
   else if (subject === 'status' || (subject === 'runtime' && (!action || action === 'status'))) { await runtime.refresh(); print({ runtime: runtime.current(), services: await runtime.listManagedServices() }) }
   else if (subject === 'runtime' && ['start', 'stop', 'restart'].includes(action)) { await runtime[action](); print(runtime.current()) }
@@ -54,7 +55,7 @@ try {
     const current = await store.getState(); const enabled = operation === 'install' || operation === 'enable'
     await store.saveSettings({ ...current.settings, php: { ...current.settings.php, extensions: enabled ? [...new Set([...current.settings.php.extensions, extension])] : current.settings.php.extensions.filter(value => value !== extension), disabledExtensions: operation === 'disable' ? [...new Set([...current.settings.php.disabledExtensions, extension])] : current.settings.php.disabledExtensions.filter(value => value !== extension) } })
   } else if (subject === 'opcache' && ['status', 'enable', 'disable'].includes(action)) {
-    if (action === 'status') print((await runtime.listPhpExtensions()).find(extension => extension.id === 'opcache') ?? { status: 'unavailable' })
+    if (action === 'status') { await runtime.refresh(); print((await runtime.listPhpExtensions()).find(extension => extension.id === 'opcache') ?? { status: 'unavailable' }) }
     else await save(settings => ({ ...settings, php: { ...settings.php, opcacheEnabled: action === 'enable' } }))
   } else if (subject === 'cwebp' && ['status', 'enable', 'disable'].includes(action)) {
     if (action === 'status') { await runtime.refresh(); print(await runtime.getCwebpStatus()) }
