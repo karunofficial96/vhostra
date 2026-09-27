@@ -189,6 +189,9 @@ export class VhostraStore {
     await this.initialize()
     const snapshot = path.join(this.layout.backups, `before-import-${new Date().toISOString().replace(/[:.]/g, '-')}.json`)
     await this.exportBundle(snapshot)
+    const recovery = JSON.parse(await fs.readFile(snapshot, 'utf8'))
+    recovery.manifest.automaticRecovery = { owner: 'vhostra', state: 'active', createdAt: new Date().toISOString() }
+    await this.writeJson(snapshot, recovery)
     const imported: Array<{ name: string; hostname: string; aliases: string[] }> = []
     const existing = await this.getState()
     const knownHostnames = new Set(existing.virtualHosts.flatMap(host => [host.hostname, ...host.aliases]).map(name => name.toLowerCase()))
@@ -209,7 +212,27 @@ export class VhostraStore {
       await this.addSiteRecord({ name: incoming.name, documentRoot: incoming.documentRoot, url: incoming.url, framework: incoming.framework, aliases: host.aliases })
       imported.push({ name: incoming.name, hostname: host.hostname, aliases: host.aliases })
     }
+    recovery.manifest.automaticRecovery.state = 'completed'
+    await this.writeJson(snapshot, recovery)
+    await this.retainCompletedImportSnapshots().catch(error => console.error('Vhostra snapshot retention deferred:', error.message))
     return { imported, backup: snapshot, message: imported.length ? `Imported ${imported.length} portable site definition${imported.length === 1 ? '' : 's'}.` : 'No new portable site definitions were found in this bundle.' }
+  }
+  /** Keep ten completed automatic configuration snapshots. Active/failed imports,
+   * exported user backups, website/database content, and unknown files are untouched. */
+  private async retainCompletedImportSnapshots() {
+    const completed: Array<{ file: string; createdAt: string }> = []
+    for (const entry of await fs.readdir(this.layout.backups, { withFileTypes: true })) {
+      if (!entry.isFile() || !/^before-import-[0-9TZ-]+\.json$/.test(entry.name)) continue
+      const file = path.join(this.layout.backups, entry.name)
+      try {
+        const { manifest } = JSON.parse(await fs.readFile(file, 'utf8'))
+        const recovery = manifest?.automaticRecovery
+        if (manifest?.format === 'vhostra/config-bundle' && recovery?.owner === 'vhostra' && recovery.state === 'completed'
+          && Number.isFinite(Date.parse(recovery.createdAt))) completed.push({ file, createdAt: recovery.createdAt })
+      } catch { /* Unknown or incomplete artifacts are preserved. */ }
+    }
+    completed.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    for (const snapshot of completed.slice(10)) await fs.rm(snapshot.file)
   }
   private async initializeOnce() {
     await Promise.all(Object.values(this.directories()).map(directory => fs.mkdir(directory, { recursive: true })))

@@ -5,21 +5,44 @@
   "type": "module",
   "description": "A lightweight graphical local PHP development environment.",
   "main": "dist-electron/main.js",
-  "bin": { "vhostra": "scripts/vhostra.mjs" },
+  "bin": {
+    "vhostra": "scripts/vhostra.mjs"
+  },
   "build": {
     "appId": "com.vhostra.app",
     "productName": "Vhostra",
-    "directories": { "buildResources": "build" },
-    "extraResources": [{ "from": "build/trayIcon.png", "to": "trayIcon.png" }, { "from": "build/trayIcon@2x.png", "to": "trayIcon@2x.png" }],
-    "mac": { "icon": "build/icon.icns" },
-    "win": { "icon": "build/icon.ico" },
-    "linux": { "icon": "build/icons" }
+    "directories": {
+      "buildResources": "build"
+    },
+    "extraResources": [
+      {
+        "from": "build/trayIcon.png",
+        "to": "trayIcon.png"
+      },
+      {
+        "from": "build/trayIcon@2x.png",
+        "to": "trayIcon@2x.png"
+      },
+      {
+        "from": "runtime-image",
+        "to": "runtime-image"
+      }
+    ],
+    "mac": {
+      "icon": "build/icon.icns"
+    },
+    "win": {
+      "icon": "build/icon.ico"
+    },
+    "linux": {
+      "icon": "build/icons"
+    }
   },
   "scripts": {
     "predev": "vite build --config vite.welcome.config.ts",
     "dev": "node scripts/dev.mjs",
     "dev:web": "vite",
-    "build": "tsc -b && vite build && vite build --config vite.welcome.config.ts && tsc -p electron/tsconfig.json && tsc -p electron/tsconfig.preload.json",
+    "build": "tsc -b && vite build && vite build --config vite.welcome.config.ts && tsc -p electron/tsconfig.json",
     "preview": "vite preview",
     "typecheck": "tsc -b --pretty false",
     "test": "npm run build && node --test test/*.test.mjs",
@@ -39,10 +62,8 @@
     "@types/node": "^22.10.0",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
-    "concurrently": "^9.1.2",
     "electron": "^44.4.5",
     "tailwindcss": "^4.0.9",
-    "typescript": "^5.7.3",
-    "wait-on": "^8.0.1"
+    "typescript": "^5.7.3"
   }
 }

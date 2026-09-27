@@ -21,7 +21,7 @@ for (const recoveryFails of [false, true]) test(`replacement recovery ${recovery
         runtime.docker = async () => '';
         runtime.compose = async (args) => {
             if (args[0] === 'images') return 'immutable-image-id';
-            if (args.includes('--build')) throw new Error('promotion failed');
+            if (args[0] === 'build') throw new Error('promotion failed');
             if (args.includes('--no-build') && recoveryFails) throw new Error('recovery failed');
             return '';
         };

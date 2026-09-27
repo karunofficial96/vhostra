@@ -8,7 +8,23 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["*.ts"]
+  "include": [
+    "*.ts",
+    "*.cts"
+  ],
+  "watchOptions": {
+    "excludeDirectories": [
+      "../node_modules",
+      "../dist",
+      "../dist-welcome",
+      "../runtime-image",
+      "../test"
+    ],
+    "watchFile": "useFsEvents",
+    "watchDirectory": "useFsEvents"
+  }
 }

@@ -1,5 +1,5 @@
 import { redactProgress } from "./progress.js";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
     createReadStream,
     createWriteStream,
@@ -8,10 +8,10 @@ import {
     type FSWatcher,
 } from "node:fs";
 import { promises as fs } from "node:fs";
-import { finished } from "node:stream/promises";
+import { pipeline } from "node:stream/promises";
 import net from "node:net";
 import path from "node:path";
-import os from "node:os";
+import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import type { AppState, PhpVersion, StoreLayout, WebServer } from "./store.js";
 
@@ -64,13 +64,19 @@ export class DockerRuntimeController {
     };
     private progress: { id: number; lines: string[]; total: number } | undefined;
     private hiddenProgressMaterial = false;
+    private progressNotification: ReturnType<typeof setTimeout> | undefined;
     private secrets = new Set<string>();
     private listeners = new Set<() => void>();
     private operation: Promise<void> | null = null;
     private refreshOperation: Promise<RuntimeSnapshot> | null = null;
     private welcomeWrites: Promise<void> = Promise.resolve();
     private httpsWarning = "";
+    private disposed = false;
+    private counters = { dockerCalls: 0, composeCalls: 0, refreshes: 0, builds: 0, operations: 0 };
+    private imageName = "";
     private htaccessWatchers = new Map<string, FSWatcher>();
+    private htaccessRoots = new Map<string, string>();
+    private htaccessGeneration = 0;
     private htaccessDebounce: ReturnType<typeof setTimeout> | null = null;
 
     constructor(
@@ -90,6 +96,17 @@ export class DockerRuntimeController {
     current() {
         return this.snapshot;
     }
+    diagnostics() {
+        return { ...this.counters, operationActive: Boolean(this.operation), progressLines: this.progress?.lines.length ?? 0,
+            htaccessWatchers: this.htaccessWatchers.size, state: this.snapshot.state };
+    }
+    async resourceUsage() {
+        if (!existsSync(this.composeFile)) return null;
+        const ids = (await this.docker(["ps", "--filter", `label=${managedLabel}`, "--filter", `label=com.docker.compose.project=${this.scope}`,
+            "--filter", "label=com.docker.compose.service=runtime", "--quiet"])).trim().split(/\s+/).filter(Boolean);
+        if (!ids.length) return null;
+        return parseJsonLines(await this.docker(["stats", "--no-stream", "--format", "{{json .}}", ...ids]));
+    }
     async refresh() {
         if (this.refreshOperation) return this.refreshOperation;
         const result = this.refreshInternal();
@@ -105,6 +122,7 @@ export class DockerRuntimeController {
         this.clearHtaccessWatchers();
     }
     private async refreshInternal() {
+        this.counters.refreshes++;
         try {
             await this.docker(["info"]);
             await this.checkOptionalHttpsPort(true);
@@ -175,13 +193,13 @@ export class DockerRuntimeController {
                 this.set({
                     state: "starting",
                     message:
-                        "Building and creating the Vhostra runtime container…",
+                        "Preparing a compatible Vhostra runtime image and container…",
                     services: ["runtime"],
                 });
                 // Never use Compose orphan removal during startup: candidate/replacement
                 // promotion must retain the prior Vhostra runtime until it has been proven
                 // healthy, and unrelated Compose projects are never in scope.
-                await this.compose(["up", "--detach", "--build"]);
+                await this.upCompatibleImage();
                 this.set({
                     state: "starting",
                     message: "Configuring secure local phpMyAdmin access…",
@@ -191,7 +209,7 @@ export class DockerRuntimeController {
                 this.set({
                     state: "starting",
                     message:
-                        "Running OpenLiteSpeed, LSPHP, MariaDB, and phpMyAdmin health checks…",
+                        "Checking the selected web server, PHP, MariaDB, and phpMyAdmin…",
                     services: ["runtime"],
                 });
                 await this.healthCheck(state.settings.selectedWebServer);
@@ -201,6 +219,7 @@ export class DockerRuntimeController {
                     { mode: 0o600 },
                 );
                 await this.refresh();
+                await this.cleanupImages().catch(error => console.error("Vhostra image cache cleanup deferred:", error.message));
             },
         );
     }
@@ -246,9 +265,13 @@ export class DockerRuntimeController {
                 )
                     .trim()
                     .split("\n")[0];
+                const recoveryTag = `vhostra-runtime:recovery-${randomBytes(8).toString("hex")}`;
                 const backup = await fs.mkdtemp(
-                    path.join(os.tmpdir(), "vhostra-replacement-"),
+                    path.join(this.layout.backups, "runtime-recovery-"),
                 );
+                await fs.writeFile(path.join(backup, "recovery.json"), JSON.stringify({ owner: "vhostra", state: "active", image: previousImage,
+                    recoveryTag, createdAt: new Date().toISOString(), source: this.runtimeRoot }), { mode: 0o600 });
+                if (previousImage) await this.docker(["tag", previousImage, recoveryTag]);
                 const candidateScope = `${this.scope}-candidate-${randomBytes(4).toString("hex")}`;
                 let candidate: DockerRuntimeController | null = null;
                 let candidateLineCount = 0;
@@ -278,7 +301,7 @@ export class DockerRuntimeController {
                         try {
                             await fs.cp(
                                 this.layout.persistentData.mariaDb,
-                                path.join(backup, "database"),
+                                path.join(backup, "candidate-database"),
                                 { recursive: true },
                             );
                         } finally {
@@ -322,11 +345,6 @@ export class DockerRuntimeController {
                             },
                             logs: path.join(backup, "candidate-logs"),
                         };
-                        await fs.cp(
-                            path.join(backup, "database"),
-                            candidateLayout.persistentData.mariaDb,
-                            { recursive: true },
-                        );
                         await fs.cp(this.layout.sites, candidateLayout.sites, {
                             recursive: true,
                         });
@@ -376,7 +394,7 @@ export class DockerRuntimeController {
                     });
                     await this.generate(state);
                     await this.compose(["config", "--quiet"]);
-                    await this.compose(["up", "--detach", "--build"]);
+                    await this.upCompatibleImage();
                     await this.provisionPhpMyAdmin();
                     await this.healthCheck(state.settings.selectedWebServer);
                     await fs.writeFile(
@@ -401,12 +419,6 @@ export class DockerRuntimeController {
                                 this.runtimeRoot,
                                 { recursive: true, force: true },
                             );
-                            if (previousImage)
-                                await this.docker([
-                                    "tag",
-                                    previousImage,
-                                    `${this.scope}-runtime:ols-lsphp${previous.settings.selectedPhpVersion.replace(".", "")}`,
-                                ]);
                             await this.compose(["up", "--detach", "--no-build"]);
                             await this.provisionPhpMyAdmin();
                             await this.healthCheck(
@@ -424,8 +436,12 @@ export class DockerRuntimeController {
                     throw error;
                 } finally {
                     candidate?.dispose();
-                    if (recoveredOrPromoted && candidateRemoved)
-                        await fs.rm(backup, { recursive: true, force: true });
+                    if (recoveredOrPromoted && candidateRemoved) {
+                        try { await fs.rm(backup, { recursive: true, force: true });
+                        if (previousImage) await this.docker(["image", "rm", recoveryTag]);
+                        await this.cleanupImages();
+                        } catch (error) { console.error(`Vhostra recovery cleanup deferred at ${backup}: ${error instanceof Error ? error.message : String(error)}`); }
+                    }
                     else
                         console.error(`Vhostra retained runtime recovery files at ${backup}; recovery or candidate removal was incomplete.`);
                 }
@@ -675,7 +691,10 @@ export class DockerRuntimeController {
                     "supervisorctl",
                     action,
                     name,
+                    ...(id === "web" && state.settings.selectedWebServer !== "openlitespeed" ? ["php-backend"] : []),
                 ]);
+                if (id === "web" && action === "stop" && state.settings.selectedWebServer === "openlitespeed")
+                    await this.compose(["exec", "-T", "runtime", "/bin/sh", "-lc", "pkill -x lsphp || true"]);
                 if (id === "web" && action !== "stop")
                     await this.healthCheck(state.settings.selectedWebServer);
                 if (id === "mariadb" && action !== "stop")
@@ -711,7 +730,10 @@ export class DockerRuntimeController {
         );
     }
     dispose() {
+        this.disposed = true;
+        clearTimeout(this.progressNotification); this.progressNotification = undefined;
         this.clearHtaccessWatchers();
+        this.listeners.clear();
     }
     async listPhpExtensions() {
         const state = await this.getState();
@@ -861,13 +883,13 @@ export class DockerRuntimeController {
             `${actionLabel(action)} PHP extension ${extensionLabel(extension)}…`,
             async () => {
                 if (action === "install" || action === "enable") {
-                    await this.compose([
+                    if (!(await this.installedPhpPackages()).includes(extension)) await this.compose([
                         "exec",
                         "-T",
                         "runtime",
                         "/bin/sh",
                         "-lc",
-                        `DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ${packageName}`,
+                        `DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ${packageName} && apt-get clean && rm -rf /var/lib/apt/lists/*`,
                     ]);
                     // Package-maintained extension INI files are normally enabled by default.
                     // Where one is explicitly disabled, restore its exact package module line.
@@ -909,7 +931,7 @@ export class DockerRuntimeController {
                     "supervisorctl",
                     "restart",
                     "web",
-                    "php-backend",
+                    ...(state.settings.selectedWebServer !== "openlitespeed" ? ["php-backend"] : []),
                 ]);
                 // LSAPI workers survive a parent restart on some OLS builds. They are
                 // Vhostra-owned children inside this container, so retire them to force
@@ -1219,7 +1241,7 @@ export class DockerRuntimeController {
     private get environmentFile() {
         return path.join(this.runtimeRoot, ".env");
     }
-    private appendProgress(text: string) {
+    private appendProgress(text: string, notify = true) {
         if (!this.progress) return;
         const safeLines: string[] = [];
         for (const line of text.split(/\r?\n/)) {
@@ -1234,13 +1256,17 @@ export class DockerRuntimeController {
         this.progress.total += lines.length;
         this.progress.lines = [...this.progress.lines, ...lines.map(line => line.slice(0, 2000))].slice(-300);
         this.snapshot = { ...this.snapshot, progress: { ...this.progress, lines: [...this.progress.lines] } };
-        this.listeners.forEach(listener => listener());
+        if (notify && !this.progressNotification) this.progressNotification = setTimeout(() => {
+            this.progressNotification = undefined;
+            if (this.progress && !this.disposed) this.listeners.forEach(listener => listener());
+        }, 50);
     }
     private set(next: Omit<RuntimeSnapshot, "updatedAt">) {
         const message = this.httpsWarning
             ? `${next.message} HTTPS is unavailable: ${this.httpsWarning}`
             : next.message;
-        this.appendProgress(message);
+        this.appendProgress(message, false);
+        clearTimeout(this.progressNotification); this.progressNotification = undefined;
         this.snapshot = {
             ...next,
             progress: this.progress ? { ...this.progress, lines: [...this.progress.lines] } : undefined,
@@ -1262,6 +1288,7 @@ export class DockerRuntimeController {
             throw new Error(
                 "A Vhostra service operation is already in progress.",
             );
+        this.counters.operations++;
         this.hiddenProgressMaterial = false;
         this.progress = { id: ++progressSequence, lines: [], total: 0 };
         this.set({ state, message, services: this.snapshot.services });
@@ -1289,11 +1316,46 @@ export class DockerRuntimeController {
             )
             .finally(() => {
                 this.operation = null;
+                clearTimeout(this.progressNotification); this.progressNotification = undefined;
                 this.progress = undefined;
                 this.snapshot = { ...this.snapshot, progress: undefined };
                 this.listeners.forEach(listener => listener());
             });
         return result;
+    }
+    /** Delete only unused, labeled build-cache images. Never containers/volumes/data.
+     * Recovery tags lease old images until the corresponding transaction succeeds. */
+    async cleanupImages() {
+        const ids = (await this.docker(["image", "ls", "--filter", `label=${managedLabel}`,
+            "--filter", "label=com.vhostra.purpose=runtime-image", "--quiet", "--no-trunc"])).trim().split(/\s+/).filter(Boolean);
+        if (!ids.length) return;
+        const images = JSON.parse(await this.docker(["image", "inspect", ...new Set(ids)])) as Array<{
+            Id: string; Created: string; RepoTags?: string[]; Config?: { Labels?: Record<string, string> };
+        }>;
+        const containers = (await this.docker(["ps", "--all", "--quiet"])).trim().split(/\s+/).filter(Boolean);
+        const used = new Set<string>(containers.length ? JSON.parse(await this.docker(["inspect", ...containers])).map((row: { Image: string }) => row.Image) : []);
+        const sorted = images.sort((a, b) => b.Created.localeCompare(a.Created));
+        for (const image of sorted.slice(6)) {
+            const tags = image.RepoTags ?? [];
+            if (used.has(image.Id) || image.Config?.Labels?.["com.vhostra.managed"] !== "true"
+                || image.Config.Labels["com.vhostra.purpose"] !== "runtime-image" || !tags.length
+                || tags.some(tag => !/^vhostra-runtime:build-[a-f0-9]{24}$/.test(tag)) || tags.includes(this.imageName)) continue;
+            // No force; Docker refuses images that acquire container references.
+            await this.docker(["image", "rm", ...tags]);
+        }
+    }
+    private async upCompatibleImage() {
+        // Tags encode the complete build inputs, independent of candidate/test scope.
+        const exists = await this.docker(["image", "ls", "--quiet", "--filter", `reference=${this.imageName}`]);
+        let compatible = false;
+        if (exists.trim()) {
+            const images = JSON.parse(await this.docker(["image", "inspect", this.imageName]));
+            const labels = images[0]?.Config?.Labels;
+            compatible = labels?.["com.vhostra.managed"] === "true" && labels["com.vhostra.purpose"] === "runtime-image";
+            if (!compatible) throw new Error("The compatible runtime tag is owned by an unrecognized image; refusing to overwrite it.");
+        }
+        if (!compatible) { this.counters.builds++; await this.compose(["build", "runtime"]); }
+        await this.compose(["up", "--detach", "--no-build", "--pull", "never"]);
     }
     private async requireDocker() {
         await this.docker(["info"]);
@@ -1357,12 +1419,12 @@ export class DockerRuntimeController {
         await Promise.all([
             fs.writeFile(
                 path.join(this.layout.runtime.php, "vhostra.ini"),
-                "expose_php=Off\nlog_errors=On\nerror_log=/var/log/php/error.log\n",
+                "expose_php=Off\nlog_errors=On\nerror_log=/dev/stderr\n",
                 { mode: 0o600 },
             ),
             fs.writeFile(
                 path.join(this.layout.runtime.mariaDb, "vhostra.cnf"),
-                "[mariadb]\nskip-name-resolve\n",
+                "[mariadb]\nskip-name-resolve\ninnodb_buffer_pool_size=64M\nmax_connections=50\nthread_cache_size=4\ntable_open_cache=400\ntmp_table_size=16M\nmax_heap_table_size=16M\nmax_allowed_packet=64M\nperformance_schema=OFF\n",
                 { mode: 0o600 },
             ),
             fs.writeFile(
@@ -1372,7 +1434,7 @@ export class DockerRuntimeController {
             ),
             fs.writeFile(
                 path.join(this.layout.runtime.redis, "redis.conf"),
-                "appendonly yes\n",
+                "bind 127.0.0.1\nprotected-mode yes\nappendonly no\nsave \"\"\nmaxmemory 64mb\nmaxmemory-policy allkeys-lru\n",
                 { mode: 0o600 },
             ),
             fs.writeFile(
@@ -1381,6 +1443,8 @@ export class DockerRuntimeController {
                 { mode: 0o600 },
             ),
         ]);
+        await fs.writeFile(path.join(this.layout.runtime.php, "roots.json"), JSON.stringify(Object.fromEntries(
+            mounts.flatMap(({ host, container }) => [host.hostname, ...host.aliases].map(name => [name.toLowerCase(), container])))), { mode: 0o644 });
         await this.writeServerConfiguration(
             state.settings.selectedWebServer,
             state.settings.selectedPhpVersion,
@@ -1388,14 +1452,29 @@ export class DockerRuntimeController {
         );
         await fs.writeFile(
             path.join(this.layout.runtime.nginx, "tls-gateway.conf"),
-            "pid /run/vhostra-tls.pid;\nevents {}\nhttp {\n  access_log /var/log/vhostra/https-access.log;\n  error_log /var/log/vhostra/https-error.log;\n  server {\n    listen 8443 ssl;\n    ssl_certificate /etc/vhostra/certificates/public/localhost.pem;\n    ssl_certificate_key /etc/vhostra/certificates/private/localhost.key;\n    ssl_protocols TLSv1.2 TLSv1.3;\n    location / { proxy_set_header Host $host; proxy_set_header X-Forwarded-Proto https; proxy_pass http://127.0.0.1:8088; }\n  }\n}\n",
+            "pid /run/vhostra-tls.pid;\nevents {}\nhttp {\n  access_log /var/log/vhostra/https-access.log;\n  error_log /var/log/vhostra/https-error.log;\n  server {\n    listen 8443 ssl;\n    ssl_certificate /etc/vhostra/certificates/public/localhost.pem;\n    ssl_certificate_key /etc/vhostra/certificates/private/localhost.key;\n    ssl_protocols TLSv1.2 TLSv1.3;\n    location / { proxy_set_header Host $http_host; proxy_set_header X-Forwarded-Proto https; proxy_pass http://127.0.0.1:8088; }\n  }\n}\n",
             { mode: 0o600 },
         );
         await fs.cp(
-            path.resolve(process.cwd(), "runtime-image"),
+            existsSync(fileURLToPath(new URL("../runtime-image/", import.meta.url)))
+                ? fileURLToPath(new URL("../runtime-image/", import.meta.url))
+                : path.join(process.resourcesPath, "runtime-image"),
             path.join(this.runtimeRoot, "image"),
             { recursive: true, force: true },
         );
+        const hash = createHash("sha256");
+        const imageRoot = path.join(this.runtimeRoot, "image");
+        const hashFiles = async (directory: string): Promise<void> => {
+            for (const entry of (await fs.readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+                const file = path.join(directory, entry.name);
+                if (entry.isDirectory()) await hashFiles(file);
+                else if (entry.isFile()) { hash.update(path.relative(imageRoot, file)); hash.update(await fs.readFile(file)); }
+            }
+        };
+        await hashFiles(imageRoot);
+        hash.update(JSON.stringify([state.settings.selectedPhpVersion,
+            [...new Set([...state.settings.php.extensions, ...state.settings.php.disabledExtensions])].sort(), state.settings.php.cwebpEnabled]));
+        this.imageName = `vhostra-runtime:build-${hash.digest("hex").slice(0, 24)}`;
         await fs.writeFile(
             this.composeFile,
             singleRuntimeComposeYaml(
@@ -1403,6 +1482,7 @@ export class DockerRuntimeController {
                 this.layout,
                 this.scope,
                 !this.httpsWarning,
+                this.imageName,
             ),
             { mode: 0o600 },
         );
@@ -1522,7 +1602,9 @@ export class DockerRuntimeController {
             ]);
         }
         if (server === "apache") {
-            const config = apacheConfig(mounts);
+            let config = apacheConfig(mounts);
+            if (!this.httpsWarning) config += config.slice(config.indexOf("<VirtualHost")).replaceAll("<VirtualHost *:8088>",
+                "<VirtualHost *:8443>\n  SSLEngine on\n  SSLCertificateFile /etc/vhostra/certificates/public/localhost.pem\n  SSLCertificateKeyFile /etc/vhostra/certificates/private/localhost.key\n  RequestHeader set X-Forwarded-Proto https");
             await Promise.all([
                 fs.writeFile(
                     path.join(this.layout.runtime.apache, "vhostra.conf"),
@@ -1536,7 +1618,7 @@ export class DockerRuntimeController {
                 ),
             ]);
         } else if (server === "nginx") {
-            const config = nginxConfig(mounts);
+            const config = nginxConfig(mounts, !this.httpsWarning);
             await Promise.all([
                 fs.writeFile(
                     path.join(this.layout.runtime.nginx, "default.conf"),
@@ -1777,7 +1859,7 @@ export class DockerRuntimeController {
             "runtime",
             "/bin/sh",
             "-lc",
-            `apt-cache search '^lsphp${php}-' | awk -F ' - ' '$1 ~ /^lsphp${php}-/ && $2 !~ /(Common files|Debug symbols|development|runtime|PEAR|source package)/ { sub(/^lsphp${php}-/, "", $1); print $1 }' | sort -u`,
+            "cat /usr/local/share/vhostra-php-catalog",
         ]);
         return output
             .split("\n")
@@ -1822,6 +1904,7 @@ export class DockerRuntimeController {
     }
     private async reconcileHtaccessWatchers(running: boolean) {
         const state = await this.getState();
+        if (this.disposed) return;
         if (!running || state.settings.selectedWebServer !== "openlitespeed") {
             this.clearHtaccessWatchers();
             return;
@@ -1832,9 +1915,10 @@ export class DockerRuntimeController {
                 .map((host) => [host.id, host.documentRoot]),
         );
         for (const [id, watcher] of this.htaccessWatchers)
-            if (!desired.has(id)) {
+            if (!desired.has(id) || desired.get(id) !== this.htaccessRoots.get(id)) {
                 watcher.close();
                 this.htaccessWatchers.delete(id);
+                this.htaccessRoots.delete(id);
             }
         for (const [id, root] of desired) {
             if (this.htaccessWatchers.has(id)) continue;
@@ -1843,12 +1927,17 @@ export class DockerRuntimeController {
                     root,
                     { persistent: false },
                     (_event, filename) => {
-                        if (String(filename) !== ".htaccess") return;
+                        if (String(filename) !== ".htaccess" || this.disposed) return;
+                        const generation = ++this.htaccessGeneration;
                         if (this.htaccessDebounce)
                             clearTimeout(this.htaccessDebounce);
                         this.htaccessDebounce = setTimeout(() => {
                             this.htaccessDebounce = null;
-                            void this.reloadWebServer().catch((error) =>
+                            void (async () => {
+                                await this.operation;
+                                if (this.disposed || generation !== this.htaccessGeneration || !this.htaccessWatchers.size) return;
+                                await this.reloadWebServer();
+                            })().catch((error) =>
                                 this.set({
                                     state: "error",
                                     message: `OpenLiteSpeed could not reload after a .htaccess change: ${error instanceof Error ? error.message : String(error)}`,
@@ -1866,6 +1955,7 @@ export class DockerRuntimeController {
                     }),
                 );
                 this.htaccessWatchers.set(id, watcher);
+                this.htaccessRoots.set(id, root);
             } catch (error) {
                 this.set({
                     state: "error",
@@ -1878,19 +1968,23 @@ export class DockerRuntimeController {
     private clearHtaccessWatchers() {
         for (const watcher of this.htaccessWatchers.values()) watcher.close();
         this.htaccessWatchers.clear();
+        this.htaccessRoots.clear();
+        this.htaccessGeneration++;
         if (this.htaccessDebounce) clearTimeout(this.htaccessDebounce);
         this.htaccessDebounce = null;
     }
     private async docker(args: string[]) {
-        return execute("docker", args);
+        this.counters.dockerCalls++;
+        return execute("docker", args, false, undefined, 30000);
     }
     private async compose(args: string[], allowFailure = false) {
+        this.counters.composeCalls++;
         const action = args[0];
         const safeExec = action === "exec" && (args.includes("supervisorctl") || args.includes("redis-cli") || args.some(arg => /^DEBIAN_FRONTEND=noninteractive apt-get (?:update|purge)/.test(arg)));
         const streamable = safeExec || ["up", "build", "pull", "stop", "down", "restart", "start"].includes(action);
         if (this.progress && streamable) this.appendProgress(`Docker Compose: ${action} (${this.scope})`);
         const result = await execute("docker", this.composeArguments(args), allowFailure,
-            streamable ? text => this.appendProgress(text) : undefined);
+            streamable ? text => this.appendProgress(text) : undefined, ["up", "build", "pull"].includes(action) || safeExec && args.some(arg => arg.startsWith("DEBIAN_FRONTEND=noninteractive apt-get")) ? 15 * 60_000 : 120_000);
         if (this.progress && streamable) this.appendProgress(`✓ Docker Compose ${action} completed`);
         return result;
     }
@@ -1910,11 +2004,15 @@ export class DockerRuntimeController {
     }
 }
 
-const execute = (command: string, args: string[], allowFailure = false, output?: (text: string) => void) =>
+const execute = (command: string, args: string[], allowFailure = false, output?: (text: string) => void, timeoutMs = 30000) =>
     new Promise<string>((resolve, reject) => {
         const child = spawn(command, args, {
             stdio: ["ignore", "pipe", "pipe"],
         });
+        let timedOut = false;
+        const timeout = setTimeout(() => { timedOut = true; child.kill("SIGTERM"); }, timeoutMs);
+        const force = setTimeout(() => { if (timedOut) child.kill("SIGKILL"); }, timeoutMs + 3000);
+        timeout.unref(); force.unref();
         let stdout = "";
         let stderr = "";
         let pending = "";
@@ -1941,8 +2039,10 @@ const execute = (command: string, args: string[], allowFailure = false, output?:
             stderr = (stderr + String(data)).slice(-1048576);
             stream(data);
         });
-        child.once("error", reject);
+        child.once("error", error => { clearTimeout(timeout); clearTimeout(force); reject(error); });
         child.once("close", (code) => {
+            clearTimeout(timeout); clearTimeout(force);
+            if (timedOut) { reject(new Error(`${command} operation timed out after ${Math.round(timeoutMs / 1000)} seconds.`)); return; }
             if (pending) output?.(pending);
             code === 0 || allowFailure
                 ? resolve(stdout)
@@ -1962,12 +2062,11 @@ const executeWithInput = async (
     const child = spawn(command, args, { stdio: ["pipe", "ignore", "pipe"] });
     let stderr = "";
     child.stderr.on("data", (data) => {
-        stderr += String(data);
+        stderr = (stderr + String(data)).slice(-65536);
     });
     const source = createReadStream(input);
-    source.pipe(child.stdin);
-    await Promise.all([
-        finished(source),
+    try { await Promise.all([
+        pipeline(source, child.stdin),
         new Promise<void>((resolve, reject) => {
             child.once("error", reject);
             child.once("close", (code) =>
@@ -1981,7 +2080,7 @@ const executeWithInput = async (
                       ),
             );
         }),
-    ]);
+    ]); } catch (error) { child.kill("SIGTERM"); throw error; }
 };
 const executeWithOutput = async (
     command: string,
@@ -1991,12 +2090,11 @@ const executeWithOutput = async (
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
     child.stderr.on("data", (data) => {
-        stderr += String(data);
+        stderr = (stderr + String(data)).slice(-65536);
     });
     const destination = createWriteStream(output, { mode: 0o600 });
-    child.stdout.pipe(destination);
-    await Promise.all([
-        finished(destination),
+    try { await Promise.all([
+        pipeline(child.stdout, destination),
         new Promise<void>((resolve, reject) => {
             child.once("error", reject);
             child.once("close", (code) =>
@@ -2010,7 +2108,7 @@ const executeWithOutput = async (
                       ),
             );
         }),
-    ]);
+    ]); } catch (error) { child.kill("SIGTERM"); throw error; }
 };
 const parseJsonLines = (value: string) =>
     value.split("\n").flatMap((line) => {
@@ -2148,15 +2246,16 @@ function apacheConfig(
         container: string;
     }>,
 ) {
-    return `ServerTokens Prod\nServerSignature Off\nTraceEnable Off\nProxyPreserveHost On\n${mounts.map(({ host, container }) => `<VirtualHost *:8088>\n  ServerName ${host.hostname}\n  ${host.aliases.map((alias) => `ServerAlias ${alias}`).join("\n  ")}\n  DocumentRoot ${container}\n  ProxyPassMatch "^/(.*\\.php(?:/.*)?)$" "http://127.0.0.1:8089/$1"\n  <Directory ${container}>\n    Options FollowSymLinks\n    AllowOverride ${host.rewriteEnabled === false ? "None" : "FileInfo"}\n    Require all granted\n  </Directory>\n  ${host.rewriteEnabled === false ? "RewriteEngine Off" : "RewriteEngine On"}\n  ErrorLog /var/log/apache2/${host.id}-error.log\n  CustomLog /var/log/apache2/${host.id}-access.log combined\n</VirtualHost>`).join("\n\n")}\n`;
+    return `ServerTokens Prod\nServerSignature Off\nTraceEnable Off\nProxyPreserveHost On\nRequestHeader set X-Forwarded-Proto http\nRequestHeader set X-Vhostra-Request-Line "expr=%{THE_REQUEST}"\nDirectoryIndex index.php index.html\n${mounts.map(({ host, container }) => `<VirtualHost *:8088>\n  ServerName ${host.hostname}\n  ${host.aliases.map((alias) => `ServerAlias ${alias}`).join("\n  ")}\n  DocumentRoot ${container}\n  ProxyPassMatch "^/(.*\\.php(?:/.*)?)$" "http://127.0.0.1:8089/$1"\n  <Directory ${container}>\n    Options FollowSymLinks\n    AllowOverride ${host.rewriteEnabled === false ? "None" : "FileInfo"}\n    Require all granted\n  </Directory>\n  ${host.rewriteEnabled === false ? "RewriteEngine Off" : "RewriteEngine On"}\n  ErrorLog /proc/self/fd/2\n  CustomLog /proc/self/fd/1 combined\n</VirtualHost>`).join("\n\n")}\n`;
 }
 function nginxConfig(
     mounts: Array<{
         host: AppState["virtualHosts"][number];
         container: string;
     }>,
+    httpsEnabled: boolean,
 ) {
-    return `${mounts.map(({ host, container }) => `server {\n  server_tokens off;\n  listen 8088;\n  server_name ${[host.hostname, ...host.aliases].join(" ")};\n  root ${container};\n  index index.php index.html;\n  access_log /var/log/nginx/${host.id}-access.log;\n  error_log /var/log/nginx/${host.id}-error.log;\n  # Vhostra managed WordPress-compatible front controller. Unsupported .htaccess directives remain reported in the neutral model.\n  location / { try_files $uri $uri/ ${host.rewriteEnabled === false ? "=404" : "/index.php?$query_string"}; }\n  location ~ \\.php$ { proxy_set_header Host $host; proxy_set_header X-Forwarded-Proto $scheme; proxy_pass http://127.0.0.1:8089; }\n}\n`).join("\n")}`;
+    return `${mounts.map(({ host, container }) => `server {\n  server_tokens off;\n  listen 8088;\n  ${httpsEnabled ? "listen 8443 ssl;\n  ssl_certificate /etc/vhostra/certificates/public/localhost.pem;\n  ssl_certificate_key /etc/vhostra/certificates/private/localhost.key;\n  ssl_protocols TLSv1.2 TLSv1.3;" : ""}\n  server_name ${[host.hostname, ...host.aliases].join(" ")};\n  root ${container};\n  index index.php index.html;\n  access_log /dev/stdout;\n  error_log /dev/stderr;\n  location ~ /\\. { deny all; }\n  # Vhostra managed WordPress-compatible front controller. Unsupported .htaccess directives remain reported in the neutral model.\n  location / { try_files $uri $uri/ ${host.rewriteEnabled === false ? "=404" : "/index.php?$query_string"}; }\n  location ~ \\.php(?:/|$) { proxy_set_header Host $http_host; proxy_set_header X-Forwarded-Proto $scheme; proxy_set_header X-Vhostra-Request-Line ""; proxy_set_header X-Vhostra-Request-Uri $request_uri; proxy_pass http://127.0.0.1:8089; }\n}\n`).join("\n")}`;
 }
 function openLiteSpeedConfig(
     mounts: Array<{
@@ -2191,6 +2290,7 @@ function singleRuntimeComposeYaml(
     layout: StoreLayout,
     scope: string,
     httpsEnabled: boolean,
+    imageName: string,
 ) {
     const php = state.settings.selectedPhpVersion.replace(".", "");
     return `name: ${scope}
@@ -2202,7 +2302,10 @@ services:
         LSPHP_VERSION: ${q(php)}
         LSPHP_EXTENSIONS: ${q([...new Set([...state.settings.php.extensions, ...state.settings.php.disabledExtensions])].join(","))}
         VHOSTRA_CWEBP: ${q(state.settings.php.cwebpEnabled)}
-    image: ${q(`${scope}-runtime:ols-lsphp${php}`)}
+      labels:
+        com.vhostra.managed: "true"
+        com.vhostra.purpose: "runtime-image"
+    image: ${q(imageName)}
     labels:
       ${managedLabel.split("=").map(q).join(": ")}
     ports:
@@ -2237,6 +2340,9 @@ services:
     volumes:
       - ${q(`${path.join(layout.sites, "localhost", "public")}:/var/www/html`)}
       - ${q(`${layout.runtime.openLiteSpeed}:/etc/vhostra/openlitespeed:ro`)}
+      - ${q(`${layout.runtime.php}:/etc/vhostra/php:ro`)}
+      - ${q(`${layout.runtime.mariaDb}/vhostra.cnf:/etc/mysql/mariadb.conf.d/99-vhostra.cnf:ro`)}
+      - ${q(`${layout.runtime.redis}/redis.conf:/etc/redis/vhostra.conf:ro`)}
       - ${q(`${layout.runtime.apache}:/etc/vhostra/apache:ro`)}
       - ${q(`${layout.runtime.nginx}:/etc/vhostra/nginx:ro`)}
       - ${q(`${layout.certificates.directory}:/etc/vhostra/certificates`)}
@@ -2249,6 +2355,9 @@ services:
           .join("\n      ")}
       - ${q(`${layout.persistentData.mariaDb}:/var/lib/mysql`)}
       - ${q(`${layout.logs}:/var/log/vhostra`)}
+    logging:
+      driver: json-file
+      options: { max-size: "5m", max-file: "3" }
     networks: [vhostra]
 networks:
   vhostra:

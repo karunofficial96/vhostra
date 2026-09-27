@@ -8,7 +8,22 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["preload.cts"]
+  "include": [
+    "preload.cts"
+  ],
+  "watchOptions": {
+    "excludeDirectories": [
+      "../node_modules",
+      "../dist",
+      "../dist-welcome",
+      "../runtime-image",
+      "../test"
+    ],
+    "watchFile": "useFsEvents",
+    "watchDirectory": "useFsEvents"
+  }
 }

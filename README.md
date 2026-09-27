@@ -174,7 +174,7 @@ Vhostra can request elevation to create/remove only its own marked hosts-file ma
 
 The PHP screen reports the selected LSPHP package catalog from the running Vhostra image and distinguishes required modules, installed/enabled modules, selected modules awaiting a rebuild, and packages available for installation. Core MariaDB modules cannot be disabled. Redis and Memcached PHP modules are dependency-managed when their corresponding Vhostra service is enabled.
 
-Changing an optional extension, OPcache, or `cwebp` preference persists the desired state and rebuilds only the Vhostra runtime when it is currently running. The candidate image fails with an explicit package error if an extension is not offered for the selected LSPHP version. `cwebp` defaults to enabled and is provided by Debian/Ubuntu’s `webp` package inside the disposable runtime image.
+Changing an optional extension, OPcache, or `cwebp` preference persists the desired state and reconciles only the Vhostra runtime when it is currently running. Compatible package images are reused; load-state and OPcache changes do not require an image rebuild. The candidate image fails with an explicit package error if an extension is not offered for the selected LSPHP version. `cwebp` defaults to enabled and is provided by Debian/Ubuntu’s `webp` package inside the disposable runtime image.
 
 ## Startup
 
@@ -198,9 +198,9 @@ renderer. This avoids retaining huge log files in Electron memory.
 When the single Vhostra runtime is running, the tray obtains actual Supervisor
 state for the active web server, MariaDB, and enabled Redis/Memcached services.
 It exposes only meaningful Start, Stop, and Restart actions for those
-Vhostra-managed processes. PHP/LSPHP remains controlled by its active web
-server rather than being represented as a misleading separate generic-PHP
-container or tray process.
+Vhostra-managed processes. PHP/LSPHP uses the selected package inside the shared runtime: native LSAPI
+for OpenLiteSpeed, or its loopback PHP development backend for Apache/Nginx.
+Stopping the web service also stops its associated PHP workers.
 
 ## Terminal commands
 
@@ -256,7 +256,7 @@ containers and networks when finished.
 
 When the configured HTTPS port is available, the managed runtime creates a local
 self-signed certificate for localhost and the configured site names, and serves
-HTTPS through its own TLS gateway. Keys stay in the local private certificate
+HTTPS through the selected web server’s native TLS listener. Keys stay in the local private certificate
 directory. Vhostra does not change system certificate trust; browsers require
 user-managed trust for these local certificates. An occupied HTTPS port disables
 only the TLS listener and reports its owner while HTTP continues.
@@ -310,3 +310,11 @@ env -u ELECTRON_RUN_AS_NODE node_modules/.bin/electron test/migration-progress.e
 The session/migration harnesses remove only their explicitly supplied test
 profiles. Never pass a real user-data directory to them. Full audit evidence is
 recorded in `VHOSTRA_FUNCTIONAL_AUDIT.md`.
+
+## Performance and local resource diagnostics
+
+Development uses one shared Electron main/preload compiler watcher. For local,
+opt-in resource samples, run `VHOSTRA_RESOURCE_DEBUG=1 npm run dev`.
+Normal startup reuses compatible runtime images. Disabled add-ons have no daemon,
+and only the selected web server handles HTTP/HTTPS. Measurements, runtime defaults,
+cleanup ownership/retention, and acceptance results are in [PERFORMANCE.md](PERFORMANCE.md).

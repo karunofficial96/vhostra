@@ -20,7 +20,13 @@ import { HostsFileManager } from "./hosts.js";
 import { listPersistentLogs, readLogTail } from "./logs.js";
 import { createShutdownManager } from "./shutdown.js";
 import { redactProgress } from "./progress.js";
+import { startResourceDiagnostics } from "./diagnostics.js";
 import { configureStartup } from "./startup.js";
+
+if (!app.isPackaged && process.env.NODE_ENV === "development" && process.env.VHOSTRA_DEV_PROFILE) {
+    if (!path.isAbsolute(process.env.VHOSTRA_DEV_PROFILE)) throw new Error("VHOSTRA_DEV_PROFILE must be an absolute local test directory.");
+    app.setPath("userData", process.env.VHOSTRA_DEV_PROFILE);
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,6 +35,10 @@ let services: DockerRuntimeController;
 let hosts: HostsFileManager;
 let primaryWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
+let trayStatusKey = "";
+let trayRefreshPending = false;
+let trayRefreshAgain = false;
+let lastVisibleRefresh = 0;
 let isQuitting = false;
 let migrationProgress: RuntimeSnapshot["progress"];
 let migrationMessage = "";
@@ -37,13 +47,25 @@ function desktopRuntimeSnapshot(): RuntimeSnapshot {
     const snapshot = services.current();
     return migrationProgress ? { ...snapshot, state: "starting", message: migrationMessage, progress: { ...migrationProgress, lines: [...migrationProgress.lines] } } : snapshot;
 }
-function publishRuntimeStatus() { primaryWindow?.webContents.send("vhostra:runtime-status", desktopRuntimeSnapshot()); }
+function publishRuntimeStatus() {
+    if (!primaryWindow || primaryWindow.isDestroyed() || !primaryWindow.isVisible() || primaryWindow.isMinimized() || primaryWindow.webContents.isDestroyed()) return;
+    primaryWindow.webContents.send("vhostra:runtime-status", desktopRuntimeSnapshot());
+}
 function recordMigrationStage(message: string) {
     if (!migrationProgress) return;
-    migrationMessage = redactProgress(message);
+    migrationMessage = redactProgress(message).slice(0, 2000);
     migrationProgress.lines = [...migrationProgress.lines, migrationMessage].slice(-300);
     migrationProgress.total++;
     publishRuntimeStatus();
+    updateTrayForTransition();
+}
+
+function updateTrayForTransition() {
+    const snapshot = services.current();
+    const state = trayState(snapshot.state);
+    const key = JSON.stringify([state, snapshot.services, Boolean(migrationProgress || snapshot.progress),
+        ["error", "unavailable"].includes(state) ? snapshot.message : ""]);
+    if (key !== trayStatusKey) { trayStatusKey = key; updateTrayMenu(); }
 }
 
 const applicationIcon =
@@ -61,6 +83,7 @@ const trayIcon = app.isPackaged
 
 function createRuntimeController() {
     services?.dispose();
+    trayStatusKey = "";
     services = new DockerRuntimeController(
         store.layout,
         () => store.getState(),
@@ -76,11 +99,12 @@ function createRuntimeController() {
             const count = seen?.id === snapshot.progress.id ? seen.total : 0;
             const lines = snapshot.progress.lines.slice(Math.max(0, snapshot.progress.lines.length - (snapshot.progress.total - count)));
             migrationSeen.set(controller, { id: snapshot.progress.id, total: snapshot.progress.total });
-            for (const line of lines) recordMigrationStage(line);
+            migrationProgress.lines = [...migrationProgress.lines, ...lines].slice(-300);
+            migrationProgress.total += lines.length;
             migrationMessage = snapshot.message;
         }
         publishRuntimeStatus();
-        updateTrayMenu();
+        updateTrayForTransition();
     });
 }
 
@@ -140,6 +164,15 @@ const createWindow = () => {
         },
     });
     primaryWindow = window;
+    const refreshVisibleRuntime = () => {
+        publishRuntimeStatus();
+        if (services.current().progress || Date.now() - lastVisibleRefresh < 5000) return;
+        lastVisibleRefresh = Date.now();
+        void services.refresh().then(updateTrayMenu);
+    };
+    window.on("focus", refreshVisibleRuntime);
+    window.on("show", refreshVisibleRuntime);
+    window.on("restore", publishRuntimeStatus);
     window.on("closed", () => {
         primaryWindow = null;
     });
@@ -214,6 +247,7 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     registerScreenshotProtocol();
     createTray();
     createWindow();
+    startResourceDiagnostics(() => services, () => Boolean(primaryWindow?.isVisible() && !primaryWindow.isMinimized()));
     void services.refresh();
     void store
         .getState()
@@ -460,7 +494,7 @@ function registerIpc() {
                 migrationProgress = undefined;
                 migrationSeen.clear();
                 publishRuntimeStatus();
-                updateTrayMenu();
+                updateTrayForTransition();
             }
         },
     );
@@ -817,15 +851,17 @@ function createTray() {
     image.setTemplateImage(false);
     tray = new Tray(image);
     tray.setToolTip("Vhostra");
+    tray.on("right-click", () => { if (!services.current().progress) void services.refresh().then(updateTrayMenu); });
     tray.on("click", () => {
         void openApplicationWindow();
     });
-    services.subscribe(updateTrayMenu);
     updateTrayMenu();
 }
 
 function updateTrayMenu() {
     if (!tray) return;
+    if (trayRefreshPending) { trayRefreshAgain = true; return; }
+    const controller = services;
     const status = services.current();
     const state = trayState(status.state);
     const controlsAvailable = !["unavailable", "starting", "stopping"].includes(
@@ -841,13 +877,15 @@ function updateTrayMenu() {
         status.state === "running"
             ? ([] as Awaited<ReturnType<typeof services.listManagedServices>>)
             : [];
+    trayRefreshPending = true;
     void services
         .listManagedServices()
         .then((rows) => {
             managed.splice(0, managed.length, ...rows);
-            if (tray) updateTrayMenuWithManaged(rows);
+            if (tray && controller === services) updateTrayMenuWithManaged(rows);
         })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => { trayRefreshPending = false; if (trayRefreshAgain) { trayRefreshAgain = false; updateTrayMenu(); } });
     const items: MenuItemConstructorOptions[] = [
         {
             label: "Open Vhostra",
@@ -1096,4 +1134,4 @@ function registerScreenshotProtocol() {
 }
 
 /** Read-only native acceptance diagnostics; no IPC surface. */
-export function applicationSession() { return { window: primaryWindow, tray, hasSingleInstanceLock }; }
+export function applicationSession() { return { window: primaryWindow, tray, hasSingleInstanceLock, runtime: services }; }
