@@ -115,6 +115,14 @@ try {
   assert.ok((await runtime.listDatabases()).includes('server_probe'))
   console.log('PHP 8.3 to 8.4 candidate promotion preserved the existing database.')
   const cliEnvironment = { ...process.env, VHOSTRA_USER_DATA: root, VHOSTRA_RUNTIME_PROJECT: scope }
+  execFileSync(process.execPath, ['scripts/vhostra.mjs', 'cwebp', 'disable'], { env: cliEnvironment })
+  assert.equal((await store.getState()).settings.php.cwebpEnabled, false)
+  assert.equal((await runtime.getCwebpStatus()).installed, false)
+  execFileSync(process.execPath, ['scripts/vhostra.mjs', 'cwebp', 'enable'], { env: cliEnvironment })
+  assert.equal((await store.getState()).settings.php.cwebpEnabled, true)
+  assert.equal((await runtime.getCwebpStatus()).installed, true)
+  assert.equal(execFileSync('docker', ['exec', `${scope}-runtime-1`, 'sh', '-c', 'find /var/lib/apt/lists -maxdepth 1 -type f -print'], { encoding: 'utf8' }).trim(), '', 'Tool install must not retain apt indexes')
+  console.log('cwebp CLI disable/enable, real binary state, persisted selection and apt-index cleanup passed.')
   for (const id of ['redis', 'memcached']) {
     execFileSync(process.execPath, ['scripts/vhostra.mjs', 'service', id, 'enable'], { env: cliEnvironment })
     await runtime.refresh()

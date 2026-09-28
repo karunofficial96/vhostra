@@ -1,19 +1,31 @@
-import type { ConfigurationExportRequest, ConfigurationImportReport, StorageLayout } from './storage'
+import type { ConfigurationExportRequest, StorageLayout } from './storage'
 import type { RuntimeSnapshot, Site, VhostraSettings, VhostraState } from './domain'
 
-export interface SiteInput { name: string; documentRoot: string; url: string; framework?: string; aliases?: string[] }
+export interface SiteInput { vhostId?: string; name: string; documentRoot: string; url: string; framework?: string; aliases?: string[] }
 export interface SiteUpdate extends SiteInput { id: string }
 export interface HostsMappingResult { installed: string[]; alreadyMapped: string[]; conflicts: Array<{ hostname: string; address: string }>; message: string }
 
-export interface OnboardingPreferences { completed: boolean; theme: 'light' | 'dark' | 'system'; server: VhostraSettings['selectedWebServer']; php: VhostraSettings['selectedPhpVersion']; cache: 'none' | 'redis' | 'memcached' }
-export interface NativeImportPreview { source: string; server: string; status: string; hosts: Array<{ hostname: string; aliases: string[]; documentRoot: string; https: { enabled: boolean }; rewriteEnabled: boolean; indexFiles: string[] }>; warnings: string[]; preservedDirectives: string[] }
-export interface ResourceReport { application: { cpuPercent: number; ramBytes: number; processes: number }; runtime: Array<{ CPUPerc: string; MemUsage: string }> | null; runtimeError: string | null; dockerStorage: { imageBytes: number; writableLayerBytes: number; note: string } | null; storage: { measuredAt: string; categories: Array<{ label: string; bytes: number; partial: boolean }>; localTotalBytes: number; note: string } }
+export interface OnboardingPreferences { themeSaved?: boolean; restoredServices?: { redis: boolean; memcached: boolean }; ready?: boolean; completed: boolean; theme: 'light' | 'dark' | 'system'; server: VhostraSettings['selectedWebServer']; php: VhostraSettings['selectedPhpVersion']; cache: 'none' | 'redis' | 'memcached' }
+export interface NativeImportPreview { plannedLogs?: Record<string, { access: string; error: string }>; source: string; server: string; status: string; hosts: Array<{ hostname: string; aliases: string[]; documentRoot: string; https: { enabled: boolean }; rewriteEnabled: boolean; indexFiles: string[] }>; warnings: string[]; preservedDirectives: string[] }
+export interface RuntimeStatusRow { id: string; label: string; enabled: boolean; state: string }
+export interface BackupPreview { plannedLogs?: Record<string, { access: string; error: string }>; source: string; checksum: string; sites: Array<{ name: string; hostname: string; documentRoot: string; disposition: string }>; settings: { server?: string; php?: string; optionalServices?: { redis: boolean; memcached: boolean } } | null; missing: string[]; warnings: string[] }
+export interface ResourceReport { statuses: RuntimeStatusRow[]; application: { cpuPercent: number; ramBytes: number; processes: number }; runtime: Array<{ CPUPerc: string; MemUsage: string }> | null; runtimeError: string | null; dockerStorage: { imageBytes: number; writableLayerBytes: number; note: string } | null; storage: { measuredAt: string; categories: Array<{ label: string; bytes: number; partial: boolean }>; localTotalBytes: number; note: string } }
 export interface VhostraDesktopApi {
+  inspectHosts(): Promise<{ path: string; contents: string }>
+  editHosts(contents: string, expected: string): Promise<{ path: string; contents: string }>
+  previewBackup(): Promise<BackupPreview | null>
+  restoreBackup(roots?: Record<string, string>): Promise<{ message: string; missing: string[]; warnings: string[]; preferences: OnboardingPreferences }>
+  resetApp(keepSites: boolean, confirmation: string): Promise<{ message: string }>
+  newSitePlan(): Promise<{ id: string; logs: { access: string; error: string } }>
+  repairSite(id: string): Promise<HostsMappingResult>
+  siteDetails(id: string, includeNative?: boolean): Promise<{ host: VhostraState['virtualHosts'][number]; native: string; nativePath: string; logs: { access: string; error: string } }>
+  runtimeStatuses(): Promise<RuntimeStatusRow[]>
   getOnboarding(): Promise<{ preferences: OnboardingPreferences; phpVersions: VhostraSettings['selectedPhpVersion'][] }>
   saveOnboarding(preferences: OnboardingPreferences): Promise<OnboardingPreferences>
+  finishOnboarding(): Promise<OnboardingPreferences>
   setupOnboarding(): Promise<VhostraState>
-  previewNativeImport(server?: 'apache' | 'nginx' | 'openlitespeed' | 'litespeed-enterprise', directory?: boolean): Promise<NativeImportPreview | null>
-  applyNativeImport(): Promise<{ message: string; mapping: HostsMappingResult }>
+  previewNativeImport(server?: 'apache' | 'nginx' | 'openlitespeed' | 'litespeed-enterprise'): Promise<NativeImportPreview | null>
+  applyNativeImport(roots?: Record<string, string>): Promise<{ message: string; mapping: HostsMappingResult }>
   getResources(refreshStorage?: boolean): Promise<ResourceReport>
   getState(): Promise<VhostraState>
   saveSettings(settings: VhostraSettings): Promise<VhostraSettings>
@@ -26,11 +38,11 @@ export interface VhostraDesktopApi {
   migrateConfigurationLocation(directory: string): Promise<{ root: string; message: string }>
   openSite(url: string): Promise<void>
   getStorageLayout(): Promise<StorageLayout>
-  listPersistentLogs(): Promise<Array<{ path: string; size: number; modifiedAt: string }>>
+  listPersistentLogs(filter?: string): Promise<Array<{ path: string; size: number; modifiedAt: string }>>
   readLogTail(relative: string): Promise<{ path: string; text: string; truncated: boolean; size: number }>
   exportConfiguration(request: Omit<ConfigurationExportRequest, 'destinationDirectory'>): Promise<{ path: string } | null>
-  previewConfigurationImport(): Promise<ConfigurationImportReport | null>
-  importConfiguration(): Promise<{ imported: Array<{ name: string; hostname: string; aliases: string[] }>; backup: string; message: string; mapping: HostsMappingResult } | null>
+  previewConfigurationImport(): Promise<BackupPreview | null>
+  importConfiguration(roots?: Record<string, string>): Promise<{ imported: Array<{ name: string; hostname: string; aliases: string[] }>; backup: string; message: string; mapping: HostsMappingResult } | null>
   getRuntimeStatus(): Promise<RuntimeSnapshot>
   startServices(): Promise<void>
   stopServices(): Promise<void>
@@ -55,6 +67,7 @@ export interface VhostraDesktopApi {
   deleteDatabase(database: string): Promise<{ database: string; message: string }>
   syncAllHosts(): Promise<HostsMappingResult>
   syncHosts(id: string): Promise<HostsMappingResult>
+  allHostsStatus(): ReturnType<VhostraDesktopApi['hostsStatus']>
   hostsStatus(id: string): Promise<Array<{ hostname: string; state: 'mapped' | 'required' | 'conflict'; address?: string; issue?: string }>>
   getAppInfo(): Promise<{ name: string; version: string }>
   checkForUpdates(): Promise<{ state: 'unconfigured' | 'up-to-date' | 'available' | 'error'; currentVersion: string; availableVersion?: string; notes?: string; url?: string; message: string }>

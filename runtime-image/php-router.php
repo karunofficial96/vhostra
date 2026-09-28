@@ -16,6 +16,7 @@ $realRoot = realpath($root);
 if (!$script || !$realRoot || !str_starts_with($script, $realRoot . '/') || !is_file($script)) {
     http_response_code(404); exit('Not found');
 }
+ini_set('error_log', '/var/log/vhostra/sites/' . ($host === 'localhost' ? 'vhostra-localhost-vhost' : basename($root)) . '/error.log');
 $_SERVER['DOCUMENT_ROOT'] = $root;
 $_SERVER['SERVER_NAME'] = $host;
 $_SERVER['SERVER_PORT'] = parse_url('http://' . ($_SERVER['HTTP_HOST'] ?? 'localhost'), PHP_URL_PORT) ?? (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https' ? 443 : 80);

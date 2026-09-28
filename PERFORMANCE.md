@@ -92,7 +92,7 @@ New images have `com.vhostra.managed=true` and `com.vhostra.purpose=runtime-imag
 | Artifact | Location and retention |
 | --- | --- |
 | Runtime images | Docker image store; shared compatible tags, bounded owned build cache above. |
-| MariaDB data | Active Vhostra `data/mariadb` bind mount; never automatically deleted. |
+| MariaDB data | Active Vhostra `data/mariadb` bind mount; preserved by ordinary lifecycle/cleanup; deleted only by explicit DB deletion or twice-confirmed app reset. |
 | Sites | Vhostra-owned localhost files plus explicitly selected external document roots; never deleted by resource cleanup. |
 | Generated configuration | Active Vhostra `runtime` and `configuration/generated`; rewritten in place. |
 | Logs | Active Vhostra `logs`; Supervisor 5 MiB rotation with three backups per stream; native OLS logs rotate with seven-day retention/compression; Docker JSON logs 5 MiB × three. Native Apache/Nginx output goes into rotated Supervisor logs. |
@@ -146,3 +146,24 @@ Fresh ad hoc packaged visible-idle: four processes, main 168.3 MiB/0.0030%, rend
 The native development lifecycle check confirmed one tsc watcher and no orphan children after startup cancellation, Electron exit or Ctrl+C. Identification now uses the watcher's command, since measured compiler RAM ranged below the old test's 250,000 KiB identification threshold. The actual two-launch native session check now passed foreground focus as well as hidden/minimized restore, superseding the earlier automated focus gap above on this Mac.
 
 The final suite passes 53 automated tests. Sequential live/native acceptance and remaining OS/release boundaries are recorded in VHOSTRA_FUNCTIONAL_AUDIT.md. Six positively labeled build tags remain; two protected recovery lease tags and failure diagnostics are deliberately retained. No temporary test container/network remains, and unrelated project inventory stayed unchanged.
+
+## Host-storage completion measurements — 2026-09-28
+
+These renew the historical samples above for host logs and consolidated UI. Tests used isolated high-port profiles/scopes. The original `vhostra-runtime-1` was running during this phase and remained untouched. All heavy Docker tests ran sequentially. Samples are idle observations after health checks, not peak-load guarantees.
+
+| Runtime · PHP 8.5/APCu/native TLS | Previous final sample | Host-storage sample |
+| --- | --- | --- |
+| OpenLiteSpeed RAM / CPU | 199.9 MiB / 0.08% | 202.1 MiB / 0.15% |
+| Apache RAM / CPU | 233.1 MiB / 0.09% | 230.9 MiB / 0.04% |
+| Nginx RAM / CPU | 205.4 MiB / 0.05% | 205.0 MiB / 0.10% |
+| Compatible image bytes | 1,388,362,776 | 1,388,516,952 |
+
+Image increase:154,176 bytes (about0.147 MiB) for logrotate support. All three selected frontends reused the same owned image, with build counter0 during settled acceptance. Changes are within the earlier sampling variation; no RAM/CPU improvement or workload guarantee is claimed. Exactly the selected frontend runs. Apache/Nginx have one conservative log-maintenance shell/sleeper (five-minute check of generated known paths), OLS uses native rolling; disabled Redis/Memcached have no daemon/sleeper. Real enabled/disabled cache-process checks passed. No extra Electron timer or hidden Resources sampler was added.
+
+The latest temporary ad hoc signed packaged app had four Electron processes. Visible-idle summed RSS387,728 KiB (378.6 MiB), main166,448 KiB (final exact sample in `/tmp/vhostra-packaged-final.log`); main CPU0.0852%, renderer0.0024%. Settled hidden sample: main160,400 KiB, renderer97,840 KiB, summed366,464 KiB (357.9 MiB), mainCPU0.0022%, renderer0.0018%. Shared pages can be counted repeatedly. Prior packaged visible sum363.6 MiB is a separate historical sample, not an exact matched-load baseline. Hidden progress IPC/timers/buffers were verified dormant. This is an ad hoc measurement bundle, not signed/notarized release acceptance.
+
+Site/access/error logs are stable host files. Apache/Nginx use size-threshold5 MiB copytruncate and three retained copies, checked every five minutes; this is a threshold/sampling policy, not a hard instantaneous size ceiling. Focused real-runtime writes exercised four rotations and verified active host-file truncation and exactly three copies. A first synthetic test alternated host appends and runtime truncation and encountered Docker Desktop shared-filesystem visibility; corrected acceptance writes in the runtime as actual frontend processes do. OLS rolls natively at5 MiB with seven-day compressed retention. Application logs rotate at1 MiB plus three; Supervisor/Docker streams retain5 MiB plus three. Explicit Logs reads remain64 KiB and100 files, with direct scoped Site/runtime filters.
+
+Configuration changes/restart now recreate the disposable container even when Compose inputs match, while reusing the compatible image and host DB/root/log data. This fixes stale OLS working copies and costs transient restart work, not idle background work. Ordinary already-running Start still reuses the container/image. No external Site tree copying occurs. Rewrite off/on was verified over HTTP on each selected frontend with localhost unaffected.
+
+Source audit found and removed obsolete TLS-gateway generation. cwebp installation now clears apt caches/indexes; the renewed server/CLI suite verifies actual disable/enable, persisted selection and cleanup. Updated reproduction: `node test/performance-runtime.mjs` (all frontends), `--nginx-only` (targeted continuation), `node test/log-rotation-runtime.mjs`, `node scripts/measure-packaged.mjs`. Failed fixture profiles are retained only for local diagnostics, successful fixtures are removed; no global prune.

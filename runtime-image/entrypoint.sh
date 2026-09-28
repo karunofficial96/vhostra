@@ -14,6 +14,14 @@ ln -sfn "$LSPHP_BIN" /usr/local/lsws/fcgi-bin/lsphp8
 # so a restart cannot accumulate duplicate listener mappings or vhost blocks.
 cp /usr/local/lsws/conf/httpd_config.vhostra-base.conf /usr/local/lsws/conf/httpd_config.conf
 cp /usr/local/share/vhostra/supervisor-base.conf /etc/supervisor/conf.d/vhostra.conf
+# OLS creates sibling .conf0 backups while reloading/restarting. The generated
+# host mount stays read-only and authoritative; only this disposable working
+# copy can be modified by native OLS tooling. No document-root tree is copied.
+mkdir -p /usr/local/lsws/conf/vhostra-sites
+for source in /etc/vhostra/openlitespeed/sites/*.conf; do
+  if [ -f "$source" ]; then cp "$source" /usr/local/lsws/conf/vhostra-sites/; fi
+done
+
 if [ -s /etc/vhostra/openlitespeed/vhostra-vhosts.conf ]; then
   sed -i '/^    secure[[:space:]]\+0/r /etc/vhostra/openlitespeed/vhostra-maps.conf' /usr/local/lsws/conf/httpd_config.conf
   cat /etc/vhostra/openlitespeed/vhostra-vhosts.conf >> /usr/local/lsws/conf/httpd_config.conf
@@ -44,6 +52,7 @@ for service in redis memcached; do
 done
 if [ "${VHOSTRA_WEB_SERVER:-openlitespeed}" != openlitespeed ]; then
   sed -i '/\[program:php-backend\]/,/^$/s/autostart=false/autostart=true/' /etc/supervisor/conf.d/vhostra.conf
+  sed -i '/\[program:site-log-maintenance\]/,/^$/s/autostart=false/autostart=true/' /etc/supervisor/conf.d/vhostra.conf
 fi
 
 # Keep PHP's implementation details out of HTTP responses for every selected
@@ -91,6 +100,7 @@ done
 
 # The built-in vhost is the same one used by the mounted Vhostra localhost
 # page. Keep WordPress-style `.htaccess` permalinks available by default.
+cp /etc/vhostra/openlitespeed/localhost.conf /usr/local/lsws/conf/vhosts/Example/vhconf.conf
 sed -Ei '/^rewrite[[:space:]]*\{/,/^\}/ s/^[[:space:]]*enable[[:space:]]+0[[:space:]]*$/  enable 1\n  autoLoadHtaccess 1/' /usr/local/lsws/conf/vhosts/Example/vhconf.conf
 
 if [ "${VHOSTRA_HTTPS:-false}" = true ]; then

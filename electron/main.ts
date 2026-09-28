@@ -10,14 +10,16 @@ import {
     Tray,
     type MenuItemConstructorOptions,
 } from "electron";
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { updateManagedSite } from "./site-workflow.js";
 import { VhostraStore, type AppState } from "./store.js";
 import { DockerRuntimeController, type RuntimeState, type RuntimeSnapshot } from "./runtime.js";
 import { HostsFileManager } from "./hosts.js";
-import { listPersistentLogs, readLogTail } from "./logs.js";
+import { listPersistentLogs, readLogTail, recordApplicationLog } from "./logs.js";
 import { createShutdownManager } from "./shutdown.js";
 import { redactProgress } from "./progress.js";
 import { startResourceDiagnostics } from "./diagnostics.js";
@@ -34,6 +36,8 @@ if (!app.isPackaged && process.env.NODE_ENV === "development" && process.env.VHO
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 let store: VhostraStore;
+let pendingBackup: { source: string; checksum: string; plans: Record<string, string> } | null = null;
+let pendingNativePlans: Record<string, string> = {};
 let pendingNativeImport: NativeImportPreview | null = null;
 let storageCacheRoot = "";
 let storageCache: Awaited<ReturnType<typeof localStorageUsage>> | null = null;
@@ -44,6 +48,7 @@ let hosts: HostsFileManager;
 let primaryWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let trayStatusKey = "";
+let loggedRuntimeKey = "";
 let trayRefreshPending = false;
 let trayRefreshAgain = false;
 let lastVisibleRefresh = 0;
@@ -74,6 +79,8 @@ function updateTrayForTransition() {
     const key = JSON.stringify([state, snapshot.services, Boolean(migrationProgress || snapshot.progress),
         ["error", "unavailable"].includes(state) ? snapshot.message : ""]);
     if (key !== trayStatusKey) { trayStatusKey = key; updateTrayMenu(); }
+    const logKey = JSON.stringify([snapshot.state, Boolean(snapshot.progress), snapshot.state === "error" ? snapshot.message : ""]);
+    if (logKey !== loggedRuntimeKey) { loggedRuntimeKey = logKey; void recordApplicationLog(store.layout.logs, redactProgress(`${snapshot.state}: ${snapshot.message}`)); }
 }
 
 const applicationIcon =
@@ -162,6 +169,9 @@ const createWindow = () => {
         minWidth: 860,
         minHeight: 620,
         title: "Vhostra",
+        maximizable: false,
+        fullscreenable: false,
+        resizable: true,
         icon: applicationIcon,
         webPreferences: {
             contextIsolation: true,
@@ -172,6 +182,10 @@ const createWindow = () => {
         },
     });
     primaryWindow = window;
+    // Electron's Linux maximizable setter is a documented no-op. Honor the
+    // policy when the window manager emits the native event; some managers may
+    // still display their maximize control. Manual resizing remains available.
+    if (process.platform === "linux") window.on("maximize", () => window.unmaximize());
     const refreshVisibleRuntime = () => {
         publishRuntimeStatus();
         if (services.current().progress || Date.now() - lastVisibleRefresh < 5000) return;
@@ -293,7 +307,7 @@ function desktopState(state: AppState) {
 
 function registerIpc() {
     const migrationMutations = new Set([
-        "setup-onboarding", "save-onboarding", "apply-native-import", "save-settings", "add-site", "update-site", "remove-site", "sync-all-hosts", "sync-hosts",
+        "repair-site", "finish-onboarding", "reset-app", "edit-hosts", "restore-backup", "setup-onboarding", "save-onboarding", "apply-native-import", "save-settings", "add-site", "update-site", "remove-site", "sync-all-hosts", "sync-hosts",
         "set-vhost-rewrite", "import-configuration", "start-services", "stop-services", "restart-services",
         "reload-web-server", "set-optional-service", "control-managed-service", "manage-php-extension",
         "configure-cwebp", "create-database", "import-database", "repair-database", "delete-database", "quit-application",
@@ -304,39 +318,86 @@ function registerIpc() {
         if (mutating) desktopMutation = true;
         try { return await listener(event, ...args); } finally { if (mutating) desktopMutation = false; }
     });
+    handle("vhostra:inspect-hosts", () => hosts.inspect());
+    handle("vhostra:edit-hosts", (_event, contents: string, expected: string) => hosts.edit(contents, expected));
+    handle("vhostra:preview-backup", async () => {
+        pendingBackup = null;
+        const choice = await dialog.showOpenDialog({ title: "Import existing Vhostra backup", properties: ["openFile"], filters: [{ name: "Vhostra configuration backup", extensions: ["json"] }] });
+        if (choice.canceled || !choice.filePaths[0]) return null;
+        const preview = await store.previewBundle(choice.filePaths[0]);
+        const plans = Object.fromEntries(preview.sites.filter((site: { disposition: string }) => site.disposition === 'new').map((site: { hostname: string }) => [site.hostname, randomUUID()]));
+        pendingBackup = { source: preview.source, checksum: preview.checksum, plans };
+        return { ...preview, plannedLogs: Object.fromEntries(Object.entries(plans).map(([hostname, id]) => [hostname, { access: path.join(store.layout.logs, "sites", id, "access.log"), error: path.join(store.layout.logs, "sites", id, "error.log") }])) };
+    });
+    handle("vhostra:restore-backup", async (_event, roots: Record<string, string> = {}) => {
+        if (!pendingBackup) throw new Error("Select and preview a Vhostra backup first.");
+        const result = await store.restoreOnboardingBundle(pendingBackup.source, pendingBackup.checksum, roots, pendingBackup.plans);
+        pendingBackup = null;
+        const mapping = await safelyEnsureHosts(result.imported.flatMap(site => [site.hostname, ...site.aliases]));
+        return { ...result, warnings: [...result.warnings, mapping.message] };
+    });
+    handle("vhostra:reset-app", async (_event, keepSites: boolean, confirmation: string) => {
+        if (typeof keepSites !== "boolean" || confirmation !== "Yes, Reset Vhostra") throw new Error("Final reset confirmation is required.");
+        await store.assertResetSafe();
+        const previous = (await store.getState()).settings;
+        if (previous.startup.launchAtLogin) await configureLaunchAtLogin(false);
+        try {
+            await services.pauseBackgroundWork();
+            // A declined Hosts prompt leaves runtime, definitions and databases unchanged.
+            if (!keepSites) await hosts.removeVhostraMappings((await store.getState()).virtualHosts.filter(host => !host.builtIn).flatMap(host => [host.hostname, ...host.aliases]));
+            await services.resetRuntime(); await services.pauseBackgroundWork();
+            const result = await store.resetConfiguration(keepSites);
+            pendingBackup = null; pendingNativeImport = null; storageCache = null;
+            createRuntimeController(); await services.refresh(); return result;
+        } catch (error) {
+            if (previous.startup.launchAtLogin) await configureLaunchAtLogin(true).catch(reportServiceFailure);
+            throw error;
+        }
+    });
     handle("vhostra:get-state", async () => desktopState(await store.getState()));
     handle("vhostra:get-onboarding", async () => ({ preferences: await store.getOnboarding(), phpVersions: supportedPhpVersions }));
     handle("vhostra:save-onboarding", async (_event, input) => {
         const previous = await store.getOnboarding();
-        return store.saveOnboarding({ ...input, completed: previous.completed });
+        return store.saveOnboarding({ ...input, ready: previous.ready, completed: previous.completed });
+    });
+    handle("vhostra:finish-onboarding", async () => {
+        const preferences = await store.getOnboarding();
+        if (!preferences.ready) throw new Error("Complete runtime setup before entering Vhostra.");
+        return store.saveOnboarding({ ...preferences, completed: true });
     });
     handle("vhostra:setup-onboarding", async () => {
         const preferences = await store.getOnboarding();
         if (preferences.completed) throw new Error("First-run setup is already complete. Use Settings to change your environment.");
         const { settings } = await store.getState();
         await store.saveSettings({ ...settings, selectedWebServer: preferences.server, selectedPhpVersion: preferences.php,
-            optionalServices: { redis: preferences.cache === 'redis', memcached: preferences.cache === 'memcached' } });
+            optionalServices: preferences.restoredServices ?? { redis: preferences.cache === 'redis', memcached: preferences.cache === 'memcached' } });
         await services.refresh();
         if (services.current().state === 'running') await services.restart(); else await services.start();
         if (services.current().state !== 'running') throw new Error('Setup did not reach a verified running state. Retry after resolving the runtime error.');
-        await store.saveOnboarding({ ...preferences, completed: true });
+        await store.saveOnboarding({ ...preferences, ready: true, completed: false });
         return desktopState(await store.getState());
     });
-    handle("vhostra:preview-native-import", async (_event, hint?: SourceServer, directory = false) => {
+    handle("vhostra:preview-native-import", async (_event, hint?: SourceServer) => {
         pendingNativeImport = null;
-        const result = await dialog.showOpenDialog({ title: 'Import server configuration (source stays unchanged)', properties: [directory ? 'openDirectory' : 'openFile'], filters: [{ name: 'Server configuration', extensions: ['conf', 'config', 'txt', 'xml'] }, { name: 'All files', extensions: ['*'] }] });
+        const result = await dialog.showOpenDialog({ title: 'Import server configuration (source stays unchanged)', properties: ['openFile'], filters: [{ name: 'Server configuration', extensions: ['conf', 'config', 'txt', 'xml'] }, { name: 'All files', extensions: ['*'] }] });
         if (result.canceled) return null;
         pendingNativeImport = await readNativeConfiguration(result.filePaths[0], hint);
+        pendingNativePlans = Object.fromEntries(pendingNativeImport.hosts.map(host => [host.hostname, randomUUID()]));
         const { sourceText: _raw, ...preview } = pendingNativeImport;
-        return preview;
+        return { ...preview, plannedLogs: Object.fromEntries(Object.entries(pendingNativePlans).map(([name, id]) => [name, { access: path.join(store.layout.logs, "sites", id, "access.log"), error: path.join(store.layout.logs, "sites", id, "error.log") }])) };
     });
-    handle("vhostra:apply-native-import", async () => {
+    handle("vhostra:apply-native-import", async (_event, roots: Record<string, string> = {}) => {
         const preview = pendingNativeImport;
         if (!preview) throw new Error('Preview a configuration before importing.');
         // Re-read the approved source; reject edits between preview and apply.
         const current = await readNativeConfiguration(preview.source, preview.server);
         if (current.sourceText !== preview.sourceText) throw new Error('Source changed after preview. Review it again.');
-        const result = await store.importNative(current); pendingNativeImport = null;
+        for (const host of current.hosts) {
+            const root = roots[host.hostname] ?? host.documentRoot;
+            if (typeof root !== "string" || !path.isAbsolute(root) || !(await fs.stat(root).catch(() => null))?.isDirectory()) throw new Error(`Choose an existing host document root for ${host.hostname}.`);
+            host.documentRoot = root;
+        }
+        const result = await store.importNative(current, pendingNativePlans); pendingNativeImport = null; pendingNativePlans = {};
         const mapping = await safelyEnsureHosts(result.imported.flatMap(site => {
             const host = current.hosts.find(host => host.hostname === new URL(site.url).hostname)!;
             return [host.hostname, ...host.aliases];
@@ -359,7 +420,8 @@ function registerIpc() {
             let runtime = null; let dockerStorage = null; let runtimeError: string | null = null;
             try { runtime = await services.resourceUsage(); dockerStorage = await services.resourceStorage(); }
             catch (error) { runtimeError = error instanceof Error ? error.message : String(error); }
-            return { application: { cpuPercent: metrics.reduce((sum, value) => sum + value.cpu.percentCPUUsage, 0), ramBytes: metrics.reduce((sum, value) => sum + value.memory.workingSetSize * 1024, 0), processes: metrics.length }, runtime, runtimeError, dockerStorage, storage: storageCache };
+            const statuses = await services.runtimeStatuses();
+            return { statuses, application: { cpuPercent: metrics.reduce((sum, value) => sum + value.cpu.percentCPUUsage, 0), ramBytes: metrics.reduce((sum, value) => sum + value.memory.workingSetSize * 1024, 0), processes: metrics.length }, runtime, runtimeError, dockerStorage, storage: storageCache };
         })();
         try { return await resourceRequest; } finally { resourceRequest = null; }
     });
@@ -386,6 +448,7 @@ function registerIpc() {
         }
     });
     handle("vhostra:add-site", async (_event, input) => {
+        if (!(await fs.stat(input.documentRoot)).isDirectory()) throw new Error("Choose an existing host document-root directory.");
         const result = await store.addSite(input);
         const mapping = await safelyEnsureHosts([
             new URL(input.url).hostname,
@@ -396,44 +459,8 @@ function registerIpc() {
         return { state: desktopState(result), mapping };
     });
     handle("vhostra:update-site", async (_event, input) => {
-        const before = await store.getState();
-        const previous = before.sites.find((site) => site.id === input.id);
-        const previousHost = before.virtualHosts.find(
-            (host) => host.id === previous?.vhostId,
-        );
-        const result = await store.updateSite(input);
-        const savedHost = result.virtualHosts.find(
-            (host) => host.id === previous?.vhostId,
-        );
-        const names = savedHost
-            ? [savedHost.hostname, ...savedHost.aliases]
-            : [new URL(input.url).hostname];
-        const mapping = await safelyEnsureHosts(names);
-        const desiredMapped = await hosts.mappingStatus(names).then(statuses => statuses.every(item => item.state === "mapped")).catch(() => false);
-        if (previousHost && desiredMapped) {
-            const retainedNames = new Set(
-                result.virtualHosts
-                    .flatMap((host) => [host.hostname, ...host.aliases])
-                    .map((name) => name.toLowerCase()),
-            );
-            const removed = [
-                previousHost.hostname,
-                ...previousHost.aliases,
-            ].filter((name) => !retainedNames.has(name.toLowerCase()));
-            if (removed.length)
-                await hosts
-                    .removeVhostraMappings(removed)
-                    .catch((error) =>
-                        reportServiceFailure(
-                            new Error(
-                                `The site was saved, but old owned mappings still require cleanup. Use Repair all mappings. ${error instanceof Error ? error.message : String(error)}`,
-                            ),
-                        ),
-                    );
-        }
-        try { await services.applyConfiguration(); }
-        catch (error) { mapping.message += ` The definition was saved, but runtime configuration requires retry: ${error instanceof Error ? error.message : String(error)}`; }
-        return { state: desktopState(result), mapping };
+        const result = await updateManagedSite(store, hosts, services, input);
+        return { ...result, state: desktopState(result.state) };
     });
     handle("vhostra:remove-site", async (_event, id: string) => {
         const before = await store.getState();
@@ -456,7 +483,7 @@ function registerIpc() {
                     ),
                 );
             } catch (error) {
-                mappingNotice = `The definition was removed; owned mappings still need cleanup. Use Repair all mappings in Virtual Hosts. ${error instanceof Error ? error.message : String(error)}`;
+                mappingNotice = `The definition was removed; owned mappings still need cleanup. Use Repair all mappings in Sites. ${error instanceof Error ? error.message : String(error)}`;
             }
         }
         try {
@@ -480,6 +507,9 @@ function registerIpc() {
         if (!host) throw new Error("Virtual-host definition not found.");
         return hosts.ensureLocalhostMappings([host.hostname, ...host.aliases]);
     });
+    handle("vhostra:all-hosts-status", async () => {
+        const state = await store.getState(); return hosts.mappingStatus(state.virtualHosts.filter(host => !host.builtIn).flatMap(host => [host.hostname, ...host.aliases]));
+    });
     handle("vhostra:hosts-status", async (_event, id: string) => {
         const state = await store.getState();
         const host = state.virtualHosts.find((item) => item.id === id);
@@ -494,9 +524,16 @@ function registerIpc() {
     handle(
         "vhostra:set-vhost-rewrite",
         async (_event, id: string, enabled: boolean) => {
+            const before = await store.getState();
+            const previous = before.virtualHosts.find(host => host.id === id);
+            if (!previous) throw new Error("Site configuration not found.");
             const result = await store.setVirtualHostRewrite(id, enabled);
-            await services.setOpenLiteSpeedRewrite(enabled);
-            return desktopState(result);
+            try { await services.applyConfiguration(); return desktopState(result); }
+            catch (error) {
+                await store.setVirtualHostRewrite(id, previous.rewriteEnabled !== false);
+                await services.applyConfiguration().catch(reportServiceFailure);
+                throw error;
+            }
         },
     );
     handle("vhostra:choose-document-root", async (event) => {
@@ -594,9 +631,32 @@ function registerIpc() {
             exports: layout.exports,
         };
     });
-    handle("vhostra:list-persistent-logs", () =>
-        listPersistentLogs(store.layout.logs),
-    );
+    handle("vhostra:new-site-plan", () => {
+        const id = randomUUID(); return { id, logs: { access: path.join(store.layout.logs, "sites", id, "access.log"), error: path.join(store.layout.logs, "sites", id, "error.log") } };
+    });
+    handle("vhostra:repair-site", async (_event, id: string) => {
+        const state = await store.getState(); const host = state.virtualHosts.find(host => host.id === id);
+        if (!host || host.builtIn) throw new Error("Choose an external Site to repair.");
+        const mapping = await safelyEnsureHosts([host.hostname, ...host.aliases]);
+        await services.applyConfiguration(); return mapping;
+    });
+    handle("vhostra:site-details", async (_event, id: string, includeNative = false) => {
+        const state = await store.getState(); const site = state.sites.find(site => site.id === id);
+        if (!site) throw new Error("Site not found.");
+        const host = state.virtualHosts.find(host => host.id === site.vhostId)!;
+        const filename = `${state.settings.selectedWebServer}-vhosts.conf`;
+        const file = path.join(store.layout.configuration.generated, filename);
+        let native = "No generated configuration yet. Start Services to generate and validate it.";
+        try { if (includeNative) { const details = await fs.stat(file); if (details.size > 1024 * 1024) native = "Generated configuration exceeds the 1 MiB preview limit."; else native = await fs.readFile(file, "utf8"); } } catch { /* no generated runtime yet */ }
+        return { host: { ...host, source: host.source ? { ...host.source, raw: undefined } : undefined }, native, nativePath: file, logs: { access: path.join(store.layout.logs, "sites", host.id, "access.log"), error: path.join(store.layout.logs, "sites", host.id, "error.log") } };
+    });
+    handle("vhostra:list-persistent-logs", async (_event, filter = "all") => {
+        if (filter === "all") return listPersistentLogs(store.layout.logs);
+        if (filter === "runtime") return listPersistentLogs(store.layout.logs, false);
+        if (!(await store.getState()).virtualHosts.some(host => host.id === filter)) throw new Error("Unknown Site log source.");
+        const prefix = path.join("sites", filter);
+        return (await listPersistentLogs(path.join(store.layout.logs, prefix))).map(file => ({ ...file, path: path.join(prefix, file.path) }));
+    });
     handle("vhostra:read-log-tail", (_event, relative: string) =>
         readLogTail(store.layout.logs, relative),
     );
@@ -614,34 +674,30 @@ function registerIpc() {
             : { path: await store.exportBundle(result.filePath) };
     });
     handle("vhostra:preview-configuration-import", async () => {
-        const result = await dialog.showOpenDialog({
-            title: "Preview Vhostra configuration import",
-            properties: ["openFile"],
-            filters: [{ name: "Vhostra configuration", extensions: ["json"] }],
-        });
-        return result.canceled || !result.filePaths[0]
-            ? null
-            : store.previewBundle(result.filePaths[0]);
-    });
-    handle("vhostra:import-configuration", async () => {
-        const result = await dialog.showOpenDialog({
-            title: "Import Vhostra configuration",
-            properties: ["openFile"],
-            filters: [{ name: "Vhostra configuration", extensions: ["json"] }],
-        });
+        pendingBackup = null;
+        const result = await dialog.showOpenDialog({ title: "Preview Vhostra configuration import", properties: ["openFile"], filters: [{ name: "Vhostra configuration", extensions: ["json"] }] });
         if (result.canceled || !result.filePaths[0]) return null;
-        const imported = await store.importBundle(result.filePaths[0]);
-        const mapping = await safelyEnsureHosts(
-            imported.imported.flatMap((site) => [
-                site.hostname,
-                ...site.aliases,
-            ]),
-        );
+        const preview = await store.previewBundle(result.filePaths[0]);
+        const plans = Object.fromEntries(preview.sites.filter((site: { disposition: string }) => site.disposition === 'new').map((site: { hostname: string }) => [site.hostname, randomUUID()]));
+        pendingBackup = { source: preview.source, checksum: preview.checksum, plans };
+        return { ...preview, plannedLogs: Object.fromEntries(Object.entries(plans).map(([hostname, id]) => [hostname, { access: path.join(store.layout.logs, "sites", id, "access.log"), error: path.join(store.layout.logs, "sites", id, "error.log") }])) };
+    });
+    handle("vhostra:import-configuration", async (_event, roots: Record<string, string> = {}) => {
+        if (!pendingBackup) throw new Error("Select and preview a Vhostra backup first.");
+        const preview = await store.previewBundle(pendingBackup.source);
+        for (const site of preview.sites.filter((site: { disposition: string }) => site.disposition === 'new')) {
+            const root = roots[site.hostname] ?? site.documentRoot;
+            if (typeof root !== 'string' || !path.isAbsolute(root) || !(await fs.stat(root).catch(() => null))?.isDirectory()) throw new Error(`Choose an existing host document root for ${site.hostname} before importing.`);
+        }
+        const imported = await store.importBundle(pendingBackup.source, roots, pendingBackup.checksum, pendingBackup.plans);
+        pendingBackup = null;
+        const mapping = await safelyEnsureHosts(imported.imported.flatMap(site => [site.hostname, ...site.aliases]));
         try { await services.applyConfiguration(); }
         catch (error) { mapping.message += ` Imported definitions were saved, but runtime configuration requires retry: ${error instanceof Error ? error.message : String(error)}`; }
         return { ...imported, mapping };
     });
     handle("vhostra:get-runtime-status", desktopRuntimeSnapshot);
+    handle("vhostra:runtime-statuses", () => services.runtimeStatuses());
     handle("vhostra:start-services", () => services.start());
     handle("vhostra:stop-services", () => services.stop());
     handle("vhostra:restart-services", () => services.restart());
@@ -790,15 +846,21 @@ async function checkForUpdates() {
         };
     try {
         const endpoint = new URL(source);
-        if (endpoint.protocol !== "https:")
+        if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password)
             throw new Error("The configured update source must use HTTPS.");
         const response = await fetch(endpoint, {
             headers: { accept: "application/json" },
+            redirect: "error",
             signal: AbortSignal.timeout(8_000),
         });
         if (!response.ok)
             throw new Error(`Update server returned HTTP ${response.status}.`);
-        const release = (await response.json()) as {
+        const reader = response.body?.getReader();
+        if (!reader) throw new Error("Update metadata response is empty.");
+        const chunks: Uint8Array[] = []; let bytes = 0;
+        try { while (true) { const { done, value } = await reader.read(); if (done) break; bytes += value.byteLength; if (bytes > 64 * 1024) throw new Error("Update metadata exceeds 64 KiB."); chunks.push(value); } }
+        finally { await reader.cancel(); }
+        const release = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
             version?: unknown;
             notes?: unknown;
             url?: unknown;
@@ -1208,4 +1270,4 @@ function registerScreenshotProtocol() {
 }
 
 /** Read-only native acceptance diagnostics; no IPC surface. */
-export function applicationSession() { return { window: primaryWindow, tray, hasSingleInstanceLock, runtime: services }; }
+export function applicationSession() { return { window: primaryWindow, tray, hasSingleInstanceLock, runtime: services, hosts }; }

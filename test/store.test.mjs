@@ -152,7 +152,7 @@ test('configuration import preflights every host before saving any definition', 
     const store = new VhostraStore(directory, undefined, async names => { if (names.includes('conflict.test')) throw Error('Hosts-file conflict') })
     const sites = ['valid.test', 'conflict.test'].map((hostname, index) => ({ id: String(index), vhostId: String(index), name: hostname, url: `http://${hostname}`, documentRoot: '/projects/test' }))
     const source = path.join(directory, 'import.json')
-    await writeFile(source, JSON.stringify({ manifest: { format: 'vhostra/config-bundle', schemaVersion: 1 }, configuration: { sites, virtualHosts: sites.map(site => ({ id: site.vhostId, hostname: site.name, aliases: [] })) } }))
+    await writeFile(source, JSON.stringify({ manifest: { format: 'vhostra/config-bundle', schemaVersion: 1, entries: [] }, configuration: { sites, virtualHosts: sites.map(site => ({ id: site.vhostId, hostname: site.name, aliases: [], documentRoot: site.documentRoot, https: { enabled: false } })) } }))
     await assert.rejects(store.importBundle(source), /Hosts-file conflict/)
     assert.equal((await store.getState()).sites.length, 1)
   } finally { await rm(directory, { recursive: true, force: true }) }

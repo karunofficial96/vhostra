@@ -28,13 +28,15 @@ export interface VirtualHost {
   id: string
   hostname: string
   aliases: string[]
+  /** Absolute host directory; site trees are never copied into the runtime. */
   documentRoot: string
+  runtimeDocumentRoot?: string
   https: { enabled: boolean; certificateRef?: string }
   rewriteEnabled?: boolean
   redirects: RedirectRule[]
   rewrites: RewriteRule[]
   headers: HeaderRule[]
-  logs: { access: boolean; error: boolean }
+  logs: { access: boolean; error: boolean; paths?: { access: string; error: string } }
   indexFiles?: string[]
   source?: { server: WebServer | 'litespeed-enterprise'; path: string; importedAt: string; raw?: string; status?: string; warnings?: string[] }
   /** Directives that could not be made portable remain visible for review. */

@@ -74,7 +74,7 @@ export function parseNativeConfiguration(sourceText: string, source: string, hin
   const add = (names: string[], root: string, tls: boolean, rewrite: boolean, indexes: string[]) => {
     names = [...new Set(names.map(name => name.toLowerCase()))]
     if (!names.length || names.some(name => !hostPattern.test(name) || name === 'localhost')) throw new Error('Each imported site needs an explicit valid hostname; wildcards and localhost require manual review.')
-    if (!path.isAbsolute(root) || /[\r\n\0]/.test(root) || /[$%]/.test(root)) throw new Error('Document root must be an absolute host path without unresolved variables. Edit the source copy or choose a resolved document root.')
+    if (!(path.posix.isAbsolute(root) || path.win32.isAbsolute(root)) || /[\r\n\0]/.test(root) || /[$%]/.test(root)) throw new Error('Document root must be an absolute host path without unresolved variables. Edit the source copy or choose a resolved document root.')
     if (indexes.length > 16 || indexes.some(index => !/^[a-zA-Z0-9_.-]+$/.test(index))) throw new Error('Unsupported index filename.')
     const existing = hosts.find(host => host.hostname === names[0])
     if (existing) {

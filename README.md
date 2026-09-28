@@ -1,14 +1,20 @@
-# Vhostra
+<p align="center">
+  <img src="src/assets/vhostra-logo-light.png" alt="Vhostra" width="420">
+</p>
 
 Vhostra is a lightweight, cross-platform graphical local PHP development environment. It is designed around one shared runtime: many local websites use one selected web server, one selected PHP version, and shared supporting services.
 
-> Development status: Vhostra persists settings and site/neutral-vhost definitions locally, creates a protected localhost welcome page, and manages its dedicated single-container runtime. The current desktop UI includes real MariaDB management, phpMyAdmin launching, port checks, hosts-file integration, PHP extension discovery, and runtime lifecycle controls. Portable JSON configuration import/apply and verified configuration-location migration are implemented. Bounded Apache/Nginx/LiteSpeed configuration import, first-run onboarding, and visible-only resource monitoring are implemented. Screenshot capture and arbitrary external backup restore remain pending.
+> Development status: Vhostra persists settings and site/neutral-vhost definitions locally, creates a protected localhost welcome page, and manages its dedicated single-container runtime. The current desktop UI includes real MariaDB management, phpMyAdmin launching, port checks, hosts-file integration, PHP extension discovery, and runtime lifecycle controls. Portable JSON configuration import/apply and verified configuration-location migration are implemented. Bounded Apache/Nginx/LiteSpeed configuration import, first-run onboarding, and visible-only resource monitoring are implemented. First-run Vhostra JSON backup restoration and protected reset are implemented. Screenshot capture and backups from unrelated formats remain outside the supported workflows.
+
+![Vhostra Dashboard with shared runtime controls and host-backed Sites](docs/images/dashboard.png)
+
+*Dashboard in a fresh profile, before starting services.*
 
 ## Features
 
 - Electron desktop application for macOS, Windows, and Linux
 - React, TypeScript, Vite, and Tailwind CSS interface
-- Responsive, collapsible navigation for Dashboard, Sites, Virtual Hosts, Database, phpMyAdmin, Server, PHP, Services, Resources, Logs, and Settings
+- Responsive, collapsible navigation for Dashboard, Sites, Database, phpMyAdmin, PHP, Services, Resources, Logs, and Settings
 - Dashboard and tray backed by the same real Docker-runtime status, with Start, Stop, and Restart actions
 - Add, edit, and remove site definitions without changing document-root files
 - Native document-root folder selection and secure OS-default browser opening for local site URLs
@@ -107,7 +113,7 @@ Security configuration for generated runtimes includes `expose_php=Off` and web-
 
 ## Native configuration import and conversion
 
-Virtual Hosts → Import existing server configuration previews Apache VirtualHost blocks, Nginx server blocks, self-contained OpenLiteSpeed vhconf files and compatible LiteSpeed Enterprise text configuration. Choose the source server when detection is ambiguous. A LiteSpeed directory import reads at most 64 regular .conf files (2 MiB total) inside the explicitly selected tree, resolves its available configFile references and listener mappings, and skips symlinks. It does not read arbitrary external includes, private keys or the old installation's other files.
+Sites → Import existing server configuration previews Apache VirtualHost blocks, Nginx server blocks, self-contained OpenLiteSpeed vhconf files and compatible LiteSpeed Enterprise text configuration. Choose the source server when detection is ambiguous. The desktop chooses individual source configuration files; there is no LiteSpeed installation-directory workflow. The CLI parser can still read a bounded self-contained legacy source tree for conversion; this never selects a runtime configuration directory. It does not read arbitrary external includes, private keys or the old installation's other files.
 
 Import converts explicit hostnames/aliases, absolute document roots, safe index filenames, HTTP/HTTPS intent and supported permalink intent into canonical `virtual-hosts/*.json`. Apache/OLS retain existing site `.htaccess`; Nginx supports the standard PHP front-controller fallback. Custom rewrites, access policies, handlers, listener settings and proprietary directives require review and remain inactive source metadata. Unsupported Enterprise XML/server-global formats are reported as invalid or requiring manual review. This is a limited conversion, not a promise of lossless equivalence. Preview reports Converted, Converted with warnings, Requires review or Invalid; preserved unsupported directives are shown separately. Review access restrictions before accepting warnings.
 
@@ -121,14 +127,26 @@ Genuine first launch shows welcome, System/Light/Dark appearance, OpenLiteSpeed/
 
 Resources shows Electron CPU and summed process working sets, exact managed runtime container CPU/RAM, categorized local files, managed Docker images/cache and writable layers. Shared memory/image layers are labeled; totals are logical attributed sizes, not exclusive physical disk consumption. External document roots, other Docker projects and Docker Desktop overhead are excluded. Samples run every eight seconds only while visible; requests coalesce and storage scans are bounded/cached for five minutes with explicit refresh. The localhost page has its own browser-local Light/Dark/System choice and icons, with live OS appearance changes.
 
-Vhostra retains the native resizable window frame (minimum 860 × 620). No custom maximize control exists or is needed; platform window conventions remain accessible.
+Vhostra keeps a native resizable frame with an 860 × 620 minimum. Maximize/zoom and fullscreen are disabled on macOS/Windows using Electron window options. On Linux the maximizable setter is a documented no-op; Vhostra reverses native maximize events when delivered, but window managers may still show an enabled control. No custom maximize button is added. See [Electron BrowserWindow](https://www.electronjs.org/docs/latest/api/browser-window).
 
 ## CLI commands
 
 After building, run `npm run cli -- help`, or the `vhostra` package executable. All runtime commands share the desktop store/controller and exact managed Compose scope.
 
 ```sh
-vhostra status
+vhostra status [web|apache|nginx|openlitespeed|php|mariadb|phpmyadmin|redis|memcached]
+vhostra start|stop|restart [web|apache|nginx|openlitespeed|mariadb|redis|memcached]
+vhostra sites list
+vhostra sites add /path/site.json
+vhostra sites edit SITE_ID /path/site.json
+vhostra sites remove SITE_ID
+vhostra sites repair [SITE_ID]
+vhostra config export|preview|import /path/backup.json
+vhostra database list
+vhostra database create NAME USER [utf8mb4|utf8|latin1]
+vhostra database import|export NAME /path/database.sql
+vhostra database repair|delete NAME
+vhostra reset
 vhostra runtime status|start|stop|restart
 vhostra service list
 vhostra service web|mariadb|redis|memcached status|start|stop|restart
@@ -148,7 +166,7 @@ vhostra import preview /path/site.conf nginx
 vhostra import apply /path/site.conf nginx --accept-warnings
 ```
 
-Use one alternative per `|` above. Hosts commands verify canonical ownership and use the same scoped administrative mutation path as the desktop. Before protected writes, Vhostra keeps a private local recovery snapshot; it retains ten completed snapshots. The elevated operation verifies the write before removing only its own transient native backup; failed/ambiguous native and local recovery remain available. Exit 0 indicates success, 1 backend/validation failure, 2 invalid import/unresolved mappings, and 64 invalid command usage. Cache status reports actual Supervisor state as well as saved enablement. A source import with unsupported directives requires preview/review and `--accept-warnings`; imports do not activate source text. Commands dispose temporary listeners/watchers on exit.
+Use one alternative per `|` above. Hosts commands verify canonical ownership and use the same scoped administrative mutation path as the desktop. Before protected writes, Vhostra keeps a private local recovery snapshot; it retains ten completed snapshots. The elevated operation verifies the write before removing only its own transient native backup; failed/ambiguous native and local recovery remain available. Exit 0 indicates success, 1 backend/validation failure, 2 invalid import/unresolved mappings or failed/unavailable status target, and 64 invalid command usage. Cache status reports actual Supervisor state as well as saved enablement. A source import with unsupported directives requires preview/review and `--accept-warnings`; imports do not activate source text. Commands dispose temporary listeners/watchers on exit.
 
 ## System requirements and prerequisites
 
@@ -204,7 +222,7 @@ test/               Persistent-store and URL-safety tests
 
 ## Current limitations
 
-Vhostra can request elevation to create/remove only its own marked hosts-file mappings for sites and aliases. It does not yet capture screenshots or restore arbitrary external backups. Native configuration import is limited to the documented convertible text formats; unsupported directives remain inactive and visible. Configuration imports create a local backup, and configuration migration retains the source until destination health checks succeed. A cancelled elevation request leaves the site definition intact but reports that the hostname could not be mapped.
+Vhostra can request elevation to create/remove only its own marked hosts-file mappings for sites and aliases. It does not yet capture screenshots or restore arbitrary external backups. Native configuration import is limited to the documented convertible text formats; unsupported directives remain inactive and visible. Configuration imports create a local backup, and configuration migration retains the source until destination health checks succeed. A cancelled elevation request during creation/import preserves the new definition and reports missing mappings. An existing Site edit restores its previous canonical/runtime definition if native validation or Hosts elevation fails.
 
 ## PHP extensions and cwebp
 
@@ -246,7 +264,19 @@ provides the `vhostra` command. The CLI never uses global Docker cleanup and
 only invokes Vhostra's generated, labeled Compose project.
 
 ```bash
-vhostra status
+vhostra status [web|apache|nginx|openlitespeed|php|mariadb|phpmyadmin|redis|memcached]
+vhostra start|stop|restart [web|apache|nginx|openlitespeed|mariadb|redis|memcached]
+vhostra sites list
+vhostra sites add /path/site.json
+vhostra sites edit SITE_ID /path/site.json
+vhostra sites remove SITE_ID
+vhostra sites repair [SITE_ID]
+vhostra config export|preview|import /path/backup.json
+vhostra database list
+vhostra database create NAME USER [utf8mb4|utf8|latin1]
+vhostra database import|export NAME /path/database.sql
+vhostra database repair|delete NAME
+vhostra reset
 vhostra runtime status
 vhostra runtime start
 vhostra runtime stop
@@ -354,3 +384,23 @@ opt-in resource samples, run `VHOSTRA_RESOURCE_DEBUG=1 npm run dev`.
 Normal startup reuses compatible runtime images. Disabled add-ons have no daemon,
 and only the selected web server handles HTTP/HTTPS. Measurements, runtime defaults,
 cleanup ownership/retention, and acceptance results are in [PERFORMANCE.md](PERFORMANCE.md).
+
+## Host storage and completion phase
+
+Sites is the single workspace for display names, URLs/hostnames, aliases, external host document roots, mapping repair, shared PHP/HTTPS state, rewrite settings, host access/error logs, native configuration and import metadata. Native previews load only on explicit expansion (1 MiB limit); mapping status uses one bulk read. The generated mount path is stored separately from the canonical host document root. External directories are bound directly with missing-source creation disabled, never copied. Filesystem permissions remain those chosen by the user; Vhostra does not recursively chmod or chown user projects.
+
+Every Site has persistent access/error paths under `logs/sites/<canonical-id>/`. Imported old log paths remain source metadata; active generated configs use the managed log mount. PHP errors are routed to the same Site error file. Logs offers application/runtime or individual Site sources, reads the newest 64 KiB on demand, and scopes its bounded file listing to the selected Site. Application/Supervisor logs rotate; OLS uses native rollover. Apache/Nginx use one supervised five-minute logrotate check of generated log paths only (5 MiB threshold, three prior files, copytruncate). Files may exceed the threshold between checks; copytruncate has a small concurrent-write loss window. It scans no site trees and runs no Electron hidden-window timer.
+
+The app theme is saved in host preferences; legacy renderer-only choices migrate once. The localhost page initially inherits that preference, then respects an explicit browser-local Light/Dark/System icon toggle. System follows OS appearance dynamically. No localhost theme dropdown remains.
+
+First-run Welcome offers **Import existing Vhostra backup** or **Set up as new**. Supported backups are version-1 `vhostra/config-bundle` JSON, bounded to 4 MiB / 500 Sites. Preview lists settings, new/equivalent/conflicting Sites and warnings. Restoration never overwrites current/equivalent definitions, imports missing configurations, restores setup preferences only for an unfinished profile and asks only for absent server/PHP/cache choices. Source checksum changes require a new preview. Both cache flags survive restoration; native login integration is deliberately not silently enabled. Database dumps, website contents, secrets and private keys are excluded; restore SQL separately through Database. Setup verifies the real runtime before the thank-you page; **Start using Vhostra** persists final onboarding completion.
+
+Settings → Hosts file permits read-only inspection without elevation and explicit editing of Vhostra-owned lines or appended records. Validation preserves unrelated records/comments and practical line endings, refuses concurrent source changes, and uses the existing scoped macOS administrator / Linux pkexec / Windows UAC write plan. Administrative passwords never enter the renderer, logs or configuration. Rename/alias edits share a GUI/CLI transaction: persist candidate definition, validate/promote runtime, reconcile protected mappings atomically, verify; rollback restores the previous definition on failure. Creation/import can retain a valid definition after declined mapping permission and display Repair.
+
+Settings → **Reset Vhostra** warns to back up databases/configuration first. Keep/Remove/Cancel is followed by a separate **Are you sure you want to reset?** with No / **Yes, Reset Vhostra**. **Databases are removed in either choice.** Keeping Site configurations does not keep database data. The backend removes only positively inspected Vhostra containers/networks, managed runtime/database/certificate state and reproducible generated files. Configuration backups and diagnostic logs remain. It never recursively removes the Sites directory or an external document root; unsafe legacy overlaps/symlinks cause refusal. Successful reset returns to onboarding. CLI reset repeats both interactive confirmations, accepts no destructive flags, and routes native-login-enabled resets to the graphical app. Inactive web frontends cannot be started through specific service aliases.
+
+Privacy: no analytics, telemetry, tracking IDs, remote logs or crash uploads. Legitimate network activity includes Docker images/packages, PHP extension repositories, explicit user-opened URLs and configured HTTPS update metadata. No Site paths/names, Hosts entries, databases or logs are attached to update checks. Update responses are bounded to 64 KiB, reject credentials/redirects, and use an eight-second timeout. Update checking remains unconfigured unless a release endpoint is supplied.
+
+Configuration import previews support choosing a local host document root for each new Site, including backups or native source paths from a different operating system. Source files remain unchanged. Backup import from Sites adds missing definitions and preserves current settings; first-run restoration can restore settings and theme.
+
+OpenLiteSpeed validation treats a strictly warning-only exit status 1 as reviewable and rejects errors or unknown failure output, matching [upstream configuration-test exit handling](https://github.com/litespeedtech/openlitespeed/blob/master/src/main/lshttpdmain.cpp). Native OLS parser backups use a disposable working copy of host-generated configuration so a stop/start does not write into the read-only source mount.

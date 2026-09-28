@@ -19,3 +19,15 @@ test('CLI lists canonical state, previews native files, validates ownership and 
     assert.equal(invoke(['import', 'preview', source, 'nginx']).status, 2)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
+
+test('interactive CLI reset cancellation at either stage leaves host state unchanged', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'vhostra-cli-reset-cancel-'))
+  const { VhostraStore } = await import('../dist-electron/store.js'); const store = new VhostraStore(root)
+  try {
+    const before = JSON.stringify(await store.getState())
+    for (const [choice, confirmation] of [['cancel', ''], ['keep', 'No'], ['remove', 'No']]) {
+      const result = spawnSync('python3', ['test/cli-reset-pty.py', process.execPath, 'scripts/vhostra.mjs', 'reset'], { encoding: 'utf8', timeout: 20000, env: { ...process.env, VHOSTRA_USER_DATA: root, VHOSTRA_RUNTIME_PROJECT: `vhostra-cli-cancel-${process.pid}`, VHOSTRA_TEST_RESET_CHOICE: choice, VHOSTRA_TEST_RESET_CONFIRM: confirmation } })
+      assert.equal(result.status, 0, result.stdout + result.stderr); assert.match(result.stdout, /cancelled/); assert.equal(JSON.stringify(await store.getState()), before)
+    }
+  } finally { await rm(root, { recursive: true, force: true }) }
+})

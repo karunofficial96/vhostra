@@ -15,7 +15,8 @@ app.whenReady().then(async () => {
   const settle = () => new Promise(resolve => setTimeout(resolve, 80))
   let release
   try {
-    ipcMain.handle('vhostra:get-onboarding', () => ({ preferences: { completed: true }, phpVersions: [] }))
+    ipcMain.handle('vhostra:get-onboarding', () => ({ preferences: { completed: true, theme: 'system', themeSaved: true }, phpVersions: [] }))
+    ipcMain.handle('vhostra:save-onboarding', (_event, preferences) => preferences)
     ipcMain.handle('vhostra:get-state', () => store.getState())
     ipcMain.handle('vhostra:get-runtime-status', () => runtime.current())
     runtime.subscribe(() => window.webContents.send('vhostra:runtime-status', runtime.current()))

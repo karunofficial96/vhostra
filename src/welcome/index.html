@@ -10,36 +10,36 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body class="min-h-screen bg-white font-sans text-[#0F0F0F]">
-    <main class="mx-auto max-w-6xl px-5 py-8 sm:px-8 lg:py-12">
+    <main class="mx-auto max-w-6xl px-4 py-8 sm:px-8 lg:py-12">
       <header class="flex flex-col gap-6 border-b border-[#E5E5E5] pb-8 sm:flex-row sm:items-center sm:justify-between">
         <img id="vhostra-logo" src="./vhostra-logo-light.png" alt="Vhostra" class="h-12 w-auto object-contain object-left" /><img id="vhostra-logo-dark-source" src="./vhostra-logo-dark.png" alt="" hidden />
-        <div class="flex items-center gap-2"><span class="inline-flex w-fit items-center rounded-full bg-[#F2F2F2] px-3 py-1.5 text-xs font-medium text-[#606060]">Localhost welcome page</span><button id="theme-toggle" type="button" class="theme-toggle" aria-label="Appearance: System"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></button><label class="sr-only" for="theme-select">Appearance</label><select id="theme-select" class="theme-select" aria-label="Choose appearance"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></div>
+        <div class="flex items-center gap-2"><span class="inline-flex w-fit items-center rounded-full bg-[#F2F2F2] px-3 py-1.5 text-xs font-medium text-[#606060]">Localhost welcome page</span><button id="theme-toggle" type="button" class="theme-toggle" aria-label="Appearance: System"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></button></div>
       </header>
-      <section class="grid gap-8 py-10 lg:grid-cols-[1.2fr_0.8fr]">
+      <section class="grid gap-8 py-8 lg:grid-cols-[1.2fr_0.8fr]">
         <div>
           <p class="text-xs font-medium uppercase tracking-[0.14em] text-[#606060]">Vhostra local environment</p>
-          <h1 class="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">Your local workspace starts here.</h1>
+          <h1 class="mt-2 text-2xl font-bold tracking-tight">Your local workspace starts here.</h1>
           <p class="mt-4 max-w-xl text-base leading-7 text-[#606060]">This page is managed by Vhostra and served by your selected global web server. {{runtime}}</p>
-          <div class="mt-7 grid gap-3 sm:grid-cols-2">
+          <div class="mt-6 grid gap-3 sm:grid-cols-2">
             <article class="border-b border-[#E5E5E5] pb-4"><p class="text-xs font-medium uppercase tracking-[0.08em] text-[#606060]"><img class="service-logo" src="./{{server-icon}}" alt="" />Selected server</p><p class="mt-1 text-lg font-medium">{{server}}</p><p class="mt-1 text-xs text-[#606060]">{{runtime}}</p></article>
             <article class="border-b border-[#E5E5E5] pb-4"><p class="text-xs font-medium uppercase tracking-[0.08em] text-[#606060]"><img class="service-logo" src="./services/php.svg" alt="" />Selected PHP</p><p class="mt-1 text-lg font-medium">{{php}}</p><p class="mt-1 text-xs text-[#606060]">{{runtime}}</p></article>
             <article class="border-b border-[#E5E5E5] pb-4"><p class="text-xs font-medium uppercase tracking-[0.08em] text-[#606060]"><img class="service-logo" src="./services/mariadb-icon.svg" alt="" />MariaDB</p><p class="mt-1 text-lg font-medium">Required</p><p class="mt-1 text-xs text-[#606060]">{{runtime}}</p></article>
             <article class="border-b border-[#E5E5E5] pb-4"><p class="text-xs font-medium uppercase tracking-[0.08em] text-[#606060]"><img class="service-logo" src="./services/phpmyadmin.ico" alt="" />phpMyAdmin</p><p class="mt-1 text-lg font-medium">Required</p><p class="mt-1 text-xs text-[#606060]">Available after runtime setup</p></article>
           </div>
         </div>
-        <aside class="rounded-xl bg-[#F2F2F2] p-5"><h2 class="text-lg font-medium">Shared optional services</h2><dl class="mt-4 space-y-4 text-sm"><div class="flex items-center justify-between border-b border-[#E5E5E5] pb-3"><dt><img class="service-logo" src="./services/redis-icon.svg" alt="" />Redis</dt><dd class="text-[#606060]">{{redis}}</dd></div><div class="flex items-center justify-between"><dt><img class="service-logo" src="./services/memcached-icon.svg" alt="" />Memcached</dt><dd class="text-[#606060]">{{memcached}}</dd></div></dl><p class="mt-5 text-xs leading-5 text-[#606060]">Vhostra does not expose runtime version information in HTTP response headers.</p></aside>
+        <aside class="rounded-xl bg-[#F2F2F2] p-4"><h2 class="text-lg font-medium">Shared optional services</h2><dl class="mt-4 space-y-4 text-sm"><div class="flex items-center justify-between border-b border-[#E5E5E5] pb-3"><dt><img class="service-logo" src="./services/redis-icon.svg" alt="" />Redis</dt><dd class="text-[#606060]">{{redis}}</dd></div><div class="flex items-center justify-between"><dt><img class="service-logo" src="./services/memcached-icon.svg" alt="" />Memcached</dt><dd class="text-[#606060]">{{memcached}}</dd></div></dl><p class="mt-4 text-xs leading-5 text-[#606060]">Vhostra does not expose runtime version information in HTTP response headers.</p></aside>
       </section>
       <section class="border-t border-[#E5E5E5] pt-8"><div class="flex items-center justify-between"><h2 class="text-xl font-medium">Configured local sites</h2><span class="text-xs text-[#606060]">Managed in Vhostra</span></div><div class="site-list mt-4">{{sites}}</div></section>
     </main>
     <script>
       (() => {
         const key = 'vhostra:welcome-appearance'; const media = matchMedia('(prefers-color-scheme: dark)'); const button = document.querySelector('#theme-toggle'); const logo = document.querySelector('#vhostra-logo'); const darkLogo = document.querySelector('#vhostra-logo-dark-source'); const lightLogo = logo.src;
-        const select = document.querySelector('#theme-select');
-        let preference = 'system'; try { const saved = localStorage.getItem(key); if (['system', 'light', 'dark'].includes(saved)) preference = saved; } catch {}
+
+        let preference = '{{theme}}'; if (!['system', 'light', 'dark'].includes(preference)) preference = 'system'; try { const saved = localStorage.getItem(key); if (['system', 'light', 'dark'].includes(saved)) preference = saved; } catch {}
         const icons = { light: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M5 19l1.5-1.5M17.5 6.5L19 5"/>', dark: '<path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z"/>', system: '<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/>' };
         const save = () => { try { localStorage.setItem(key, preference); } catch {} };
-        const apply = () => { const effective = preference === 'system' ? (media.matches ? 'dark' : 'light') : preference; document.documentElement.dataset.theme = effective; logo.src = effective === 'dark' ? darkLogo.src : lightLogo; button.setAttribute('aria-label', `Appearance: ${preference}`); button.title = `Appearance: ${preference}`; button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[preference]}</svg>`; select.value = preference; };
-        button.addEventListener('click', () => { preference = preference === 'light' ? 'system' : preference === 'system' ? 'dark' : 'light'; save(); apply(); }); select.addEventListener('change', () => { preference = select.value; save(); apply(); }); media.addEventListener('change', apply); apply();
+        const apply = () => { const effective = preference === 'system' ? (media.matches ? 'dark' : 'light') : preference; document.documentElement.dataset.theme = effective; logo.src = effective === 'dark' ? darkLogo.src : lightLogo; button.setAttribute('aria-label', `Appearance: ${preference}`); button.title = `Appearance: ${preference}`; button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[preference]}</svg>`; };
+        button.addEventListener('click', () => { preference = preference === 'light' ? 'system' : preference === 'system' ? 'dark' : 'light'; save(); apply(); }); media.addEventListener('change', apply); apply();
       })();
     </script>
   </body>

@@ -13,14 +13,14 @@ app.whenReady().then(async () => {
   try {
     const { applicationSession } = await import('../dist-electron/main.js')
     await pause(800)
-    const window = applicationSession().window; desktopWindow = window; runtime = applicationSession().runtime
+    const window = applicationSession().window; desktopWindow = window; runtime = applicationSession().runtime; runtime.scope = `vhostra-phase-ui-${process.pid}`
     const evaluate = code => window.webContents.executeJavaScript(code)
     const waitFor = async expression => { const deadline = Date.now() + 15000; while (!await evaluate(expression)) { if (Date.now() > deadline) throw Error(`Timed out waiting for ${expression}`); await pause(100) } }
     const click = text => evaluate(`[...document.querySelectorAll('button')].find(button => button.textContent.includes(${JSON.stringify(text)})).click()`)
     assert.match(await evaluate('document.body.textContent'), /Welcome to Vhostra/)
     const initial = await evaluate('window.vhostra.getOnboarding()')
     assert.equal(initial.preferences.completed, false); assert.equal(initial.preferences.php, initial.phpVersions.at(-1)); assert.equal(initial.preferences.server, 'openlitespeed'); assert.equal(initial.preferences.cache, 'none')
-    await click('Continue'); await pause(100)
+    await click('Set up as new'); await pause(100)
     await click('Dark'); await pause(150)
     assert.equal(await evaluate('document.documentElement.dataset.theme'), 'dark')
     await writeFile('/private/tmp/vhostra-onboarding-dark.png', (await window.webContents.capturePage()).toPNG())
@@ -46,7 +46,7 @@ app.whenReady().then(async () => {
     // Completion gate contract fixture. Live runtime health is tested separately
     // by the sequential runtime suite; no protected Hosts file is modified here.
     runtime.start = async () => { runtime.set({ state: 'running', message: 'Setup contract fixture verified', services: ['runtime'] }) }
-    await click('Set Up Vhostra'); await waitFor('document.body.textContent.includes("Dashboard")')
+    await click('Set Up Vhostra'); await waitFor('document.body.textContent.includes("Thank you for setting up Vhostra")'); assert.equal((await evaluate('window.vhostra.getOnboarding()')).preferences.completed, false); await click('Start using Vhostra'); await waitFor('document.body.textContent.includes("Dashboard")')
     assert.equal((await evaluate('window.vhostra.getOnboarding()')).preferences.completed, true)
     assert.match(await evaluate('document.body.textContent'), /Dashboard/)
     runtime.start = start
@@ -70,7 +70,7 @@ app.whenReady().then(async () => {
     welcome = new BrowserWindow({ width: 1000, height: 760, show: false })
     await welcome.loadFile(path.join(runtime.layout.sites, 'localhost', 'public', 'index.html'))
     for (const theme of ['light', 'dark', 'system']) {
-      await welcome.webContents.executeJavaScript(`document.querySelector('#theme-select').value='${theme}';document.querySelector('#theme-select').dispatchEvent(new Event('change'));undefined`)
+      await welcome.webContents.executeJavaScript(`(()=>{for(let i=0;i<3 && document.querySelector('#theme-toggle').getAttribute('aria-label') !== 'Appearance: ${theme}';i++) document.querySelector('#theme-toggle').click();})()`)
       assert.equal(await welcome.webContents.executeJavaScript('document.querySelector("#theme-toggle").getAttribute("aria-label")'), `Appearance: ${theme}`)
       assert.equal(await welcome.webContents.executeJavaScript('localStorage.getItem("vhostra:welcome-appearance")'), theme)
     }
@@ -80,6 +80,6 @@ app.whenReady().then(async () => {
     assert.equal(await welcome.webContents.executeJavaScript('document.documentElement.dataset.theme'), 'light')
     console.log('Native production UI: genuine first run, backend versions/defaults, theme/icons/system changes, choices, failure/retry completion contract, no reappearance, actual application/storage metrics, minimum bounds, visible-only nonoverlapping resource samples and localhost three-way OS-following appearance passed.')
   } catch (error) { failed = true; console.error(error) } finally {
-    clearTimeout(timeout); nativeTheme.themeSource = 'system'; welcome?.destroy(); runtime?.dispose(); desktopWindow?.destroy(); await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 150 }); app.exit(failed ? 1 : 0)
+    clearTimeout(timeout); nativeTheme.themeSource = 'system'; welcome?.destroy(); await runtime?.pauseBackgroundWork(); runtime?.dispose(); desktopWindow?.destroy(); await (await import('../dist-electron/logs.js')).drainApplicationLogs(); await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 150 }); app.exit(failed ? 1 : 0)
   }
 }).catch(error => { console.error(error); app.exit(1) })

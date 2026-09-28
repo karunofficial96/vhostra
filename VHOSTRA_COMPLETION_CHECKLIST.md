@@ -47,6 +47,8 @@ External acceptance, not passed or hidden as implementation work:
 - [ ] Native Windows/Linux protected-host prompts, OS hosts mutation and login launch. [BLOCKED: native environment unavailable — implementation complete, acceptance pending] Platform command/write-plan/cancellation tests passed; these do not substitute for native UAC/pkexec acceptance.
 - [ ] macOS mutation of the actual protected `/etc/hosts` and cancellation through the real administrator prompt. [BLOCKED: interactive administrator authorization required — implementation complete, acceptance pending] The osascript command's write plan was executed against temporary files with atomicity/concurrency/metadata checks; no real system hosts file was modified during testing.
 - [ ] Signed installer and real release/update endpoint acceptance. [BLOCKED: release environment unavailable — packaging configuration and local assets implemented, signed release acceptance pending] No signing credentials or production release endpoint are configured.
+- [ ] Windows/Linux native title-bar and window-manager acceptance. Native flags and best-effort Linux reversal are implemented; these environments are unavailable locally.
+- [ ] Licensed LiteSpeed Enterprise runtime acceptance. Compatible Apache/OLS text conversion passed locally; licensed binary and proprietary XML behavior require the relevant external environment.
 
 Detailed evidence: `VHOSTRA_FUNCTIONAL_AUDIT.md`. Unexposed README roadmap capabilities are explicitly separate from the implemented controls and this queue.
 
@@ -57,8 +59,69 @@ New development phase (2026-09-28; renewed local acceptance passed):
 - [x] Hosts vertical re-audit: imports, aliases, collisions, protected writes and repair/reconciliation.
 - [x] Localhost Light/Dark/System selection with matching icons and dynamic OS updates.
 - [x] Visible-only Resources tab; scoped CPU/RAM and cached accurately labeled storage.
-- [x] Window controls decision; CLI missing commands and shared backend audit.
+
+Historical window-controls decision was insufficient; the implemented and locally verified behavior is recorded in requirement 46 below.
+
 - [x] Previous requirement and production placeholder audit; final build/unit/native/sequential runtime acceptance.
 
 
 Renewed production build and 53/53 automated tests passed. Sequential server/import/rollback, actual onboarding runtime, extension, migration and performance suites passed; native UI/terminal/bridge/tray/session/dev/packaged checks passed. Native OS/release boundaries above remain unchecked; Enterprise licensed binary/XML acceptance is outside the compatible text conversion supported in this phase. See the 2026-09-28 functional audit and performance samples.
+
+## Host storage and completion phase — reopened 2026-09-28
+
+Earlier completion statements apply to their previous scope only. Current checked items have renewed source/UI/backend/host/runtime evidence in the functional audit; final sequential server validation passed. Native external acceptance remains unchecked above.
+
+- [x] 1. REMOVE "CHOOSE LITESPEED DIRECTORY"
+- [x] 2. FUNDAMENTAL STORAGE ARCHITECTURE
+- [x] 3. SITE DOCUMENT ROOTS MUST BE HOST DIRECTORIES
+- [x] 4. NEVER DELETE SITE ROOT DATA DURING CONFIGURATION REMOVAL/RESET
+- [x] 5. HOST-SIDE VHOST CONFIGURATION
+- [x] 6. NATIVE CONFIGURATION SWITCHING
+- [x] 7. IMPORTED VHOST CONFIGURATION
+- [x] 8. ACCESS AND ERROR LOGS
+- [x] 9. IMPORTED LOG PATHS
+- [x] 10. NEW SITE LOG LOCATIONS
+- [x] 11. LOGS AREA
+- [x] 12. CONSOLIDATE SITES + VIRTUAL HOSTS
+- [x] 13. EDIT EXISTING SITE/VHOST
+- [x] 14. HOSTNAME EDIT MUST UPDATE HOSTS
+- [x] 15. ALIAS EDIT MUST UPDATE HOSTS
+- [x] 16. COMPLETE HOSTS FILE EDITING
+- [x] 17. HOSTS FILE UI
+- [x] 18. HOSTS ELEVATION
+- [x] 19. AUTOMATIC HOSTS MAPPING
+- [x] 20. HOSTS REPAIR
+- [x] 21. WELCOME PAGE THEME
+- [x] 22. LOCALHOST THEME CONTROL MUST BE A TOGGLE
+- [x] 23. ONBOARDING THEME PERSISTENCE
+- [x] 24. WELCOME/ONBOARDING BACKUP IMPORT
+- [x] 25. BACKUP IMPORT WORKFLOW
+- [x] 26. BACKUP IMPORT ONBOARDING FLOW
+- [x] 27. NORMAL ONBOARDING FINAL STEP
+- [x] 28. RESET APP — SETTINGS
+- [x] 29. RESET — VHOST CONFIGURATION CHOICE
+- [x] 30. RESET MUST NEVER DELETE SITE ROOT FILES
+- [x] 31. FINAL RESET CONFIRMATION
+- [x] 32. RESET CANCEL
+- [x] 33. RESET IMPLEMENTATION
+- [x] 34. CLI RESET COMMAND
+- [x] 35. SERVER + SERVICES UI CONSOLIDATION
+- [x] 36. MOVE SERVER STATUS INTO RESOURCES
+- [x] 37. RESOURCES
+- [x] 38. COMPLETE CLI IMPLEMENTATION
+- [x] 39. SPECIFIC RUNTIME STATUS
+- [x] 40. ALL RUNTIME CONTROL
+- [x] 41. SPECIFIC SERVICE CONTROL
+- [x] 42. AUDIT ALL PREVIOUS CLI REQUIREMENTS
+- [x] 43. PRIVILEGE MODEL
+- [x] 44. PRIVACY — NO PERSONAL/SENSITIVE DATA COLLECTION
+- [x] 45. LIGHTWEIGHT REQUIREMENT
+- [x] 46. TITLE BAR MAXIMIZE / FULLSCREEN
+- [x] 47. FULL FUNCTIONAL COMPLETION AUDIT
+- [x] 48. SEARCH FOR INCOMPLETE PRODUCTION IMPLEMENTATION
+- [x] 49. DO NOT DECLARE COMPLETE JUST BECAUSE TESTS PASS
+- [x] 50. VALIDATION
+- [x] 51. EXTERNAL TESTS
+- [x] 52. EXECUTION BEHAVIOR
+
+Current evidence groups: 1–7 host mount/storage + server/import suites and root-picker UI; 8–11 actual Site logs and bounded selector/rotation; 12–20 native/live edit/aliases/Hosts + cancellation/manual editing; 21–27 new/backup setup + theme/reload/final gate; 28–34 native/live Keep/Remove/CLI/reset root preservation; 35–42 actual Supervisor/health/CLI/Resources; 43–44 code privilege/network/privacy audit; 45 PERFORMANCE renewed samples; 46 native flags/limits; 47–49 fresh vertical matrix/production search; 51 explicit external environment boundary. 50/52: production build and 66/66 automated tests passed; native renderer/IPC and lifecycle checks, sequential real Docker suites, final screenshot inspection, resource measurements, scoped cleanup and final cursor update completed. No locally implementable item remains open in this 52-requirement phase. External acceptance above remains unchecked; implementation was completed without a commit. The user subsequently authorized commit/push and requested the README light logo and Dashboard screenshot, which are included.

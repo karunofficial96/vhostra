@@ -18,13 +18,10 @@ html[data-theme="dark"] .border-\[\#E5E5E5\], html[data-theme="dark"] .border-b,
 .theme-toggle { align-items: center; background: transparent; border: 0; border-radius: 9999px; color: var(--v-muted); cursor: pointer; display: inline-flex; height: 40px; justify-content: center; width: 40px; }
 .theme-toggle:hover, .theme-toggle:focus-visible { background: var(--v-surface); color: var(--v-text); outline: 2px solid var(--v-link); outline-offset: 2px; }
 .theme-toggle svg { fill: none; height: 19px; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; width: 19px; }
-.service-logo { display: inline-block; height: 22px; margin-right: 6px; max-height: 20px; max-width: 20px; object-fit: contain; object-position: center; vertical-align: -6px; width: 22px; }
+.service-logo { display: inline-block; height: 30px; margin-right: 8px; max-height: 30px; max-width: 30px; object-fit: contain; object-position: center; vertical-align: middle; width: 30px; }
 
 .site-list { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
-.site-link { display: block; border-bottom: 1px solid var(--v-border); color: var(--v-text); font-weight: 500; padding: 14px 0; text-decoration: none; }
+.site-link { display: block; border-bottom: 1px solid var(--v-border); color: var(--v-text); font-weight: 500; padding: 16px 0; text-decoration: none; }
 .site-link:hover { color: var(--v-link); }
 .site-link span { display: block; color: var(--v-muted); font-family: "Roboto Mono", ui-monospace, monospace; font-size: 12px; font-weight: 400; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { color: var(--v-muted); font-size: 14px; }
-
-.theme-select { height: 36px; padding: 0 12px; border: 1px solid #E5E5E5; border-radius: 9999px; font: inherit; font-size: 12px; background: transparent; color: inherit; }
-:root[data-theme="dark"] .theme-select { border-color: #333; background: #0F0F0F; }

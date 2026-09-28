@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
+import { isIP } from 'node:net'
 import { spawn } from 'node:child_process'
 
 export interface HostsOperation {
@@ -28,6 +29,23 @@ export class HostsFileManager {
     this.mutation = next.catch(() => undefined)
     return next
   }
+  async inspect() { if ((await fs.stat(this.hostsPath)).size > 1024 * 1024) throw new Error('Hosts file exceeds the 1 MiB editor limit.'); const contents = await fs.readFile(this.hostsPath, 'utf8'); if (Buffer.byteLength(contents) > 1024 * 1024) throw new Error('Hosts file exceeds the 1 MiB editor limit.'); return { path: this.hostsPath, contents } }
+  edit(contents: string, expected: string) { return this.serialize(async () => {
+    if (expected.includes('\r\n') && !/(?<!\r)\n/.test(expected)) contents = contents.replace(/\r?\n/g, '\r\n')
+    if (typeof contents !== 'string' || typeof expected !== 'string' || Buffer.byteLength(contents) > 1024 * 1024 || contents.includes('\0')) throw new Error('Invalid Hosts content.')
+    for (const line of contents.split(/\r?\n/)) {
+      const text = line.replace(/#.*/, '').trim(); if (!text) continue
+      const [address, ...names] = text.split(/\s+/)
+      if (!isIP(address) || !names.length || names.some(name => !hostnamePattern.test(name))) throw new Error(`Invalid Hosts entry: ${text}`)
+    }
+    // Manual editing is explicit. Preserve unrelated records/comments byte-for-byte
+    // in their original order; only marked Vhostra records may be removed/changed.
+    const unrelated = expected.split(/(?<=\n)/).filter(line => !ownedRecord.test(line.trimEnd()))
+    const remaining = [...contents.split(/(?<=\n)/)]; let cursor = 0
+    for (const line of unrelated) { const index = remaining.findIndex((candidate, index) => index >= cursor && (candidate === line || (!line.endsWith('\n') && candidate.replace(/\r?\n$/, '') === line))); if (index < 0) throw new Error('Unrelated Hosts entries and comments must remain unchanged. Edit only Vhostra-owned lines or append new entries.'); cursor = index + 1 }
+    if (contents !== expected) await this.replaceWithElevation(contents, expected)
+    return this.inspect()
+  }) }
   ensureLocalhostMappings(hostnames: string[]) { return this.serialize(() => this.withMappingFeedback(hostnames, () => this.ensureMappings(hostnames))) }
   private async withMappingFeedback<T>(names: string[], task: () => Promise<T>): Promise<T> {
     try { const result = await task(); names.forEach(name => this.issues.delete(name.toLowerCase())); return result }
@@ -176,7 +194,7 @@ export function parseHosts(source: string) {
 
 const execute = (command: string, args: string[]) => new Promise<void>((resolve, reject) => {
   const child = spawn(command, args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: false })
-  let error = ''; child.stderr.on('data', chunk => { error += String(chunk) })
+  let error = ''; child.stderr.on('data', chunk => { error = (error + String(chunk)).slice(-16000) })
   child.once('error', reject); child.once('exit', code => code === 0 ? resolve() : reject(new Error(error.trim() || `${command} exited with ${code}`)))
 })
 export const shellQuote = (value: string) => `'${value.replaceAll("'", "'\"'\"'")}'`

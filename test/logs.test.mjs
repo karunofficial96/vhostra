@@ -21,3 +21,12 @@ test('logs return a bounded tail and reject traversal and outside links', async 
     assert.deepEqual((await listPersistentLogs(logs)).map(file => file.path), ['large.log'])
   } finally { await rm(root, { recursive: true, force: true }) }
 })
+test('runtime-only log listing stays available beyond many site files', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'vhostra-logs-filter-'))
+  try {
+    const sites = path.join(root, 'sites'); await mkdir(sites)
+    await Promise.all(Array.from({ length: 110 }, (_, index) => writeFile(path.join(sites, `${index}.log`), 'site')))
+    await writeFile(path.join(root, 'runtime.log'), 'runtime')
+    assert.deepEqual((await listPersistentLogs(root, false)).map(file => file.path), ['runtime.log'])
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
