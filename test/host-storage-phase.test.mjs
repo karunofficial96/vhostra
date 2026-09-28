@@ -89,9 +89,9 @@ test('Hosts manual editor preserves unrelated CRLF/comment formatting, validates
   await writeFile(hostsFile, original); const manager = new HostsFileManager(path.join(profile, 'tmp')); Object.defineProperty(manager, 'hostsPath', { value: hostsFile })
   let writes = 0; manager.replaceWithElevation = async (contents, expected) => { assert.equal(await readFile(hostsFile, 'utf8'), expected); writes++; await writeFile(hostsFile, contents) }
   assert.equal((await manager.inspect()).contents, original); assert.equal(writes, 0)
-  await assert.rejects(manager.edit(original.replace('localhost', 'changed.test'), original), /Unrelated/)
+  const manual = await manager.previewEdit(original.replace('localhost', 'changed.test'), original); assert.match(manual.diff, /changed.test/); assert.equal(writes, 0)
   await assert.rejects(manager.edit(original + 'invalid-address broken.test\r\n', original), /Invalid Hosts/)
-  const draft = original.replace('old.test', 'new.test').replaceAll('\r\n', '\n'); await manager.edit(draft, original)
+  const draft = original.replace('old.test', 'new.test').replaceAll('\r\n', '\n'); const review = await manager.previewEdit(draft, original); await manager.edit(draft, original, review.id)
   assert.equal(writes, 1); assert.equal(await readFile(hostsFile, 'utf8'), original.replace('old.test', 'new.test'))
 }))
 test('portable backup paths can be remapped to selected local roots without changing source files', () => fixture(async ({ store, profile, project }) => {

@@ -2,7 +2,8 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 
 const api = Object.freeze({
   inspectHosts: () => ipcRenderer.invoke('vhostra:inspect-hosts'),
-  editHosts: (contents: string, expected: string) => ipcRenderer.invoke('vhostra:edit-hosts', contents, expected),
+  previewHostsEdit: (contents: string, expected: string) => ipcRenderer.invoke('vhostra:preview-hosts-edit', contents, expected),
+  editHosts: (contents: string, expected: string, reviewId: string) => ipcRenderer.invoke('vhostra:edit-hosts', contents, expected, reviewId),
   previewBackup: () => ipcRenderer.invoke('vhostra:preview-backup'),
   restoreBackup: (roots: Record<string, string> = {}) => ipcRenderer.invoke('vhostra:restore-backup', roots),
   resetApp: (keepSites: boolean, confirmation: string) => ipcRenderer.invoke('vhostra:reset-app', keepSites, confirmation),

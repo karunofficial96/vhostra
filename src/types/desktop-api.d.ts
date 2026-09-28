@@ -10,9 +10,12 @@ export interface NativeImportPreview { plannedLogs?: Record<string, { access: st
 export interface RuntimeStatusRow { id: string; label: string; enabled: boolean; state: string }
 export interface BackupPreview { plannedLogs?: Record<string, { access: string; error: string }>; source: string; checksum: string; sites: Array<{ name: string; hostname: string; documentRoot: string; disposition: string }>; settings: { server?: string; php?: string; optionalServices?: { redis: boolean; memcached: boolean } } | null; missing: string[]; warnings: string[] }
 export interface ResourceReport { statuses: RuntimeStatusRow[]; application: { cpuPercent: number; ramBytes: number; processes: number }; runtime: Array<{ CPUPerc: string; MemUsage: string }> | null; runtimeError: string | null; dockerStorage: { imageBytes: number; writableLayerBytes: number; note: string } | null; storage: { measuredAt: string; categories: Array<{ label: string; bytes: number; partial: boolean }>; localTotalBytes: number; note: string } }
+export interface HostsFileSnapshot { path: string; contents: string; managedLines: Array<{ line: number; text: string; hostnames: string[] }> }
+export interface HostsEditReview { id: string; contents: string; diff: string; removedLines: number; addedLines: number; truncated: boolean; managedChanges: string[] }
 export interface VhostraDesktopApi {
-  inspectHosts(): Promise<{ path: string; contents: string }>
-  editHosts(contents: string, expected: string): Promise<{ path: string; contents: string }>
+  inspectHosts(): Promise<HostsFileSnapshot>
+  previewHostsEdit(contents: string, expected: string): Promise<HostsEditReview>
+  editHosts(contents: string, expected: string, reviewId: string): Promise<HostsFileSnapshot>
   previewBackup(): Promise<BackupPreview | null>
   restoreBackup(roots?: Record<string, string>): Promise<{ message: string; missing: string[]; warnings: string[]; preferences: OnboardingPreferences }>
   resetApp(keepSites: boolean, confirmation: string): Promise<{ message: string }>

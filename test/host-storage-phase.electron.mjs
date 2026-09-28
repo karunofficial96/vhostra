@@ -78,9 +78,33 @@ app.whenReady().then(async () => {
     await click('Settings'); await waitFor('document.body.textContent.includes("Reset Vhostra")')
     await click('Inspect Hosts file'); await waitFor('document.querySelector("textarea") !== null')
     assert.equal(await evaluate('document.querySelector("textarea").readOnly'), true)
-    await click('Edit Vhostra mappings')
-    await evaluate(`(()=>{const input=document.querySelector('textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,input.value+'127.0.0.1 manual.test\\n');input.dispatchEvent(new Event('input',{bubbles:true}));})()`)
-    await click('Save with administrator approval'); await waitFor('document.body.textContent.includes("Hosts file saved and verified")'); assert.match(await readFile(tempHosts, 'utf8'), /manual.test/)
+    const originalManual = await readFile(tempHosts, 'utf8'); let manualElevations = 0
+    const manualExecutor = session.hosts.execute; session.hosts.execute = async (...args) => { manualElevations++; return manualExecutor(...args) }
+    const setHostsDraft = value => evaluate(`(()=>{const input=document.querySelector('[aria-label="Hosts file contents"]');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,${JSON.stringify(value)});input.dispatchEvent(new Event('input',{bubbles:true}));})()`)
+    const manualDraft = text => text.replace('# unrelated preserved', '# manually changed comment').split('\n').filter(line => !(line.includes('new.test') && line.includes('# Vhostra'))).join('\n') + '192.0.2.5 www.new.test # manual conflict\n127.0.0.1 manual.test\n'
+    await click('Edit complete Hosts file'); await setHostsDraft(manualDraft(originalManual)); await click('Review changes')
+    await waitFor('document.querySelector("[role=dialog]")?.textContent.includes("Vhostra-managed mappings will change or be deleted")')
+    assert.match(await evaluate(`document.querySelector('[aria-label="Hosts changes diff"]').textContent`), /manually changed comment/)
+    assert.equal(manualElevations, 0); assert.equal(await readFile(tempHosts, 'utf8'), originalManual)
+    await click('Back to editor'); assert.equal(await readFile(tempHosts, 'utf8'), originalManual)
+    await click('Review changes'); await waitFor('document.querySelector("[role=dialog]") !== null')
+    const externalManual = originalManual + '# external update\n'; await writeFile(tempHosts, externalManual)
+    await click('Confirm Save with administrator approval'); await waitFor('document.body.textContent.includes("Hosts file changed externally")')
+    assert.equal(manualElevations, 0); assert.equal(await readFile(tempHosts, 'utf8'), externalManual)
+    await click('Reload current file and review'); await waitFor(`document.querySelector('[aria-label="Previous Hosts draft"]') !== null`)
+    assert.ok((await evaluate(`document.querySelector('[aria-label="Hosts file contents"]').value`)).includes('# external update'))
+    assert.ok((await evaluate(`document.querySelector('[aria-label="Previous Hosts draft"]').value`)).includes('# manually changed comment'))
+    await click('Edit complete Hosts file'); await setHostsDraft(manualDraft(externalManual)); await click('Review changes'); await waitFor('document.querySelector("[role=dialog]") !== null'); await pause(150)
+    await writeFile('/private/tmp/vhostra-hosts-full-file-review.png', (await window.webContents.capturePage()).toPNG())
+    session.hosts.execute = async () => { throw Error('Authentication cancelled (-128)') }
+    await click('Confirm Save with administrator approval'); await waitFor('document.body.textContent.includes("Authentication cancelled")')
+    assert.equal(await readFile(tempHosts, 'utf8'), externalManual)
+    session.hosts.execute = async (...args) => { manualElevations++; return manualExecutor(...args) }
+    await click('Review changes'); await waitFor('document.querySelector("[role=dialog]") !== null'); await click('Confirm Save with administrator approval'); await waitFor('document.body.textContent.includes("Hosts file saved and verified")')
+    assert.equal(manualElevations, 1); assert.equal(await readFile(tempHosts, 'utf8'), manualDraft(externalManual))
+    assert.match(await evaluate('document.body.textContent'), /new.test — Missing/); assert.match(await evaluate('document.body.textContent'), /www.new.test — Conflict/)
+    const manualStatus = await evaluate('window.vhostra.allHostsStatus()'); assert.equal(manualStatus.find(row => row.hostname === 'new.test').state, 'required'); assert.equal(manualStatus.find(row => row.hostname === 'www.new.test').state, 'conflict')
+    await evaluate(`window.vhostra.repairSite(${JSON.stringify(site.vhostId)})`); assert.equal(await readFile(tempHosts, 'utf8'), manualDraft(externalManual), 'Repair must not overwrite the unrelated manual conflict')
     for (const label of ['Keep configurations', 'Remove configurations']) {
       const before = JSON.stringify(await evaluate('window.vhostra.getState()')); await click('Reset Vhostra…'); await click(label); await waitFor('document.querySelector("[role=dialog]").textContent.includes("Are you sure you want to reset?")'); await pause(150)
       await writeFile(`/private/tmp/vhostra-host-reset-${label.startsWith('Keep') ? 'keep' : 'remove'}.png`, (await window.webContents.capturePage()).toPNG())
@@ -90,7 +114,7 @@ app.whenReady().then(async () => {
     // Actual backend file reset after final UI confirmation, no Docker resource.
     runtime.resetRuntime = async () => undefined; await click('Reset Vhostra…'); await click('Remove configurations'); await click('Yes, Reset Vhostra'); await waitFor('document.body.textContent.includes("Welcome to Vhostra")')
     assert.equal((await evaluate('window.vhostra.getState()')).sites.length, 1); assert.match(await readFile(path.join(project, 'index.php'), 'utf8'), /preserved/)
-    console.log('Native UI/IPC: backup preview/restore skips restored settings, theme restart persistence, final setup gate, unified Site create/edit/aliases, protected-write cancellation rollback, manual Hosts edit, both reset cancel paths and final removal/reset to onboarding, external-file preservation and native window flags passed.')
+    console.log('Native UI/IPC: backup preview/restore skips restored settings, theme restart persistence, final setup gate, unified Site create/edit/aliases, protected-write cancellation rollback, full-file Hosts review/confirmation, owned-entry warning, race reload/draft preservation, authentication cancellation, missing/conflict recalculation without silent repair, both reset cancel paths and final removal/reset to onboarding, external-file preservation and native window flags passed.')
   } catch (error) { failed = true; console.error(error); if (session?.window) console.error(await session.window.webContents.executeJavaScript('document.body.textContent')) }
   finally {
     clearTimeout(timeout); nativeTheme.themeSource = 'system'; await session?.runtime.pauseBackgroundWork(); session?.runtime.dispose(); session?.window?.destroy(); await (await import('../dist-electron/logs.js')).drainApplicationLogs()

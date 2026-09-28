@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { isIP } from 'node:net'
@@ -17,33 +17,70 @@ const systemHostsPath = () => process.platform === 'win32'
   ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'drivers', 'etc', 'hosts')
   : '/etc/hosts'
 
+export interface HostsEditReview {
+  id: string
+  contents: string
+  diff: string
+  removedLines: number
+  addedLines: number
+  truncated: boolean
+  managedChanges: string[]
+}
+const digest = (text: string) => createHash('sha256').update(text).digest('hex')
+const managedLines = (contents: string) => contents.split(/\r?\n/).flatMap((text, index) => ownedRecord.test(text) ? [{ line: index + 1, text, hostnames: text.split('#')[0].trim().split(/\s+/).slice(1) }] : [])
+const changedExternally = () => new Error('Hosts file changed externally. Reload the current file and review your edits again; no newer contents were overwritten.')
+
 export class HostsFileManager {
   readonly hostsPath = systemHostsPath()
   private platform: NodeJS.Platform = process.platform
   private execute = execute
   private issues = new Map<string, string>()
   private mutation: Promise<unknown> = Promise.resolve()
+  private review: { id: string; source: string; proposed: string; expires: number } | undefined
   constructor(private readonly temporaryDirectory: string, private readonly recoveryDirectory = path.join(temporaryDirectory, 'hosts-backups')) {}
   private serialize<T>(task: () => Promise<T>): Promise<T> {
     const next = this.mutation.then(task, task)
     this.mutation = next.catch(() => undefined)
     return next
   }
-  async inspect() { if ((await fs.stat(this.hostsPath)).size > 1024 * 1024) throw new Error('Hosts file exceeds the 1 MiB editor limit.'); const contents = await fs.readFile(this.hostsPath, 'utf8'); if (Buffer.byteLength(contents) > 1024 * 1024) throw new Error('Hosts file exceeds the 1 MiB editor limit.'); return { path: this.hostsPath, contents } }
-  edit(contents: string, expected: string) { return this.serialize(async () => {
+  async inspect() { if ((await fs.stat(this.hostsPath)).size > 1024 * 1024) throw new Error('Hosts file exceeds the 1 MiB editor limit.'); const contents = await fs.readFile(this.hostsPath, 'utf8'); if (Buffer.byteLength(contents) > 1024 * 1024) throw new Error('Hosts file exceeds the 1 MiB editor limit.'); return { path: this.hostsPath, contents, managedLines: managedLines(contents) } }
+  private validateEdit(contents: string, expected: string) {
+    if (typeof contents !== 'string' || typeof expected !== 'string' || Buffer.byteLength(contents) > 1024 * 1024 || Buffer.byteLength(expected) > 1024 * 1024 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\r]/.test(contents.replace(/\r\n/g, '\n'))) throw new Error('Invalid Hosts content (1 MiB limit; no NUL or bare carriage returns).')
     if (expected.includes('\r\n') && !/(?<!\r)\n/.test(expected)) contents = contents.replace(/\r?\n/g, '\r\n')
-    if (typeof contents !== 'string' || typeof expected !== 'string' || Buffer.byteLength(contents) > 1024 * 1024 || contents.includes('\0')) throw new Error('Invalid Hosts content.')
-    for (const line of contents.split(/\r?\n/)) {
+    for (const [index, line] of contents.split(/\r?\n/).entries()) {
       const text = line.replace(/#.*/, '').trim(); if (!text) continue
       const [address, ...names] = text.split(/\s+/)
-      if (!isIP(address) || !names.length || names.some(name => !hostnamePattern.test(name))) throw new Error(`Invalid Hosts entry: ${text}`)
+      if (!isIP(address) || !names.length || names.some(name => !hostnamePattern.test(name))) throw new Error(`Invalid Hosts entry on line ${index + 1}: use a valid IPv4/IPv6 address and hostname(s).`)
     }
-    // Manual editing is explicit. Preserve unrelated records/comments byte-for-byte
-    // in their original order; only marked Vhostra records may be removed/changed.
-    const unrelated = expected.split(/(?<=\n)/).filter(line => !ownedRecord.test(line.trimEnd()))
-    const remaining = [...contents.split(/(?<=\n)/)]; let cursor = 0
-    for (const line of unrelated) { const index = remaining.findIndex((candidate, index) => index >= cursor && (candidate === line || (!line.endsWith('\n') && candidate.replace(/\r?\n$/, '') === line))); if (index < 0) throw new Error('Unrelated Hosts entries and comments must remain unchanged. Edit only Vhostra-owned lines or append new entries.'); cursor = index + 1 }
-    if (contents !== expected) await this.replaceWithElevation(contents, expected)
+    if (Buffer.byteLength(contents) > 1024 * 1024) throw new Error('Hosts file exceeds the 1 MiB editor limit.')
+    return contents
+  }
+  previewEdit(contents: string, expected: string) { return this.serialize(async () => {
+    contents = this.validateEdit(contents, expected)
+    if ((await this.inspect()).contents !== expected) throw changedExternally()
+    if (contents === expected) throw new Error('No Hosts changes to review.')
+    const before = expected.match(/[^\n]*\n|[^\n]+$/g) ?? []; const after = contents.match(/[^\n]*\n|[^\n]+$/g) ?? []
+    let start = 0; while (start < before.length && start < after.length && before[start] === after[start]) start++
+    let oldEnd = before.length; let newEnd = after.length
+    while (oldEnd > start && newEnd > start && before[oldEnd - 1] === after[newEnd - 1]) { oldEnd--; newEnd-- }
+    const removedLines = oldEnd - start; const addedLines = newEnd - start
+    const diffLine = (prefix: string, line: string) => `${prefix}${line.replace(/\r?\n$/, '')}\n${line.endsWith('\n') ? '' : '\\ No newline at end of file\n'}`
+    const fullDiff = `@@ -${start + 1},${removedLines} +${start + 1},${addedLines} @@\n` + before.slice(start, oldEnd).map(line => diffLine('-', line)).join('') + after.slice(start, newEnd).map(line => diffLine('+', line)).join('')
+    const remaining = new Map<string, number>()
+    for (const line of managedLines(contents)) remaining.set(line.text, (remaining.get(line.text) ?? 0) + 1)
+    const managedChanges = managedLines(expected).filter(line => { const count = remaining.get(line.text) ?? 0; if (count) { remaining.set(line.text, count - 1); return false }; return true }).map(line => `Line ${line.line}: ${line.hostnames.join(', ')}`)
+    const id = randomUUID(); this.review = { id, source: digest(expected), proposed: digest(contents), expires: Date.now() + 10 * 60 * 1000 }
+    return { id, contents, diff: fullDiff.slice(0, 128 * 1024), truncated: fullDiff.length > 128 * 1024, removedLines, addedLines, managedChanges } satisfies HostsEditReview
+  }) }
+  /** Only the explicit full-file editor uses a reviewed, confirmed manual write. */
+  edit(contents: string, expected: string, reviewId: string) { return this.serialize(async () => {
+    contents = this.validateEdit(contents, expected)
+    if ((await this.inspect()).contents !== expected) throw changedExternally()
+    const review = this.review
+    if (!review || review.id !== reviewId || review.expires < Date.now() || review.source !== digest(expected) || review.proposed !== digest(contents)) throw new Error('Review and explicitly confirm these Hosts changes before saving.')
+    this.review = undefined
+    await this.replaceWithElevation(contents, expected, 'manual')
+    this.issues.clear()
     return this.inspect()
   }) }
   ensureLocalhostMappings(hostnames: string[]) { return this.serialize(() => this.withMappingFeedback(hostnames, () => this.ensureMappings(hostnames))) }
@@ -120,21 +157,29 @@ export class HostsFileManager {
     return true
   }
 
-  private async replaceWithElevation(contents: string, expectedSource: string) {
+  private async replaceWithElevation(contents: string, expectedSource: string, mode: 'automatic' | 'manual' = 'automatic') {
+    if (mode === 'automatic') {
+      // Automatic Site/repair/delete paths can only alter positively owned lines.
+      const unrelated = (source: string) => source.split(/(?<=\n)/).filter(line => !ownedRecord.test(line.trimEnd())).join('')
+      const before = unrelated(expectedSource); const after = unrelated(contents)
+      // A missing final newline may need one separator before an owned append.
+      if (after !== before && !(before && !before.endsWith('\n') && after === before + '\n')) throw new Error('Automatic Hosts management must preserve unrelated entries and comments, and may add only Vhostra-owned mappings.')
+    }
+    if ((await this.inspect()).contents !== expectedSource) throw changedExternally()
     const temporary = await this.writeTemporary(contents)
     const expected = await this.writeTemporary(expectedSource)
     const token = randomUUID()
     const staged = `${this.hostsPath}.vhostra-${token}.tmp`
     const backup = `${this.hostsPath}.vhostra-${token}.bak`
     const recoveryFile = path.join(this.recoveryDirectory, `${token}.json`)
-    const recovery = { owner: 'vhostra', kind: 'hosts-recovery', status: 'active', createdAt: new Date().toISOString(), hostsPath: this.hostsPath, original: expectedSource }
+    const recovery = { owner: 'vhostra', kind: 'hosts-recovery', status: 'active', mode, createdAt: new Date().toISOString(), hostsPath: this.hostsPath, original: expectedSource, nativeBackup: backup }
     try {
-      await fs.mkdir(this.recoveryDirectory, { recursive: true })
+      await fs.mkdir(this.recoveryDirectory, { recursive: true, mode: 0o700 })
       await fs.writeFile(recoveryFile, JSON.stringify(recovery), { mode: 0o600 })
       if (this.platform === 'win32') {
         // EncodedCommand avoids nested ArgumentList quoting; exit code belongs to
         // the elevated child, not merely the unelevated Start-Process launcher.
-        const command = `$ErrorActionPreference='Stop'; try { $target=${powerShellString(this.hostsPath)}; if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($target)) -cne [Convert]::ToBase64String([System.IO.File]::ReadAllBytes(${powerShellString(expected)}))) { throw 'Hosts file changed; retry repair' }; [System.IO.File]::Copy($target,${powerShellString(staged)},$false); [System.IO.File]::WriteAllBytes(${powerShellString(staged)},[System.IO.File]::ReadAllBytes(${powerShellString(temporary)})); if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($target)) -cne [Convert]::ToBase64String([System.IO.File]::ReadAllBytes(${powerShellString(expected)}))) { throw 'Hosts file changed; retry repair' }; [System.IO.File]::Replace(${powerShellString(staged)},$target,${powerShellString(backup)}); if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($target)) -cne [Convert]::ToBase64String([System.IO.File]::ReadAllBytes(${powerShellString(temporary)}))) { throw 'Hosts write verification failed; native backup retained' }; Remove-Item ${powerShellString(backup)} -Force; exit 0 } catch { Write-Error $_; exit 1 } finally { if (Test-Path ${powerShellString(staged)}) { Remove-Item ${powerShellString(staged)} -Force } }`
+        const command = `$ErrorActionPreference='Stop'; $replaced=$false; try { $target=${powerShellString(this.hostsPath)}; if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($target)) -cne [Convert]::ToBase64String([System.IO.File]::ReadAllBytes(${powerShellString(expected)}))) { throw 'Hosts file changed; retry repair' }; [System.IO.File]::Copy($target,${powerShellString(staged)},$false); [System.IO.File]::WriteAllBytes(${powerShellString(staged)},[System.IO.File]::ReadAllBytes(${powerShellString(temporary)})); if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($target)) -cne [Convert]::ToBase64String([System.IO.File]::ReadAllBytes(${powerShellString(expected)}))) { throw 'Hosts file changed; retry repair' }; [System.IO.File]::Replace(${powerShellString(staged)},$target,${powerShellString(backup)}); $replaced=$true; if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($target)) -cne [Convert]::ToBase64String([System.IO.File]::ReadAllBytes(${powerShellString(temporary)}))) { throw 'Hosts write verification failed; native backup retained' }; Remove-Item ${powerShellString(backup)} -Force; exit 0 } catch { $failure=$_; if ($replaced -and (Test-Path ${powerShellString(backup)})) { try { if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($target)) -ceq [Convert]::ToBase64String([System.IO.File]::ReadAllBytes(${powerShellString(temporary)}))) { [System.IO.File]::Copy(${powerShellString(backup)},${powerShellString(staged)},$true); if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($target)) -ceq [Convert]::ToBase64String([System.IO.File]::ReadAllBytes(${powerShellString(temporary)}))) { [System.IO.File]::Replace(${powerShellString(staged)},$target,$null); if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($target)) -cne [Convert]::ToBase64String([System.IO.File]::ReadAllBytes(${powerShellString(expected)}))) { throw 'Hosts recovery verification failed; backup retained' } } } } catch { Write-Warning 'Recovery failed; backup retained' } }; Write-Error $failure; exit 1 } finally { if (Test-Path ${powerShellString(staged)}) { Remove-Item ${powerShellString(staged)} -Force } }`
         const encoded = Buffer.from(command, 'utf16le').toString('base64')
         await this.execute('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference='Stop'; $child=Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','${encoded}'; exit $child.ExitCode`])
       } else {
@@ -143,7 +188,7 @@ export class HostsFileManager {
         // Exclusive lock serializes Vhostra writers across processes. Compare again
         // after preparing a metadata-preserving sibling, then rename atomically.
         const lock = shellQuote(`${this.hostsPath}.vhostra-lock`)
-        const command = `set -eu; mkdir ${lock} || exit 1; cleanup() { rm -f ${stage}; rmdir ${lock}; }; trap cleanup EXIT; cmp -s ${shellQuote(expected)} ${target}; cp -p ${target} ${shellQuote(backup)}; cp -p ${target} ${stage}; cat ${shellQuote(temporary)} > ${stage}; cmp -s ${shellQuote(expected)} ${target}; mv -f ${stage} ${target}; cmp -s ${shellQuote(temporary)} ${target}; rm -f ${shellQuote(backup)}`
+        const command = `set -eu; mkdir ${lock} || exit 1; written=0; cleanup() { result=$?; trap - EXIT; if [ "$result" -ne 0 ] && [ "$written" -eq 1 ] && cmp -s ${shellQuote(temporary)} ${target}; then if cp -p ${shellQuote(backup)} ${stage} && cmp -s ${shellQuote(temporary)} ${target} && mv -f ${stage} ${target} && cmp -s ${shellQuote(expected)} ${target}; then echo "Hosts write failed; original restored" >&2; else echo "Hosts recovery needs review; backup retained" >&2; fi; fi; rm -f ${stage}; rmdir ${lock}; exit "$result"; }; trap cleanup EXIT; cmp -s ${shellQuote(expected)} ${target} || { echo "Hosts file changed externally; reload and review" >&2; exit 1; }; cp -p ${target} ${shellQuote(backup)}; cp -p ${target} ${stage}; cat ${shellQuote(temporary)} > ${stage}; cmp -s ${shellQuote(expected)} ${target} || { echo "Hosts file changed externally; reload and review" >&2; exit 1; }; mv -f ${stage} ${target}; written=1; cmp -s ${shellQuote(temporary)} ${target} || { echo "Hosts write verification failed; backup retained for review" >&2; exit 1; }; rm -f ${shellQuote(backup)}`
         if (this.platform === 'darwin') await this.execute('osascript', ['-e', `do shell script ${appleScriptString(command)} with administrator privileges`])
         else await this.execute('pkexec', ['/bin/sh', '-c', command])
       }
@@ -151,7 +196,8 @@ export class HostsFileManager {
       recovery.status = 'completed'; await fs.writeFile(recoveryFile, JSON.stringify(recovery), { mode: 0o600 }).catch(() => undefined)
       await this.retainRecoverySnapshots().catch(() => undefined)
     } catch (error) {
-      throw new Error(`Hosts mapping requires attention. Administrator approval or the protected write failed, or the file changed while approval was pending. No mapping success was claimed. ${errorMessage(error)}`)
+      recovery.status = 'failed'; await fs.writeFile(recoveryFile, JSON.stringify(recovery), { mode: 0o600 }).catch(() => undefined)
+      throw new Error(`Hosts write was not confirmed. Administrator approval was cancelled, the protected write failed, or the file changed externally while approval was pending. Reload and review before retrying. Recovery backup: ${recoveryFile}. ${errorMessage(error)}`)
     } finally { await Promise.all([temporary, expected].map(file => fs.rm(file, { force: true }))) }
   }
 

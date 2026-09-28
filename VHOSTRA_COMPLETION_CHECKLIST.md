@@ -125,3 +125,13 @@ Earlier completion statements apply to their previous scope only. Current checke
 - [x] 52. EXECUTION BEHAVIOR
 
 Current evidence groups: 1–7 host mount/storage + server/import suites and root-picker UI; 8–11 actual Site logs and bounded selector/rotation; 12–20 native/live edit/aliases/Hosts + cancellation/manual editing; 21–27 new/backup setup + theme/reload/final gate; 28–34 native/live Keep/Remove/CLI/reset root preservation; 35–42 actual Supervisor/health/CLI/Resources; 43–44 code privilege/network/privacy audit; 45 PERFORMANCE renewed samples; 46 native flags/limits; 47–49 fresh vertical matrix/production search; 51 explicit external environment boundary. 50/52: production build and 66/66 automated tests passed; native renderer/IPC and lifecycle checks, sequential real Docker suites, final screenshot inspection, resource measurements, scoped cleanup and final cursor update completed. No locally implementable item remains open in this 52-requirement phase. External acceptance above remains unchecked; implementation was completed without a commit. The user subsequently authorized commit/push and requested the README light logo and Dashboard screenshot, which are included.
+
+
+## Manual Hosts editor correction — completed 2026-09-28
+
+- [x] Automatic Site/alias/delete/repair management remains ownership-restricted, with a separate native-write guard and unrelated-entry regression coverage.
+- [x] Explicit manual editor allows full-file editing, validates syntax, identifies/warns for owned mappings, shows a bounded diff and requires exact reviewed Save confirmation.
+- [x] Race detection before review/save and during approval; reload preserves the previous draft for user review/merge.
+- [x] Scoped native elevation, private backup, atomic write, verification and guarded recovery; cancellation leaves the protected file unchanged.
+- [x] Recalculate missing/conflicting Site mappings after successful edits; Repair stays explicit and does not overwrite unrelated conflicts.
+- [x] Production build, 78/78 automated tests and renewed native production UI/IPC workflow passed; dark review screenshot inspected. Real protected prompts remain external acceptance. The user subsequently approved committing and pushing the follow-up changes.

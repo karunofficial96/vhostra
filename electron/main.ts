@@ -319,7 +319,8 @@ function registerIpc() {
         try { return await listener(event, ...args); } finally { if (mutating) desktopMutation = false; }
     });
     handle("vhostra:inspect-hosts", () => hosts.inspect());
-    handle("vhostra:edit-hosts", (_event, contents: string, expected: string) => hosts.edit(contents, expected));
+    handle("vhostra:preview-hosts-edit", (_event, contents: string, expected: string) => hosts.previewEdit(contents, expected));
+    handle("vhostra:edit-hosts", (_event, contents: string, expected: string, reviewId: string) => hosts.edit(contents, expected, reviewId));
     handle("vhostra:preview-backup", async () => {
         pendingBackup = null;
         const choice = await dialog.showOpenDialog({ title: "Import existing Vhostra backup", properties: ["openFile"], filters: [{ name: "Vhostra configuration backup", extensions: ["json"] }] });
