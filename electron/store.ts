@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream, existsSync, promises as fs, readFileSync } from 'node:fs'
 import path from 'node:path'
+import { importedMetadata, type NativeImportPreview } from './config-import.js'
 
 export type WebServer = 'apache' | 'nginx' | 'openlitespeed'
 export type PhpVersion = '8.1' | '8.2' | '8.3' | '8.4' | '8.5'
@@ -10,9 +11,10 @@ export const resolveLatestSupportedPhpVersion = (): PhpVersion => supportedPhpVe
 export interface ServicePorts { http: number; https: number; mariadb: number; redis: number; memcached: number; phpMyAdmin: number }
 export type CloseBehavior = 'keep-services' | 'stop-services' | 'minimize-to-tray'
 export interface Settings { schemaVersion: 1; selectedWebServer: WebServer; selectedPhpVersion: PhpVersion; optionalServices: { redis: boolean; memcached: boolean }; php: { extensions: string[]; disabledExtensions: string[]; opcacheEnabled: boolean; cwebpEnabled: boolean }; startup: { launchAtLogin: boolean; startServicesOnLaunch: boolean; closeBehavior: CloseBehavior }; ports: ServicePorts }
+export interface OnboardingState { completed: boolean; theme: 'light' | 'dark' | 'system'; server: WebServer; php: PhpVersion; cache: 'none' | 'redis' | 'memcached' }
 export interface Screenshot { cacheFile: string; capturedAt: string; source: 'automatic' | 'manual' }
 export interface Site { id: string; name: string; documentRoot: string; url: string; vhostId: string; framework?: string; screenshot?: Screenshot; builtIn?: 'localhost'; createdAt: string; updatedAt: string }
-export interface VirtualHost { id: string; hostname: string; aliases: string[]; documentRoot: string; https: { enabled: boolean }; rewriteEnabled: boolean; redirects: []; rewrites: []; headers: []; logs: { access: boolean; error: boolean }; builtIn?: 'localhost' }
+export interface VirtualHost { id: string; hostname: string; aliases: string[]; documentRoot: string; https: { enabled: boolean }; rewriteEnabled: boolean; redirects: []; rewrites: []; headers: []; logs: { access: boolean; error: boolean }; indexFiles?: string[]; source?: { server: WebServer | 'litespeed-enterprise'; path: string; importedAt: string; raw: string; status: string; warnings: string[] }; preservedDirectives?: string[]; builtIn?: 'localhost' }
 export interface AppState { settings: Settings; sites: Site[]; virtualHosts: VirtualHost[] }
 
 export interface StoreLayout {
@@ -120,6 +122,11 @@ export class VhostraStore {
   }
 
   async initialize() { this.initialized ??= this.initializeOnce(); await this.initialized }
+  async getOnboarding(): Promise<OnboardingState> { await this.initialize(); return JSON.parse(await fs.readFile(path.join(this.layout.root, 'onboarding.json'), 'utf8')) }
+  async saveOnboarding(input: OnboardingState) {
+    if (!['light', 'dark', 'system'].includes(input.theme) || !validServers.has(input.server) || !validPhp.has(input.php) || !['none', 'redis', 'memcached'].includes(input.cache) || typeof input.completed !== 'boolean') throw new Error('Invalid setup preferences.')
+    await this.initialize(); await this.writeJson(path.join(this.layout.root, 'onboarding.json'), input); return input
+  }
   async updateLocalhostWelcome(runtimeMessage: string) { await this.initialize(); await this.writeLocalhostWelcome(runtimeMessage) }
   async getState(): Promise<AppState> { await this.initialize(); return { settings: await this.readSettings(), sites: await this.readRecords<Site>(this.layout.sites), virtualHosts: await this.readRecords<VirtualHost>(this.layout.virtualHosts) } }
   async getLocalhostUrl() { return localUrl((await this.readSettings()).ports.http) }
@@ -157,6 +164,33 @@ export class VhostraStore {
     await this.writeJson(this.recordPath(this.layout.virtualHosts, id), { ...host, rewriteEnabled: enabled })
     return this.getState()
   }
+  importNative(preview: NativeImportPreview) { return this.serialize(async () => {
+    if (preview.status === 'Invalid' || !preview.hosts.length) throw new Error('Invalid configuration cannot be imported.')
+    for (const host of preview.hosts) {
+      this.validateSiteInput({ name: host.hostname, documentRoot: host.documentRoot, url: `http://${host.hostname}`, aliases: host.aliases })
+      await this.assertAvailableHostnames([host.hostname, ...host.aliases])
+    }
+    const snapshot = path.join(this.layout.backups, `before-import-${new Date().toISOString().replace(/[:.]/g, '-')}.json`)
+    await this.exportBundle(snapshot)
+    const recovery = JSON.parse(await fs.readFile(snapshot, 'utf8')); recovery.manifest.automaticRecovery = { owner: 'vhostra', state: 'active', createdAt: new Date().toISOString() }; await this.writeJson(snapshot, recovery)
+    const created: Site[] = []
+    try {
+      const ports = (await this.getState()).settings.ports
+      for (const host of preview.hosts) {
+        const protocol = host.https.enabled ? 'https' : 'http'; const port = host.https.enabled ? ports.https : ports.http
+        const state = await this.addSiteRecord({ name: host.hostname, documentRoot: host.documentRoot, url: `${protocol}://${host.hostname}${port === (host.https.enabled ? 443 : 80) ? '' : `:${port}`}/`, aliases: host.aliases })
+        const site = state.sites.find(site => site.name === host.hostname)!; created.push(site)
+        const canonical = state.virtualHosts.find(item => item.id === site.vhostId)!
+        await this.writeJson(this.recordPath(this.layout.virtualHosts, canonical.id), { ...canonical, rewriteEnabled: host.rewriteEnabled, indexFiles: host.indexFiles, ...importedMetadata(preview) })
+      }
+      recovery.manifest.automaticRecovery.state = 'completed'; await this.writeJson(snapshot, recovery)
+      await this.retainCompletedImportSnapshots().catch(error => console.error('Import snapshot cleanup deferred:', error.message))
+      return { imported: created, backup: snapshot, message: `Imported ${created.length} canonical virtual host(s). ${preview.warnings.join(' ')}` }
+    } catch (error) {
+      for (const site of created) await this.removeSiteRecord(site.id)
+      throw error
+    }
+  }) }
   /** Static previews are capped and read only for the browser image request—never retained in app state. */
   async readScreenshot(siteId: string) {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(siteId)) return null
@@ -171,7 +205,11 @@ export class VhostraStore {
     } catch { return null }
   }
   async exportBundle(destination: string) {
-    const state = await this.getState(); const bundle = { manifest: { format: 'vhostra/config-bundle', schemaVersion: 1, bundleId: randomUUID(), createdAt: new Date().toISOString(), appVersion: '1.0.0', scopes: ['all'], excludedByDefault: ['website-content', 'database-content', 'passwords-and-secrets', 'private-tls-keys'], includesPrivateKeys: false, includesSecrets: false, entries: [{ id: 'settings', type: 'settings', relativePath: 'settings.json', ownership: 'vhostra-source' }, { id: 'sites', type: 'site', relativePath: 'sites/', ownership: 'vhostra-source' }, { id: 'virtual-hosts', type: 'virtual-host', relativePath: 'virtual-hosts/', ownership: 'vhostra-source' }] }, configuration: state }
+    const state = await this.getState();
+    // Native source can contain arbitrary secrets. Keep it locally, but do not
+    // put unclassified raw directives in the default secret-free portable export.
+    const portable = { ...state, virtualHosts: state.virtualHosts.map(host => host.source ? { ...host, source: { ...host.source, raw: undefined, warnings: [...host.source.warnings, 'Raw native source and preserved directives excluded from this secret-free export; retained in the original local canonical record.'] }, preservedDirectives: undefined } : host) };
+    const bundle = { manifest: { format: 'vhostra/config-bundle', schemaVersion: 1, bundleId: randomUUID(), createdAt: new Date().toISOString(), appVersion: '1.0.0', scopes: ['all'], excludedByDefault: ['website-content', 'database-content', 'passwords-and-secrets', 'private-tls-keys'], includesPrivateKeys: false, includesSecrets: false, entries: [{ id: 'settings', type: 'settings', relativePath: 'settings.json', ownership: 'vhostra-source' }, { id: 'sites', type: 'site', relativePath: 'sites/', ownership: 'vhostra-source' }, { id: 'virtual-hosts', type: 'virtual-host', relativePath: 'virtual-hosts/', ownership: 'vhostra-source' }] }, configuration: portable }
     await this.writeJson(destination, bundle); return destination
   }
   async previewBundle(source: string) {
@@ -205,11 +243,14 @@ export class VhostraStore {
       const input = { name: incoming.name, documentRoot: incoming.documentRoot, url: incoming.url, framework: incoming.framework, aliases: host.aliases }
       this.validateSiteInput(input)
       await this.assertAvailableHostnames([host.hostname, ...host.aliases])
+      if (host.indexFiles && (!Array.isArray(host.indexFiles) || !host.indexFiles.length || host.indexFiles.length > 16 || host.indexFiles.some(index => typeof index !== 'string' || !/^[a-zA-Z0-9_.-]+$/.test(index)))) throw new Error('Invalid imported index filename.')
       planned.push({ incoming, host })
       for (const name of [host.hostname, ...host.aliases]) knownHostnames.add(name.toLowerCase())
     }
     for (const { incoming, host } of planned) {
       await this.addSiteRecord({ name: incoming.name, documentRoot: incoming.documentRoot, url: incoming.url, framework: incoming.framework, aliases: host.aliases })
+      const saved = (await this.getState()).virtualHosts.find(item => item.hostname === host.hostname)!
+      await this.writeJson(this.recordPath(this.layout.virtualHosts, saved.id), { ...saved, rewriteEnabled: host.rewriteEnabled !== false, indexFiles: host.indexFiles, source: host.source, preservedDirectives: host.preservedDirectives })
       imported.push({ name: incoming.name, hostname: host.hostname, aliases: host.aliases })
     }
     recovery.manifest.automaticRecovery.state = 'completed'
@@ -236,6 +277,19 @@ export class VhostraStore {
   }
   private async initializeOnce() {
     await Promise.all(Object.values(this.directories()).map(directory => fs.mkdir(directory, { recursive: true })))
+    const onboardingFile = path.join(this.layout.root, 'onboarding.json')
+    if (!existsSync(onboardingFile)) {
+      let existing = false
+      try { this.validateSettings(this.normalizeSettings(JSON.parse(await fs.readFile(this.layout.settings, 'utf8')))); existing = true } catch { /* check legacy site/runtime evidence below */ }
+      if (!existing) {
+        try { const healthy = JSON.parse(await fs.readFile(path.join(path.dirname(this.layout.runtime.apache), 'healthy-state.json'), 'utf8')); this.validateSettings(this.normalizeSettings(healthy.settings)); existing = true } catch { /* no verified prior runtime */ }
+        for (const filename of await fs.readdir(this.layout.sites)) {
+          if (existing || !filename.endsWith('.json')) continue
+          try { const site = JSON.parse(await fs.readFile(path.join(this.layout.sites, filename), 'utf8')); if (!site.builtIn && typeof site.vhostId === 'string' && /^[a-f0-9-]{36}$/i.test(site.vhostId)) { this.validateSiteInput(site); existing = true } } catch { /* invalid legacy records are not onboarding evidence */ }
+        }
+      }
+      await this.writeJson(onboardingFile, { completed: existing, theme: 'system', server: defaults.selectedWebServer, php: defaults.selectedPhpVersion, cache: 'none' })
+    }
     await this.readSettings()
     await this.ensureLocalhostDefinition()
     await this.writeLocalhostWelcome()
@@ -247,7 +301,7 @@ export class VhostraStore {
   private recordPath(directory: string, id: string) { return path.join(directory, `${id}.json`) }
   private async readSettings() { try { const value = JSON.parse(await fs.readFile(this.layout.settings, 'utf8')) as Partial<Settings>; const normalized = this.normalizeSettings(value); this.validateSettings(normalized); if (!value.ports || !value.php || !value.php.disabledExtensions || !value.startup || !value.startup.closeBehavior) await this.writeJson(this.layout.settings, normalized); return normalized } catch { await this.writeJson(this.layout.settings, defaults); return { ...defaults, optionalServices: { ...defaults.optionalServices }, php: { ...defaults.php, extensions: [...defaults.php.extensions], disabledExtensions: [...defaults.php.disabledExtensions] }, startup: { ...defaults.startup }, ports: { ...defaultServicePorts } } } }
   private async readRecords<T>(directory: string) { const files = await fs.readdir(directory); const records = await Promise.all(files.filter(file => file.endsWith('.json')).map(async file => JSON.parse(await fs.readFile(path.join(directory, file), 'utf8')) as T)); return records }
-  private async writeJson(file: string, value: unknown) { await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 }) }
+  private async writeJson(file: string, value: unknown) { await fs.mkdir(path.dirname(file), { recursive: true }); const temporary = `${file}.${randomUUID()}.tmp`; try { await fs.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 }); await fs.rename(temporary, file) } finally { await fs.rm(temporary, { force: true }) } }
   private async ensureLocalhostDefinition() {
     const documentRoot = path.join(this.layout.sites, 'localhost', 'public'); const now = new Date().toISOString()
     await fs.mkdir(documentRoot, { recursive: true })

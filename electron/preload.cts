@@ -1,6 +1,12 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 
 const api = Object.freeze({
+  getOnboarding: () => ipcRenderer.invoke('vhostra:get-onboarding'),
+  saveOnboarding: (preferences: unknown) => ipcRenderer.invoke('vhostra:save-onboarding', preferences),
+  setupOnboarding: () => ipcRenderer.invoke('vhostra:setup-onboarding'),
+  previewNativeImport: (server?: string, directory = false) => ipcRenderer.invoke('vhostra:preview-native-import', server, directory),
+  applyNativeImport: () => ipcRenderer.invoke('vhostra:apply-native-import'),
+  getResources: (refreshStorage = false) => ipcRenderer.invoke('vhostra:get-resources', refreshStorage),
   getState: () => ipcRenderer.invoke('vhostra:get-state'),
   saveSettings: (settings: unknown) => ipcRenderer.invoke('vhostra:save-settings', settings),
   addSite: (input: unknown) => ipcRenderer.invoke('vhostra:add-site', input),

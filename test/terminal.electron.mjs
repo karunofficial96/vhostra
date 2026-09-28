@@ -15,6 +15,7 @@ app.whenReady().then(async () => {
   const settle = () => new Promise(resolve => setTimeout(resolve, 80))
   let release
   try {
+    ipcMain.handle('vhostra:get-onboarding', () => ({ preferences: { completed: true }, phpVersions: [] }))
     ipcMain.handle('vhostra:get-state', () => store.getState())
     ipcMain.handle('vhostra:get-runtime-status', () => runtime.current())
     runtime.subscribe(() => window.webContents.send('vhostra:runtime-status', runtime.current()))
@@ -56,7 +57,7 @@ app.whenReady().then(async () => {
     console.log('Production renderer: real Docker progress, active-only Expand, secret redaction, scroll-back/follow, bundled font, light/dark bounds passed.')
   } finally {
     release?.(); runtime.dispose(); window.destroy()
-    ipcMain.removeHandler('vhostra:get-state'); ipcMain.removeHandler('vhostra:get-runtime-status')
+    ipcMain.removeHandler('vhostra:get-onboarding'); ipcMain.removeHandler('vhostra:get-state'); ipcMain.removeHandler('vhostra:get-runtime-status')
     await rm(root, { recursive: true, force: true }); app.quit()
   }
 }).catch(error => { console.error(error); app.exit(1) })

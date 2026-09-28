@@ -1,3 +1,4 @@
+import { generatedMarker, cleanObsoleteGenerated, cleanObsoleteRuntime, restoreGenerated } from "./generated-config.js";
 import { redactProgress } from "./progress.js";
 import { createHash, randomBytes } from "node:crypto";
 import {
@@ -107,6 +108,20 @@ export class DockerRuntimeController {
         if (!ids.length) return null;
         return parseJsonLines(await this.docker(["stats", "--no-stream", "--format", "{{json .}}", ...ids]));
     }
+    private resourceStorageCache: { measuredAt: number; value: { imageBytes: number; writableLayerBytes: number; note: string } } | null = null;
+    async resourceStorage() {
+        if (!existsSync(this.composeFile)) return null;
+        if (this.resourceStorageCache && Date.now() - this.resourceStorageCache.measuredAt < 300000) return this.resourceStorageCache.value;
+        const ids = (await this.docker(["ps", "--all", "--filter", `label=${managedLabel}`, "--filter", `label=com.docker.compose.project=${this.scope}`, "--filter", "label=com.docker.compose.service=runtime", "--quiet"])).trim().split(/\s+/).filter(Boolean);
+        if (!ids.length) return null;
+        const containers = JSON.parse(await this.docker(["inspect", "--size", ...ids]));
+        const cachedIds = (await this.docker(["image", "ls", "--filter", "label=com.vhostra.managed=true", "--filter", "label=com.vhostra.purpose=runtime-image", "--quiet", "--no-trunc"])).trim().split(/\s+/).filter(Boolean);
+        const imageIds = [...new Set<string>([...containers.map((item: { Image: string }) => item.Image), ...cachedIds])];
+        const images = JSON.parse(await this.docker(["image", "inspect", ...imageIds]));
+        const value = { imageBytes: images.filter((item: { Config?: { Labels?: Record<string, string> } }) => item.Config?.Labels?.['com.vhostra.managed'] === 'true' && item.Config.Labels['com.vhostra.purpose'] === 'runtime-image').reduce((sum: number, item: { Size: number }) => sum + item.Size, 0),
+            writableLayerBytes: containers.reduce((sum: number, item: { SizeRw?: number }) => sum + (item.SizeRw ?? 0), 0), note: 'Exact current Vhostra project writable layers and positively labeled managed images/cache across Vhostra profiles, deduplicated by image ID. Image sizes include shared layers; volumes are host bind mounts counted in local storage. Docker Desktop and other projects are excluded.' };
+        this.resourceStorageCache = { measuredAt: Date.now(), value }; return value;
+    }
     async refresh() {
         if (this.refreshOperation) return this.refreshOperation;
         const result = this.refreshInternal();
@@ -213,6 +228,7 @@ export class DockerRuntimeController {
                     services: ["runtime"],
                 });
                 await this.healthCheck(state.settings.selectedWebServer);
+                await this.cleanGenerated(state).catch(error => console.error("Generated cleanup deferred:", error.message));
                 await fs.writeFile(
                     path.join(this.runtimeRoot, "healthy-state.json"),
                     JSON.stringify(state),
@@ -234,7 +250,8 @@ export class DockerRuntimeController {
             },
         );
     }
-    async restart() {
+    async restart(preserveStopped = false) {
+        const restoreStopped = preserveStopped && this.snapshot.state !== "running";
         return this.runExclusive(
             "stopping",
             "Restarting Vhostra services…",
@@ -283,6 +300,7 @@ export class DockerRuntimeController {
                         path.join(backup, "runtime"),
                         { recursive: true, verbatimSymlinks: true },
                     );
+                    await fs.cp(this.layout.configuration.generated, path.join(backup, "generated"), { recursive: true, verbatimSymlinks: true });
                     if (
                         previous &&
                         (previous.settings.selectedWebServer !==
@@ -402,10 +420,17 @@ export class DockerRuntimeController {
                         JSON.stringify(state),
                         { mode: 0o600 },
                     );
+                    if (restoreStopped) await this.compose(["stop"]);
                     await this.refresh();
+                    await this.cleanGenerated(state).catch(error => console.error("Generated cleanup deferred:", error.message));
                     recoveredOrPromoted = true;
                 } catch (error) {
                     this.set({ state: "starting", message: "Recovering runtime replacement; rolling back to verified configuration…", services: ["runtime"] });
+                    this.appendProgress(`Replacement failed: ${error instanceof Error ? error.message : String(error)}`);
+                    if (candidate) {
+                        const output = await candidate.compose(["logs", "--no-color", "--tail", "60", "runtime"]).catch(() => "Candidate logs unavailable.");
+                        for (const line of output.split(/\r?\n/)) this.appendProgress(`Candidate failure: ${line}`);
+                    }
                     if (candidate)
                         await candidate
                             .compose(["down"])
@@ -419,15 +444,17 @@ export class DockerRuntimeController {
                                 this.runtimeRoot,
                                 { recursive: true, force: true },
                             );
+                            await restoreGenerated(this.layout.configuration.generated, path.join(backup, "generated"));
                             await this.compose(["up", "--detach", "--no-build"]);
                             await this.provisionPhpMyAdmin();
                             await this.healthCheck(
                                 previous.settings.selectedWebServer,
                                 previous,
                             );
+                            if (restoreStopped) await this.compose(["stop"]);
                             recoveredOrPromoted = true;
                         } catch (recoveryError) {
-                            throw new Error(`Runtime replacement and recovery failed. Recovery files were retained at ${backup}. ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`);
+                            throw new Error(`Runtime replacement failed: ${error instanceof Error ? error.message : String(error)}. Runtime replacement and recovery failed. Recovery files were retained at ${backup}. ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`);
                         }
                         throw new Error(
                             `Runtime replacement rolled back to the verified previous configuration. ${error instanceof Error ? error.message : String(error)}`,
@@ -451,6 +478,7 @@ export class DockerRuntimeController {
     async applyConfiguration() {
         const before = this.snapshot.state;
         if (before === "running") return this.restart();
+        if (existsSync(this.composeFile) && existsSync(path.join(this.runtimeRoot, "healthy-state.json"))) return this.restart(true);
         return this.refresh();
     }
     async checkPort(port: number) {
@@ -1362,6 +1390,18 @@ export class DockerRuntimeController {
         this.appendProgress("✓ Docker runtime available");
     }
     private async generate(state: AppState) {
+        const hostname = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+        const names = new Set<string>();
+        for (const host of state.virtualHosts) {
+            if (!/^(?:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}|vhostra-localhost-vhost)$/i.test(host.id) || !Array.isArray(host.aliases)
+                || [host.hostname, ...host.aliases].some(name => typeof name !== 'string' || !hostname.test(name))
+                || !path.isAbsolute(host.documentRoot) || /[\r\n\0]/.test(host.documentRoot)
+                || (host.indexFiles && (!Array.isArray(host.indexFiles) || !host.indexFiles.length || host.indexFiles.length > 16 || host.indexFiles.some(index => typeof index !== 'string' || !/^[a-z0-9_.-]+$/i.test(index))))) throw new Error('Invalid canonical virtual-host fields; repair the definition before generating native configuration.');
+            for (const name of [host.hostname, ...host.aliases]) { if (names.has(name.toLowerCase())) throw new Error(`Canonical hostname collision: ${name}`); names.add(name.toLowerCase()); }
+            const site = state.sites.find(site => site.vhostId === host.id);
+            if (!site || site.documentRoot !== host.documentRoot) throw new Error(`Canonical site and virtual-host roots disagree for ${host.hostname}.`);
+        }
+        this.resourceStorageCache = null;
         await fs.mkdir(this.runtimeRoot, { recursive: true });
         await Promise.all(
             [
@@ -1552,6 +1592,10 @@ export class DockerRuntimeController {
             return result;
         });
     }
+    private async cleanGenerated(state: AppState) {
+        await cleanObsoleteGenerated(this.layout.configuration.generated, state.settings.selectedWebServer);
+        await cleanObsoleteRuntime(this.layout, state.settings.selectedWebServer, state.virtualHosts.map(host => host.id));
+    }
     private async writeServerConfiguration(
         server: WebServer,
         phpVersion: PhpVersion,
@@ -1577,7 +1621,7 @@ export class DockerRuntimeController {
                         this.layout.runtime.openLiteSpeed,
                         "vhostra-maps.conf",
                     ),
-                    openLiteSpeedConfig(managedMounts),
+                    generatedMarker + openLiteSpeedConfig(managedMounts),
                     { mode: 0o600 },
                 ),
                 fs.writeFile(
@@ -1585,7 +1629,7 @@ export class DockerRuntimeController {
                         this.layout.runtime.openLiteSpeed,
                         "vhostra-vhosts.conf",
                     ),
-                    openLiteSpeedVirtualHosts(managedMounts),
+                    generatedMarker + openLiteSpeedVirtualHosts(managedMounts),
                     { mode: 0o600 },
                 ),
                 ...managedMounts.map(({ host, container }) =>
@@ -1595,7 +1639,7 @@ export class DockerRuntimeController {
                             "sites",
                             `${host.id}.conf`,
                         ),
-                        openLiteSpeedSiteConfig(host, container),
+                        generatedMarker + openLiteSpeedSiteConfig(host, container),
                         { mode: 0o600 },
                     ),
                 ),
@@ -1608,12 +1652,12 @@ export class DockerRuntimeController {
             await Promise.all([
                 fs.writeFile(
                     path.join(this.layout.runtime.apache, "vhostra.conf"),
-                    config,
+                    generatedMarker + config,
                     { mode: 0o600 },
                 ),
                 fs.writeFile(
                     path.join(generated, "apache-vhosts.conf"),
-                    config,
+                    generatedMarker + config,
                     { mode: 0o600 },
                 ),
             ]);
@@ -1622,12 +1666,12 @@ export class DockerRuntimeController {
             await Promise.all([
                 fs.writeFile(
                     path.join(this.layout.runtime.nginx, "default.conf"),
-                    config,
+                    generatedMarker + config,
                     { mode: 0o600 },
                 ),
                 fs.writeFile(
                     path.join(generated, "nginx-vhosts.conf"),
-                    config,
+                    generatedMarker + config,
                     { mode: 0o600 },
                 ),
             ]);
@@ -1649,7 +1693,7 @@ export class DockerRuntimeController {
                         this.layout.runtime.openLiteSpeed,
                         "vhostra-maps.conf",
                     ),
-                    main,
+                    generatedMarker + main,
                     { mode: 0o600 },
                 ),
                 fs.writeFile(
@@ -1657,7 +1701,7 @@ export class DockerRuntimeController {
                         this.layout.runtime.openLiteSpeed,
                         "vhostra-vhosts.conf",
                     ),
-                    virtualHosts,
+                    generatedMarker + virtualHosts,
                     { mode: 0o600 },
                 ),
                 ...managedMounts.map(({ host, container }) =>
@@ -1667,13 +1711,13 @@ export class DockerRuntimeController {
                             "sites",
                             `${host.id}.conf`,
                         ),
-                        openLiteSpeedSiteConfig(host, container),
+                        generatedMarker + openLiteSpeedSiteConfig(host, container),
                         { mode: 0o600 },
                     ),
                 ),
                 fs.writeFile(
                     path.join(generated, "openlitespeed-vhosts.conf"),
-                    `${main}\n${virtualHosts}`,
+                    generatedMarker + `${main}\n${virtualHosts}\n${managedMounts.map(({ host, container }) => `# ${host.hostname} (${host.id})\n${openLiteSpeedSiteConfig(host, container)}`).join("\n")}`,
                     { mode: 0o600 },
                 ),
             ]);
@@ -1682,7 +1726,7 @@ export class DockerRuntimeController {
         await fs.writeFile(
             path.join(generated, "runtime-selection.json"),
             JSON.stringify(
-                { server, phpVersion, generatedAt: new Date().toISOString() },
+                { owner: "vhostra", schemaVersion: 1, server, phpVersion, generatedAt: new Date().toISOString() },
                 null,
                 2,
             ),
@@ -1748,7 +1792,7 @@ export class DockerRuntimeController {
         const ready = async (port: number, requestPath = "/") => {
             for (let attempt = 0; attempt < 20; attempt += 1) {
                 const response = await requestLocalHttp(port, requestPath);
-                if (response.includes("200")) return response;
+                if (/^HTTP\/\d(?:\.\d)? 200(?:\s|$)/.test(response)) return response;
                 await wait(1_000);
             }
             return "";
@@ -2199,7 +2243,8 @@ const requestLocalHttp = (port: number, requestPath = "/") =>
             ),
         );
         socket.on("data", (data) => {
-            output += String(data);
+            output += String(data).slice(0, Math.max(0, 1024 * 1024 - output.length));
+            if (output.length >= 1024 * 1024) { socket.destroy(); resolve(output); }
         });
         socket.on("error", () => resolve(""));
         socket.on("timeout", () => {
@@ -2246,7 +2291,7 @@ function apacheConfig(
         container: string;
     }>,
 ) {
-    return `ServerTokens Prod\nServerSignature Off\nTraceEnable Off\nProxyPreserveHost On\nRequestHeader set X-Forwarded-Proto http\nRequestHeader set X-Vhostra-Request-Line "expr=%{THE_REQUEST}"\nDirectoryIndex index.php index.html\n${mounts.map(({ host, container }) => `<VirtualHost *:8088>\n  ServerName ${host.hostname}\n  ${host.aliases.map((alias) => `ServerAlias ${alias}`).join("\n  ")}\n  DocumentRoot ${container}\n  ProxyPassMatch "^/(.*\\.php(?:/.*)?)$" "http://127.0.0.1:8089/$1"\n  <Directory ${container}>\n    Options FollowSymLinks\n    AllowOverride ${host.rewriteEnabled === false ? "None" : "FileInfo"}\n    Require all granted\n  </Directory>\n  ${host.rewriteEnabled === false ? "RewriteEngine Off" : "RewriteEngine On"}\n  ErrorLog /proc/self/fd/2\n  CustomLog /proc/self/fd/1 combined\n</VirtualHost>`).join("\n\n")}\n`;
+    return `ServerTokens Prod\nServerSignature Off\nTraceEnable Off\nProxyPreserveHost On\nRequestHeader set X-Forwarded-Proto http\nRequestHeader set X-Vhostra-Request-Line "expr=%{THE_REQUEST}"\nDirectoryIndex index.php index.html\n${mounts.map(({ host, container }) => `<VirtualHost *:8088>\n  ServerName ${host.hostname}\n  ${host.aliases.map((alias) => `ServerAlias ${alias}`).join("\n  ")}\n  DocumentRoot ${container}\n  DirectoryIndex ${host.builtIn === "localhost" ? "index.html" : (host.indexFiles ?? ["index.php", "index.html"]).join(" ")}\n  ProxyPassMatch "^/(.*\\.php(?:/.*)?)$" "http://127.0.0.1:8089/$1"\n  <Directory ${container}>\n    Options FollowSymLinks\n    AllowOverride ${host.rewriteEnabled === false ? "None" : "FileInfo"}\n    Require all granted\n  </Directory>\n  ${host.rewriteEnabled === false ? "RewriteEngine Off" : "RewriteEngine On"}\n  ErrorLog /proc/self/fd/2\n  CustomLog /proc/self/fd/1 combined\n</VirtualHost>`).join("\n\n")}\n`;
 }
 function nginxConfig(
     mounts: Array<{
@@ -2255,7 +2300,7 @@ function nginxConfig(
     }>,
     httpsEnabled: boolean,
 ) {
-    return `${mounts.map(({ host, container }) => `server {\n  server_tokens off;\n  listen 8088;\n  ${httpsEnabled ? "listen 8443 ssl;\n  ssl_certificate /etc/vhostra/certificates/public/localhost.pem;\n  ssl_certificate_key /etc/vhostra/certificates/private/localhost.key;\n  ssl_protocols TLSv1.2 TLSv1.3;" : ""}\n  server_name ${[host.hostname, ...host.aliases].join(" ")};\n  root ${container};\n  index index.php index.html;\n  access_log /dev/stdout;\n  error_log /dev/stderr;\n  location ~ /\\. { deny all; }\n  # Vhostra managed WordPress-compatible front controller. Unsupported .htaccess directives remain reported in the neutral model.\n  location / { try_files $uri $uri/ ${host.rewriteEnabled === false ? "=404" : "/index.php?$query_string"}; }\n  location ~ \\.php(?:/|$) { proxy_set_header Host $http_host; proxy_set_header X-Forwarded-Proto $scheme; proxy_set_header X-Vhostra-Request-Line ""; proxy_set_header X-Vhostra-Request-Uri $request_uri; proxy_pass http://127.0.0.1:8089; }\n}\n`).join("\n")}`;
+    return `${mounts.map(({ host, container }) => `server {\n  server_tokens off;\n  listen 8088;\n  ${httpsEnabled ? "listen 8443 ssl;\n  ssl_certificate /etc/vhostra/certificates/public/localhost.pem;\n  ssl_certificate_key /etc/vhostra/certificates/private/localhost.key;\n  ssl_protocols TLSv1.2 TLSv1.3;" : ""}\n  server_name ${[host.hostname, ...host.aliases].join(" ")};\n  root ${container};\n  index ${(host.indexFiles ?? ["index.php", "index.html"]).join(" ")};\n  access_log /dev/stdout;\n  error_log /dev/stderr;\n  location ~ /\\. { deny all; }\n  # Vhostra managed WordPress-compatible front controller. Unsupported .htaccess directives remain reported in the neutral model.\n  location / { try_files $uri $uri/ ${host.rewriteEnabled === false ? "=404" : "/index.php?$query_string"}; }\n  location ~ \\.php(?:/|$) { proxy_set_header Host $http_host; proxy_set_header X-Forwarded-Proto $scheme; proxy_set_header X-Vhostra-Request-Line ""; proxy_set_header X-Vhostra-Request-Uri $request_uri; proxy_pass http://127.0.0.1:8089; }\n}\n`).join("\n")}`;
 }
 function openLiteSpeedConfig(
     mounts: Array<{
@@ -2282,7 +2327,7 @@ function openLiteSpeedSiteConfig(
     host: AppState["virtualHosts"][number],
     container: string,
 ) {
-    return `docRoot ${container}/\nindex {\n  indexFiles index.php,index.html\n}\nrewrite {\n  enable ${host.rewriteEnabled === false ? "0" : "1"}\n  autoLoadHtaccess ${host.rewriteEnabled === false ? "0" : "1"}\n}\ncontext / {\n  allowBrowse 1\n  location $DOC_ROOT/\n}\naccessControl {\n  deny\n  allow *\n}\n`;
+    return `docRoot ${container}/\nindex {\n  indexFiles ${(host.indexFiles ?? ["index.php", "index.html"]).join(",")}\n}\nrewrite {\n  enable ${host.rewriteEnabled === false ? "0" : "1"}\n  autoLoadHtaccess ${host.rewriteEnabled === false ? "0" : "1"}\n}\ncontext / {\n  allowBrowse 1\n  location $DOC_ROOT/\n}\naccessControl {\n  deny\n  allow *\n}\n`;
 }
 
 function singleRuntimeComposeYaml(

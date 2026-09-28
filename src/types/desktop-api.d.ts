@@ -5,7 +5,16 @@ export interface SiteInput { name: string; documentRoot: string; url: string; fr
 export interface SiteUpdate extends SiteInput { id: string }
 export interface HostsMappingResult { installed: string[]; alreadyMapped: string[]; conflicts: Array<{ hostname: string; address: string }>; message: string }
 
+export interface OnboardingPreferences { completed: boolean; theme: 'light' | 'dark' | 'system'; server: VhostraSettings['selectedWebServer']; php: VhostraSettings['selectedPhpVersion']; cache: 'none' | 'redis' | 'memcached' }
+export interface NativeImportPreview { source: string; server: string; status: string; hosts: Array<{ hostname: string; aliases: string[]; documentRoot: string; https: { enabled: boolean }; rewriteEnabled: boolean; indexFiles: string[] }>; warnings: string[]; preservedDirectives: string[] }
+export interface ResourceReport { application: { cpuPercent: number; ramBytes: number; processes: number }; runtime: Array<{ CPUPerc: string; MemUsage: string }> | null; runtimeError: string | null; dockerStorage: { imageBytes: number; writableLayerBytes: number; note: string } | null; storage: { measuredAt: string; categories: Array<{ label: string; bytes: number; partial: boolean }>; localTotalBytes: number; note: string } }
 export interface VhostraDesktopApi {
+  getOnboarding(): Promise<{ preferences: OnboardingPreferences; phpVersions: VhostraSettings['selectedPhpVersion'][] }>
+  saveOnboarding(preferences: OnboardingPreferences): Promise<OnboardingPreferences>
+  setupOnboarding(): Promise<VhostraState>
+  previewNativeImport(server?: 'apache' | 'nginx' | 'openlitespeed' | 'litespeed-enterprise', directory?: boolean): Promise<NativeImportPreview | null>
+  applyNativeImport(): Promise<{ message: string; mapping: HostsMappingResult }>
+  getResources(refreshStorage?: boolean): Promise<ResourceReport>
   getState(): Promise<VhostraState>
   saveSettings(settings: VhostraSettings): Promise<VhostraSettings>
   addSite(input: SiteInput): Promise<{ state: VhostraState; mapping?: HostsMappingResult }>

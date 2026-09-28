@@ -16,10 +16,11 @@ const fetchHost = (url, options) => new Promise((resolve, reject) => {
     response.on('end', () => resolve({ status: response.statusCode, headers: response.headers, text: async () => body }));
   }); request.on('error', reject);
 })
-import { mkdtemp, rm, writeFile, chmod } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile, chmod, readFile, readdir } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { parseNativeConfiguration } from '../dist-electron/config-import.js'
 import { VhostraStore } from '../dist-electron/store.js'
 import { DockerRuntimeController } from '../dist-electron/runtime.js'
 const root = await mkdtemp(path.join(os.tmpdir(), 'vhostra-servers-'))
@@ -29,10 +30,14 @@ const store = new VhostraStore(root)
 const runtime = new DockerRuntimeController(store.layout, () => store.getState(), undefined, scope)
 let lastMessage = ''
 let streamedLines = 0
+let completed = false
+let printedLines = 0
 runtime.subscribe(() => {
   const snapshot = runtime.current()
   if (snapshot.message !== lastMessage) { lastMessage = snapshot.message; console.log(snapshot.message) }
   if (snapshot.progress) {
+    for (const line of snapshot.progress.lines.slice(Math.max(0, snapshot.progress.lines.length - (snapshot.progress.total - printedLines)))) console.log(line)
+    printedLines = snapshot.progress.total
     streamedLines = Math.max(streamedLines, snapshot.progress.total)
     assert.doesNotMatch(snapshot.progress.lines.join('\n'), /(?:MARIADB_ROOT_PASSWORD|VHOSTRA_PMA_PASSWORD|VHOSTRA_PMA_BLOWFISH_SECRET)=[^*\s]/)
   }
@@ -46,7 +51,18 @@ try {
   await chmod(siteRoot, 0o755)
   await writeFile(path.join(siteRoot, 'index.php'), '<?php echo "permalink:" . $_SERVER["REQUEST_URI"] . ":php:" . PHP_VERSION;')
   await writeFile(path.join(siteRoot, '.htaccess'), 'RewriteEngine On\nRewriteCond %{REQUEST_FILENAME} !-f\nRewriteCond %{REQUEST_FILENAME} !-d\nRewriteRule . /index.php [L]\n')
-  await store.addSite({ name: 'Permalink probe', documentRoot: siteRoot, url: 'http://permalink.test:29180/' })
+  for (const [server, hostname, config] of [
+    ['apache', 'permalink.test', `<VirtualHost *:80>\nServerName permalink.test\nServerAlias www.permalink.test\nDocumentRoot "${siteRoot}"\nRewriteEngine On\n</VirtualHost>`],
+    ['nginx', 'nginx-import.test', `server { server_name nginx-import.test www.nginx-import.test; root ${siteRoot}; index index.php index.html; location / { try_files $uri $uri/ /index.php?$query_string; } }`],
+    ['openlitespeed', 'ols-import.test', `vhDomain ols-import.test\nvhAliases www.ols-import.test\ndocRoot ${siteRoot}\nrewrite {\n enable 1\n}`],
+    ['litespeed-enterprise', 'enterprise-import.test', `vhDomain enterprise-import.test\nvhAliases www.enterprise-import.test\ndocRoot ${siteRoot}\nrewrite {\n enable 1\n}`],
+  ]) {
+    const preview = parseNativeConfiguration(config, `/previous/${hostname}.conf`, server)
+    assert.notEqual(preview.status, 'Invalid', JSON.stringify(preview))
+    await store.importNative(preview)
+  }
+  const canonicalBefore = JSON.stringify((await store.getState()).virtualHosts)
+
   const requiredOwner = net.createServer(socket => socket.destroy())
   await listen(requiredOwner, settings.ports.http)
   try { await assert.rejects(runtime.start(), /cannot bind required host ports/) }
@@ -81,6 +97,14 @@ try {
     assert.match(html, /permalink:.*php:8\.3/)
     const processName = server === 'openlitespeed' ? 'openlitespeed' : server === 'apache' ? 'apache2' : 'nginx'
     execFileSync('docker', ['exec', `${scope}-runtime-1`, 'pgrep', '-x', processName])
+    assert.equal(JSON.stringify((await store.getState()).virtualHosts), canonicalBefore)
+    const generated = await readdir(store.layout.configuration.generated)
+    assert.deepEqual(generated.filter(name => name.endsWith('-vhosts.conf')), [`${server}-vhosts.conf`])
+    for (const hostname of ['www.permalink.test', 'nginx-import.test', 'www.nginx-import.test', 'ols-import.test', 'www.ols-import.test', 'enterprise-import.test', 'www.enterprise-import.test']) {
+      const response = await fetchHost('http://127.0.0.1:29180/article/imported?probe=1', { headers: { Host: hostname } })
+      assert.equal(response.status, 200, `${server} imported alias ${hostname}`)
+      assert.match(await response.text(), /permalink:.*php:8\.3/)
+    }
     console.log(`${server} selected listener, PHP, phpMyAdmin, and permalink routing passed.`)
   }
   const phpBefore = await store.getState()
@@ -103,6 +127,7 @@ try {
     console.log(`${id} CLI enable/restart/disable and shared controller stop/start passed.`)
   }
   const before = await store.getState()
+  const generatedBeforeRollback = await readFile(path.join(store.layout.configuration.generated, 'nginx-vhosts.conf'), 'utf8')
   const health = runtime.healthCheck.bind(runtime)
   runtime.healthCheck = async (server, verified) => {
     if (server === 'apache' && !verified) throw new Error('Injected final promotion health failure')
@@ -112,13 +137,24 @@ try {
   await assert.rejects(runtime.restart(), /rolled back/)
   await store.saveSettings(before.settings)
   runtime.healthCheck = health
+  assert.equal(await readFile(path.join(store.layout.configuration.generated, 'nginx-vhosts.conf'), 'utf8'), generatedBeforeRollback)
+  assert.ok(!(await readdir(store.layout.configuration.generated)).includes('apache-vhosts.conf'))
   assert.equal((await fetchHost('http://127.0.0.1:29180/vhostra-health.php', { headers: { Host: 'localhost' } })).status, 200)
   execFileSync('docker', ['exec', `${scope}-runtime-1`, 'pgrep', '-x', 'nginx'])
   console.log('Candidate promotion health failure restored the prior Nginx runtime.')
+  await runtime.stop()
+  await store.saveSettings({ ...before.settings, selectedWebServer: 'openlitespeed' })
+  await runtime.applyConfiguration()
+  assert.equal(runtime.current().state, 'stopped')
+  assert.deepEqual((await readdir(store.layout.configuration.generated)).filter(name => name.endsWith('-vhosts.conf')), ['openlitespeed-vhosts.conf'])
+  assert.equal(JSON.stringify((await store.getState()).virtualHosts), canonicalBefore)
+  console.log('Stopped server switch validated a candidate, retained canonical JSON/data and returned to stopped state.')
+  completed = true
 } finally {
   runtime.dispose()
   if (httpsOwner?.listening) await close(httpsOwner)
   const runtimeRoot = path.dirname(store.layout.runtime.apache)
+  if (!completed) { console.error(`Failure diagnostics retained at ${root}`); try { console.error(execFileSync('docker', ['logs', '--tail', '100', `${scope}-runtime-1`], { encoding: 'utf8' })) } catch {} }
   try { execFileSync('docker', ['compose', '-p', scope, '--project-directory', runtimeRoot, '--env-file', path.join(runtimeRoot, '.env'), '-f', path.join(runtimeRoot, 'compose.yml'), 'down'], { stdio: 'inherit' }) }
-  finally { await Promise.all([root, siteRoot].map(directory => rm(directory, { recursive: true, force: true }))) }
+  finally { if (completed) await Promise.all([root, siteRoot].map(directory => rm(directory, { recursive: true, force: true }))) }
 }

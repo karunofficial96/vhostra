@@ -108,7 +108,7 @@ if [ "${VHOSTRA_HTTPS:-false}" = true ]; then
   fi
 fi
 
-if [ "${VHOSTRA_HTTPS:-false}" = true ]; then
+if [ "${VHOSTRA_HTTPS:-false}" = true ] && [ "${VHOSTRA_WEB_SERVER:-openlitespeed}" = openlitespeed ]; then
   cat >> /usr/local/lsws/conf/httpd_config.conf <<'TLS'
 listener VhostraTLS {
   address *:8443
@@ -121,7 +121,9 @@ TLS
   printf '}\n' >> /usr/local/lsws/conf/httpd_config.conf
 fi
 
-mkdir -p /var/log/vhostra /var/lib/mysql /var/www/html
+# Preserve the stock protected context's authentication policy while providing
+# its empty managed directory for strict native configuration validation.
+mkdir -p /var/log/vhostra /var/lib/mysql /var/www/html/protected
 # This is a Vhostra-managed built-in document root. OLS deliberately rejects
 # symlinks which leave its vhost root, so seed the immutable bundled source on
 # first use instead of exposing it through a cross-root link. It remains in the
@@ -135,6 +137,8 @@ sed "s/__VHOSTRA_PMA_PASSWORD__/${VHOSTRA_PMA_PASSWORD:?}/g" /usr/share/phpmyadm
 chmod 0644 /var/www/html/phpmyadmin/config.inc.php
 # Public Vhostra-owned files must be readable by the selected frontend worker.
 chmod -R a+rX /var/www/html
+# Validate generated native syntax before any managed web/database process starts.
+/usr/local/bin/vhostra-web-server --validate
 if [ ! -d /var/lib/mysql/mysql ]; then
   mariadb-install-db --user=mysql --datadir=/var/lib/mysql
 fi

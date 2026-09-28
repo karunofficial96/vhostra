@@ -10,8 +10,9 @@ setTimeout(() => { console.error('Native migration acceptance timed out'); app.e
 app.whenReady().then(async () => {
   const destination = await mkdtemp(path.join(os.tmpdir(), 'vhostra-native-migration-'))
   let resultCode = 0
+  let session
   try {
-    const { applicationSession } = await import('../dist-electron/main.js')
+    const { applicationSession } = await import('../dist-electron/main.js'); session = applicationSession
     await new Promise(resolve => setTimeout(resolve, 500))
     const window = applicationSession().window
     if (window.webContents.isLoading()) await new Promise(resolve => window.webContents.once('did-finish-load', resolve))
@@ -35,6 +36,8 @@ app.whenReady().then(async () => {
     console.log('Actual desktop migration IPC: real stages, one progress session across controllers, concurrent write protection, completion cleanup and verified pointer passed.')
   } catch (error) { console.error(error); resultCode = 1 } finally {
     app.releaseSingleInstanceLock()
-    await rm(destination, { recursive: true, force: true }); await rm(profile, { recursive: true, force: true }); app.exit(resultCode)
+    session?.().window?.destroy()
+    const runtime = session?.().runtime; runtime?.dispose(); await runtime?.pauseBackgroundWork()
+    await rm(destination, { recursive: true, force: true, maxRetries: 5, retryDelay: 150 }); await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 150 }); app.exit(resultCode)
   }
 }).catch(error => { console.error(error); app.exit(1) })

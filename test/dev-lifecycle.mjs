@@ -5,7 +5,10 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 const pause=ms=>new Promise(r=>setTimeout(r,ms))
-const ps=()=>execFileSync('ps',['-axo','pid,ppid,pgid,%cpu,rss,comm'],{encoding:'utf8'}).trim().split('\n').slice(1).map(line=>{const [pid,ppid,pgid,cpu,rss,...comm]=line.trim().split(/\s+/);return {pid:+pid,ppid:+ppid,pgid:+pgid,cpu:+cpu,rssKiB:+rss,comm:comm.join(' ')}})
+const ps=()=>{
+ const argumentsByPid=new Map(execFileSync('ps',['-axo','pid,args'],{encoding:'utf8'}).trim().split('\n').slice(1).map(line=>{const match=line.trim().match(/^(\d+)\s+(.*)$/);return [+match[1],match[2]]}))
+ return execFileSync('ps',['-axo','pid,ppid,pgid,%cpu,rss,comm'],{encoding:'utf8'}).trim().split('\n').slice(1).map(line=>{const [pid,ppid,pgid,cpu,rss,...comm]=line.trim().split(/\s+/);return {pid:+pid,ppid:+ppid,pgid:+pgid,cpu:+cpu,rssKiB:+rss,comm:comm.join(' '),args:argumentsByPid.get(+pid)??''}})
+}
 const descendants=(rows,pid)=>{const found=new Set([pid]);for(let n=0;n<rows.length;n++)for(const row of rows)if(found.has(row.ppid))found.add(row.pid);return rows.filter(row=>found.has(row.pid))}
 for(const mode of ['interrupt-startup','electron-exit','ctrl-c']) {
  const profile=await mkdtemp(path.join(os.tmpdir(),'vhostra-dev-lifecycle-'))
@@ -21,7 +24,7 @@ for(const mode of ['interrupt-startup','electron-exit','ctrl-c']) {
    assert.ok(output.includes('[Vhostra resources]'),'Development diagnostics must produce a sample')
    tracked=descendants(ps(),child.pid)
    console.log('DEVELOPMENT_PROCESSES',JSON.stringify(tracked))
-   const compiler=tracked.filter(row=>row.comm==='node'&&row.rssKiB>250000)
+   const compiler=tracked.filter(row=>/(?:^|\/)tsc(?:\s|$)/.test(row.args)&&row.args.includes('--watch'))
    assert.equal(compiler.length,1,'One shared TypeScript compiler')
    const mains=tracked.filter(row=>row.comm.endsWith('/Electron.app/Contents/MacOS/Electron'))
    assert.equal(mains.length,1,'One application main, excluding normal helpers')

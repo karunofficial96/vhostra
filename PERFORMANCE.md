@@ -123,3 +123,26 @@ node test/migration-runtime.mjs
 The native terminal harness verifies active-only Expand/terminal removal, redaction, scroll-back/follow, minimum-window bounds, and bundled-font light/dark rendering. The packaged harness verifies hidden-progress suppression, reveal synchronization, zero retained completed progress and cleared progress timers.
 
 The actual session harness preserves one window and one tray, and restores hidden/minimized visibility. Its `isFocused()` assertion fails in this automated macOS session, including against a temporary checkout of the **original committed implementation**. This is a pre-existing native activation acceptance gap, not a new duplicate-instance finding; manual foreground-focus validation is still required.
+
+## New phase resource budgets (2026-09-28)
+
+First-run preferences are a small local record; the wizard unmounts after successful setup and valid upgrades bypass it. Imports are bounded/on-demand (1 MiB file, 64 directives-bearing site definitions, or 64 LiteSpeed .conf files / 2 MiB selected tree; 4 MiB duplicated original-source budget per import); referenced external paths/symlinks are not followed. Host-generated config synchronization is action-driven. Ten completed automatic import snapshots remain the limit; unresolved recovery is retained.
+
+Resources mounts only on its navigation tab. A single eight-second completion-based timer stops on unmount/visibility changes; visibility generations prevent duplicate timer chains, and renderer/main request guards prevent overlap. Local storage and Docker image inventories are cached five minutes; Refresh storage explicitly remeasures local files. Directory walks cap entries, ignore symlinks, and exclude external site roots. Working-set sums and shared image layers have explicit caveats. There is no new permanent watcher, background monitor, Hosts poll, daemon, or global Docker cleanup.
+
+This phase preserves the one compiler watcher, one OLS worker, optional cache process policy, bounded progress/logging and scoped recovery/image cleanup. New resource measurements and live acceptance results are recorded in the functional audit after validation.
+
+The renewed Hosts audit found accumulating native backup siblings. Writes now preserve a private pre-mutation snapshot under Vhostra's backups, retain ten completed snapshots, and verify bytes within the single elevated operation before removing that operation's exact transient native backup. Failed/active/unknown recovery records stay intact. There is no second administrator prompt and no scan/deletion of arbitrary native backup files.
+
+
+### Renewed measurements and acceptance
+
+The 2026-09-28 image measured 1,388,363,922 bytes against 1,388,362,776 bytes before this phase: +1,146 bytes from the runtime scripts. No new server/PHP/cache daemon or permanent monitoring process was added. The selected-server/image-reuse/scoped-inventory suite passed.
+
+Initial fifteen-second idle samples were OLS 318.2 MiB/0.07%, Apache 229.8 MiB/0.07%, Nginx 204.0 MiB/0.09%. The higher OLS sample was investigated in a separate isolated run: after thirty seconds it measured 207.7 MiB/0.11%, one retained PHP child, and no System V shared-memory segments. cgroup anon was about 165 MiB and file cache about 100 MiB. A supplementary syntax probe attempted while that listener was already running returned nonzero; it was not counted as an acceptance pass, and its diagnostics were preserved before exact-scope cleanup. The actual pre-start native syntax gates passed throughout the runtime suites. Timing, PHP idle expiry, cache and database warmup affect the samples; no exact RAM improvement is claimed.
+
+Fresh ad hoc packaged visible-idle: four processes, main 168.3 MiB/0.0030%, renderer 107.5 MiB/0%, summed working sets 391.0 MiB. Hidden-settled: main 169.3 MiB/0.0050%, renderer 106.6 MiB/0.0014%, sum 390.9 MiB. These are logical working-set sums, potentially counting shared pages more than once. They are somewhat above the earlier 363.6 MiB single sample and near the earlier 164.4/115.2 MiB main/renderer sample; no app-memory reduction or zero-cost UI feature claim is made. Hidden IPC suppression, reveal synchronization and zero completed progress/timers passed.
+
+The native development lifecycle check confirmed one tsc watcher and no orphan children after startup cancellation, Electron exit or Ctrl+C. Identification now uses the watcher's command, since measured compiler RAM ranged below the old test's 250,000 KiB identification threshold. The actual two-launch native session check now passed foreground focus as well as hidden/minimized restore, superseding the earlier automated focus gap above on this Mac.
+
+The final suite passes 53 automated tests. Sequential live/native acceptance and remaining OS/release boundaries are recorded in VHOSTRA_FUNCTIONAL_AUDIT.md. Six positively labeled build tags remain; two protected recovery lease tags and failure diagnostics are deliberately retained. No temporary test container/network remains, and unrelated project inventory stayed unchanged.

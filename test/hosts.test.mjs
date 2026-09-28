@@ -108,8 +108,10 @@ test('Linux and macOS elevation plans execute atomic metadata-preserving hosts w
       await manager.ensureLocalhostMappings(['new.test'])
       assert.ok((await readFile(manager.hostsPath, 'utf8')).startsWith(original))
       assert.equal((await stat(manager.hostsPath)).mode & 0o777, 0o640)
-      const backup = (await readdir(root)).find(file => file.endsWith('.bak'))
-      assert.equal(await readFile(path.join(root, backup), 'utf8'), original)
+      const snapshots = await readdir(manager.recoveryDirectory)
+      const backup = JSON.parse(await readFile(path.join(manager.recoveryDirectory, snapshots[0]), 'utf8'))
+      assert.equal(backup.original, original); assert.equal(backup.status, 'completed')
+      assert.equal((await readdir(root)).filter(file => file.endsWith('.bak')).length, 0)
       await manager.removeVhostraMappings(['new.test'])
       assert.equal(await readFile(manager.hostsPath, 'utf8'), original)
       const expected = original; await writeFile(manager.hostsPath, original + '# external change\n')
@@ -137,5 +139,18 @@ test('Windows elevation uses encoded child command, atomic bytes, backup and ver
     await assert.rejects(manager.ensureLocalhostMappings(['new.test']), /1223/)
     assert.equal(await readFile(manager.hostsPath, 'utf8'), '# original\n')
     assert.match((await manager.mappingStatus(['new.test']))[0].issue, /Permission cancelled/)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('Hosts recovery retention is bounded and preserves active or foreign snapshots', async () => {
+  const { mkdir, readdir } = await import('node:fs/promises'); const { randomUUID } = await import('node:crypto')
+  const root = await mkdtemp(path.join(os.tmpdir(), 'vhostra-hosts-retention-')); const manager = new HostsFileManager(root)
+  try {
+    await mkdir(manager.recoveryDirectory, { recursive: true })
+    for (let index = 0; index < 12; index++) await writeFile(path.join(manager.recoveryDirectory, `${randomUUID()}.json`), JSON.stringify({ owner: 'vhostra', kind: 'hosts-recovery', status: 'completed', hostsPath: manager.hostsPath, createdAt: new Date(1000 + index).toISOString() }))
+    const active = `${randomUUID()}.json`; await writeFile(path.join(manager.recoveryDirectory, active), JSON.stringify({ owner: 'vhostra', kind: 'hosts-recovery', status: 'active', hostsPath: manager.hostsPath, createdAt: new Date(0).toISOString() }))
+    await writeFile(path.join(manager.recoveryDirectory, 'user.json'), 'user data')
+    await manager.retainRecoverySnapshots(); const files = await readdir(manager.recoveryDirectory)
+    assert.equal(files.length, 12); assert.ok(files.includes(active)); assert.ok(files.includes('user.json'))
   } finally { await rm(root, { recursive: true, force: true }) }
 })

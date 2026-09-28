@@ -49,3 +49,16 @@ External acceptance, not passed or hidden as implementation work:
 - [ ] Signed installer and real release/update endpoint acceptance. [BLOCKED: release environment unavailable — packaging configuration and local assets implemented, signed release acceptance pending] No signing credentials or production release endpoint are configured.
 
 Detailed evidence: `VHOSTRA_FUNCTIONAL_AUDIT.md`. Unexposed README roadmap capabilities are explicitly separate from the implemented controls and this queue.
+
+New development phase (2026-09-28; renewed local acceptance passed):
+- [x] Canonical JSON import: Apache, Nginx, OLS and Enterprise-compatible formats; bounded parsing, preview, validation, preserved unsupported source and truthful findings.
+- [x] Host-native generated configs: event-driven regeneration, transactional switch/rollback and positive-ownership old-config cleanup.
+- [x] First-run welcome/theme/server/PHP/cache/review; real setup progress, retry and upgrade detection.
+- [x] Hosts vertical re-audit: imports, aliases, collisions, protected writes and repair/reconciliation.
+- [x] Localhost Light/Dark/System selection with matching icons and dynamic OS updates.
+- [x] Visible-only Resources tab; scoped CPU/RAM and cached accurately labeled storage.
+- [x] Window controls decision; CLI missing commands and shared backend audit.
+- [x] Previous requirement and production placeholder audit; final build/unit/native/sequential runtime acceptance.
+
+
+Renewed production build and 53/53 automated tests passed. Sequential server/import/rollback, actual onboarding runtime, extension, migration and performance suites passed; native UI/terminal/bridge/tray/session/dev/packaged checks passed. Native OS/release boundaries above remain unchecked; Enterprise licensed binary/XML acceptance is outside the compatible text conversion supported in this phase. See the 2026-09-28 functional audit and performance samples.

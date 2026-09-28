@@ -35,9 +35,10 @@ export interface VirtualHost {
   rewrites: RewriteRule[]
   headers: HeaderRule[]
   logs: { access: boolean; error: boolean }
-  source?: { server: WebServer; path: string; importedAt: string }
+  indexFiles?: string[]
+  source?: { server: WebServer | 'litespeed-enterprise'; path: string; importedAt: string; raw?: string; status?: string; warnings?: string[] }
   /** Directives that could not be made portable remain visible for review. */
-  preservedDirectives?: ImportedDirective[]
+  preservedDirectives?: string[]
 }
 
 /** A cache reference only: screenshot bytes stay in Vhostra's host-side cache. */

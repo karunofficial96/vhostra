@@ -25,3 +25,6 @@ html[data-theme="dark"] .border-\[\#E5E5E5\], html[data-theme="dark"] .border-b,
 .site-link:hover { color: var(--v-link); }
 .site-link span { display: block; color: var(--v-muted); font-family: "Roboto Mono", ui-monospace, monospace; font-size: 12px; font-weight: 400; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { color: var(--v-muted); font-size: 14px; }
+
+.theme-select { height: 36px; padding: 0 12px; border: 1px solid #E5E5E5; border-radius: 9999px; font: inherit; font-size: 12px; background: transparent; color: inherit; }
+:root[data-theme="dark"] .theme-select { border-color: #333; background: #0F0F0F; }

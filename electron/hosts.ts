@@ -22,7 +22,7 @@ export class HostsFileManager {
   private execute = execute
   private issues = new Map<string, string>()
   private mutation: Promise<unknown> = Promise.resolve()
-  constructor(private readonly temporaryDirectory: string) {}
+  constructor(private readonly temporaryDirectory: string, private readonly recoveryDirectory = path.join(temporaryDirectory, 'hosts-backups')) {}
   private serialize<T>(task: () => Promise<T>): Promise<T> {
     const next = this.mutation.then(task, task)
     this.mutation = next.catch(() => undefined)
@@ -108,11 +108,15 @@ export class HostsFileManager {
     const token = randomUUID()
     const staged = `${this.hostsPath}.vhostra-${token}.tmp`
     const backup = `${this.hostsPath}.vhostra-${token}.bak`
+    const recoveryFile = path.join(this.recoveryDirectory, `${token}.json`)
+    const recovery = { owner: 'vhostra', kind: 'hosts-recovery', status: 'active', createdAt: new Date().toISOString(), hostsPath: this.hostsPath, original: expectedSource }
     try {
+      await fs.mkdir(this.recoveryDirectory, { recursive: true })
+      await fs.writeFile(recoveryFile, JSON.stringify(recovery), { mode: 0o600 })
       if (this.platform === 'win32') {
         // EncodedCommand avoids nested ArgumentList quoting; exit code belongs to
         // the elevated child, not merely the unelevated Start-Process launcher.
-        const command = `$ErrorActionPreference='Stop'; try { $target=${powerShellString(this.hostsPath)}; if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($target)) -cne [Convert]::ToBase64String([System.IO.File]::ReadAllBytes(${powerShellString(expected)}))) { throw 'Hosts file changed; retry repair' }; [System.IO.File]::Copy($target,${powerShellString(staged)},$false); [System.IO.File]::WriteAllBytes(${powerShellString(staged)},[System.IO.File]::ReadAllBytes(${powerShellString(temporary)})); if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($target)) -cne [Convert]::ToBase64String([System.IO.File]::ReadAllBytes(${powerShellString(expected)}))) { throw 'Hosts file changed; retry repair' }; [System.IO.File]::Replace(${powerShellString(staged)},$target,${powerShellString(backup)}); exit 0 } catch { Write-Error $_; exit 1 } finally { if (Test-Path ${powerShellString(staged)}) { Remove-Item ${powerShellString(staged)} -Force } }`
+        const command = `$ErrorActionPreference='Stop'; try { $target=${powerShellString(this.hostsPath)}; if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($target)) -cne [Convert]::ToBase64String([System.IO.File]::ReadAllBytes(${powerShellString(expected)}))) { throw 'Hosts file changed; retry repair' }; [System.IO.File]::Copy($target,${powerShellString(staged)},$false); [System.IO.File]::WriteAllBytes(${powerShellString(staged)},[System.IO.File]::ReadAllBytes(${powerShellString(temporary)})); if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($target)) -cne [Convert]::ToBase64String([System.IO.File]::ReadAllBytes(${powerShellString(expected)}))) { throw 'Hosts file changed; retry repair' }; [System.IO.File]::Replace(${powerShellString(staged)},$target,${powerShellString(backup)}); if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($target)) -cne [Convert]::ToBase64String([System.IO.File]::ReadAllBytes(${powerShellString(temporary)}))) { throw 'Hosts write verification failed; native backup retained' }; Remove-Item ${powerShellString(backup)} -Force; exit 0 } catch { Write-Error $_; exit 1 } finally { if (Test-Path ${powerShellString(staged)}) { Remove-Item ${powerShellString(staged)} -Force } }`
         const encoded = Buffer.from(command, 'utf16le').toString('base64')
         await this.execute('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference='Stop'; $child=Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','${encoded}'; exit $child.ExitCode`])
       } else {
@@ -121,14 +125,30 @@ export class HostsFileManager {
         // Exclusive lock serializes Vhostra writers across processes. Compare again
         // after preparing a metadata-preserving sibling, then rename atomically.
         const lock = shellQuote(`${this.hostsPath}.vhostra-lock`)
-        const command = `set -eu; mkdir ${lock} || exit 1; cleanup() { rm -f ${stage}; rmdir ${lock}; }; trap cleanup EXIT; cmp -s ${shellQuote(expected)} ${target}; cp -p ${target} ${shellQuote(backup)}; cp -p ${target} ${stage}; cat ${shellQuote(temporary)} > ${stage}; cmp -s ${shellQuote(expected)} ${target}; mv -f ${stage} ${target}`
+        const command = `set -eu; mkdir ${lock} || exit 1; cleanup() { rm -f ${stage}; rmdir ${lock}; }; trap cleanup EXIT; cmp -s ${shellQuote(expected)} ${target}; cp -p ${target} ${shellQuote(backup)}; cp -p ${target} ${stage}; cat ${shellQuote(temporary)} > ${stage}; cmp -s ${shellQuote(expected)} ${target}; mv -f ${stage} ${target}; cmp -s ${shellQuote(temporary)} ${target}; rm -f ${shellQuote(backup)}`
         if (this.platform === 'darwin') await this.execute('osascript', ['-e', `do shell script ${appleScriptString(command)} with administrator privileges`])
         else await this.execute('pkexec', ['/bin/sh', '-c', command])
       }
       if (await fs.readFile(this.hostsPath, 'utf8') !== contents) throw new Error('The protected hosts-file write could not be verified; retry repair.')
+      recovery.status = 'completed'; await fs.writeFile(recoveryFile, JSON.stringify(recovery), { mode: 0o600 }).catch(() => undefined)
+      await this.retainRecoverySnapshots().catch(() => undefined)
     } catch (error) {
       throw new Error(`Hosts mapping requires attention. Administrator approval or the protected write failed, or the file changed while approval was pending. No mapping success was claimed. ${errorMessage(error)}`)
     } finally { await Promise.all([temporary, expected].map(file => fs.rm(file, { force: true }))) }
+  }
+
+  private async retainRecoverySnapshots() {
+    const completed: Array<{ file: string; createdAt: string }> = []
+    for (const entry of await fs.readdir(this.recoveryDirectory, { withFileTypes: true })) {
+      if (!entry.isFile() || !/^[a-f0-9-]{36}\.json$/i.test(entry.name)) continue
+      const file = path.join(this.recoveryDirectory, entry.name)
+      try {
+        const record = JSON.parse(await fs.readFile(file, 'utf8'))
+        if (record.owner === 'vhostra' && record.kind === 'hosts-recovery' && record.status === 'completed' && record.hostsPath === this.hostsPath && Number.isFinite(Date.parse(record.createdAt))) completed.push({ file, createdAt: record.createdAt })
+      } catch { /* Unknown/failed recovery files remain untouched. */ }
+    }
+    completed.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    for (const snapshot of completed.slice(10)) await fs.unlink(snapshot.file)
   }
 
   private async writeTemporary(contents: string) {

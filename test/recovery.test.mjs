@@ -17,6 +17,7 @@ for (const recoveryFails of [false, true]) test(`replacement recovery ${recovery
         await mkdir(runtime.runtimeRoot, { recursive: true });
         await writeFile(path.join(runtime.runtimeRoot, 'healthy-state.json'), JSON.stringify(state));
         await writeFile(path.join(runtime.runtimeRoot, 'compose.yml'), 'verified-original');
+        await writeFile(path.join(store.layout.configuration.generated, 'apache-vhosts.conf'), '# Vhostra generated configuration; owner=vhostra; schema=1\nverified-host-config');
         runtime.requireDocker = runtime.ensurePortsAvailable = runtime.checkOptionalHttpsPort = runtime.provisionPhpMyAdmin = async () => {};
         runtime.docker = async () => '';
         runtime.compose = async (args) => {
@@ -25,7 +26,7 @@ for (const recoveryFails of [false, true]) test(`replacement recovery ${recovery
             if (args.includes('--no-build') && recoveryFails) throw new Error('recovery failed');
             return '';
         };
-        runtime.generate = async () => writeFile(path.join(runtime.runtimeRoot, 'compose.yml'), 'broken-new');
+        runtime.generate = async () => { await writeFile(path.join(runtime.runtimeRoot, 'compose.yml'), 'broken-new'); await writeFile(path.join(store.layout.configuration.generated, 'apache-vhosts.conf'), 'broken-generated'); await writeFile(path.join(store.layout.configuration.generated, 'new-user-file.conf'), 'preserve-me'); };
         runtime.healthCheck = async () => assert.equal(await readFile(path.join(runtime.runtimeRoot, 'compose.yml'), 'utf8'), 'verified-original');
         await assert.rejects(runtime.restart(), error => {
             if (recoveryFails) {
@@ -35,6 +36,8 @@ for (const recoveryFails of [false, true]) test(`replacement recovery ${recovery
             return true;
         });
         assert.equal(await readFile(path.join(runtime.runtimeRoot, 'compose.yml'), 'utf8'), 'verified-original');
+        assert.equal(await readFile(path.join(store.layout.configuration.generated, 'apache-vhosts.conf'), 'utf8'), '# Vhostra generated configuration; owner=vhostra; schema=1\nverified-host-config');
+        assert.equal(await readFile(path.join(store.layout.configuration.generated, 'new-user-file.conf'), 'utf8'), 'preserve-me');
         if (backup) {
             await access(path.join(backup, 'runtime/healthy-state.json'));
             assert.equal(await readFile(path.join(backup, 'runtime/compose.yml'), 'utf8'), 'verified-original');
