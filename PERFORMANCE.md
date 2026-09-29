@@ -1,3 +1,17 @@
+# Backup reconciliation / desktop budgets (2026-09-29)
+
+The independent persistent database architecture and historical performance budgets below remain in force. This phase adds no package/dependency or permanent window/process. Redis/Memcached stay inside web/PHP; disabled services have no daemon. No new timer scans Hosts, backups, databases, Site trees or tray visibility. Resources remains visible-only/cached; screenshots remain transient/local and remote-blocked.
+
+- Hosts editor: maximum 1 MiB draft, 100 history entries and 8 MiB UTF-16 history budget; branch trimming and cleanup on save/cancel/reload/unmount. Previous unsaved draft is one bounded buffer. Review supports ≤16,384 lines and ≤128 KiB displayed diff; patience anchors avoid quadratic full-file LCS. Local 16,000-line/681,780-byte fixture with two separated edits: **16.26 ms**, 204-byte diff, two sections. This is one local algorithm sample, not a general UI latency guarantee.
+- Recovery files: ten completed Hosts and full-database restore records. Uncertain/failed recovery stays intact; new operations stop when their own recovery class reaches 60 records. Verified unchanged Hosts cancellation removes its own unnecessary record. Existing configuration-import completed retention remains ten. No continuous retention worker.
+- Backup preview: metadata ≤4 MiB, ≤500 Sites/databases/accounts; cache configs ≤64 KiB each. Only canonical/private account/cache metadata and fingerprints are read. No SQL dump or external Site tree scan on onboarding render. Explicit data comparison and selected Restore use streamed dumps/hashes, temporary equality dumps are deleted. Actual DB recovery dumps are user-triggered disk work, not copied live datadirs or retained renderer buffers.
+- Progress: latest bounded 2,000-character backup event to visible UI; journals contain ≤bounded manifest item outcomes, not unbounded SQL/progress logs. Private auth/raw native source do not enter normal state/progress IPC.
+- Tray: strongly retained Tray/NativeImage, event-driven visibility updates with cached service rows; coalesced asynchronous refresh cannot delay the Open item. No visibility polling. CSS/component text selection adds no global selection listener. Existing modal keyboard focus handling remains modal-only.
+
+Sequential actual Docker acceptance and exact inventory cleanup passed in `/private/tmp/vhostra-reconciliation-live-final.log`; custom port/memory config survives real server/PHP replacement and caches-off means no daemon. This phase makes no new Electron idle RSS, startup time or Docker image reduction claim; earlier measurements below are historical samples. Bounded diff/retention/non-mutating identical-restore contracts are covered by the 94-test suite.
+
+---
+
 # Persistent database/runtime architecture update (2026-09-29)
 
 Current architecture supersedes historical single-container claims below: one web/PHP runtime plus one purpose-built MariaDB image using the official matching-series base. Redis/Memcached remain optional processes in web/PHP; no extra cache containers. MariaDB data/config/logs are direct host bind mounts. Web/PHP candidates reuse the existing independent DB without stop/copy/duplicate-server work. Tiny socat listeners provide local TCP/socket compatibility; the DB-side socket gateway preserves localhost authentication semantics.

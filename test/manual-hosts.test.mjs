@@ -78,8 +78,8 @@ test('external changes before preview or after review cannot overwrite the curre
 test('authentication cancellation and a change during approval leave the file untouched by Vhostra', () => fixture(async ({ manager }) => {
   const draft = source.replace('Manual comment', 'edit')
   manager.execute = async () => { throw Error('Authentication cancelled (-128)') }
-  await assert.rejects(save(manager, draft), /cancelled.*Recovery backup/s)
-  assert.equal(await readFile(manager.hostsPath, 'utf8'), source)
+  await assert.rejects(save(manager, draft), /cancelled.*Original file is unchanged/s)
+  assert.equal(await readFile(manager.hostsPath, 'utf8'), source); assert.equal((await readdir(manager.recoveryDirectory)).length, 0)
   manager.execute = async (_command, args) => { await writeFile(manager.hostsPath, source + '# external during approval\r\n'); await run(args[0], args.slice(1)) }
   await assert.rejects(save(manager, draft), /changed externally/s)
   assert.equal(await readFile(manager.hostsPath, 'utf8'), source + '# external during approval\r\n')

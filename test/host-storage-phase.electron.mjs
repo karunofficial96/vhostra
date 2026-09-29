@@ -37,9 +37,10 @@ app.whenReady().then(async () => {
     assert.match(await evaluate('document.body.textContent'), /nginx/); assert.match(await evaluate('document.body.textContent'), /8\.3/)
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [project] }); await click('Choose host document root'); await waitFor(`document.body.textContent.includes(${JSON.stringify(project)})`)
     const plannedBackupText = await evaluate('document.body.textContent'); assert.match(plannedBackupText, /Access Log/); assert.ok(plannedBackupText.includes(profile))
+    await evaluate(`(()=>{const select=[...document.querySelectorAll('label')].find(label=>label.textContent.startsWith('Restore for web server')).querySelector('select');Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(select,'apache');select.dispatchEvent(new Event('change',{bubbles:true}))})()`);
     await click('Restore supported configuration'); await waitFor('document.body.textContent.includes("Ready to set up")')
     assert.equal(await evaluate('document.documentElement.dataset.theme'), 'dark'); assert.ok(plannedBackupText.includes((await evaluate('window.vhostra.getState()')).virtualHosts.find(host => host.hostname === 'restored.test').logs.paths.access))
-    assert.doesNotMatch(await evaluate('document.body.textContent'), /Choose your web server/)
+    assert.doesNotMatch(await evaluate('document.body.textContent'), /Choose your web server/); assert.equal((await evaluate('window.vhostra.getState()')).settings.selectedWebServer, 'apache')
     const originalStart = runtime.start; runtime.start = async () => runtime.set({ state: 'running', services: ['runtime'], message: 'Native UI contract fixture' })
     await click('Set Up Vhostra'); await waitFor('document.body.textContent.includes("Thank you for setting up Vhostra")')
     assert.equal((await evaluate('window.vhostra.getOnboarding()')).preferences.completed, false)
@@ -74,6 +75,7 @@ app.whenReady().then(async () => {
     await backupStore.addSite({ name: 'Missing backup Site', documentRoot: project, url: 'http://backup-added.test' }); await backupStore.exportBundle(backup)
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [backup] }); await click('Import Vhostra configuration'); await waitFor('document.body.textContent.includes("Review configuration backup")')
     const missingLogPlan = await evaluate('document.body.textContent'); assert.match(missingLogPlan, /backup-added.test/)
+    await evaluate(`(()=>{for(const section of document.querySelectorAll('section')){const heading=section.querySelector('h3');if(heading?.textContent.includes('restored.test')&&section.querySelector('select')){const select=section.querySelector('select');Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(select,'keep');select.dispatchEvent(new Event('change',{bubbles:true}))}}})()`);
     await click('Import Site definitions'); await waitFor('!document.body.textContent.includes("Review configuration backup")'); const addedHost = (await evaluate('window.vhostra.getState()')).virtualHosts.find(host => host.hostname === 'backup-added.test'); assert.ok(addedHost); assert.ok(missingLogPlan.includes(addedHost.logs.paths.access)); assert.equal((await evaluate('window.vhostra.getState()')).settings.selectedPhpVersion, '8.3')
     await click('Settings'); await waitFor('document.body.textContent.includes("Reset Vhostra")')
     await click('Inspect Hosts file'); await waitFor('document.querySelector("textarea") !== null')
@@ -86,10 +88,10 @@ app.whenReady().then(async () => {
     await waitFor('document.querySelector("[role=dialog]")?.textContent.includes("Vhostra-managed mappings will change or be deleted")')
     assert.match(await evaluate(`document.querySelector('[aria-label="Hosts changes diff"]').textContent`), /manually changed comment/)
     assert.equal(manualElevations, 0); assert.equal(await readFile(tempHosts, 'utf8'), originalManual)
-    await click('Back to editor'); assert.equal(await readFile(tempHosts, 'utf8'), originalManual)
+    await click('Back to Edit'); assert.equal(await readFile(tempHosts, 'utf8'), originalManual)
     await click('Review changes'); await waitFor('document.querySelector("[role=dialog]") !== null')
     const externalManual = originalManual + '# external update\n'; await writeFile(tempHosts, externalManual)
-    await click('Confirm Save with administrator approval'); await waitFor('document.body.textContent.includes("Hosts file changed externally")')
+    await click('Save Changes'); await waitFor('document.body.textContent.includes("Hosts file changed externally")')
     assert.equal(manualElevations, 0); assert.equal(await readFile(tempHosts, 'utf8'), externalManual)
     await click('Reload current file and review'); await waitFor(`document.querySelector('[aria-label="Previous Hosts draft"]') !== null`)
     assert.ok((await evaluate(`document.querySelector('[aria-label="Hosts file contents"]').value`)).includes('# external update'))
@@ -97,10 +99,10 @@ app.whenReady().then(async () => {
     await click('Edit complete Hosts file'); await setHostsDraft(manualDraft(externalManual)); await click('Review changes'); await waitFor('document.querySelector("[role=dialog]") !== null'); await pause(150)
     await writeFile('/private/tmp/vhostra-hosts-full-file-review.png', (await window.webContents.capturePage()).toPNG())
     session.hosts.execute = async () => { throw Error('Authentication cancelled (-128)') }
-    await click('Confirm Save with administrator approval'); await waitFor('document.body.textContent.includes("Authentication cancelled")')
+    await click('Save Changes'); await waitFor('document.body.textContent.includes("Authentication cancelled")')
     assert.equal(await readFile(tempHosts, 'utf8'), externalManual)
     session.hosts.execute = async (...args) => { manualElevations++; return manualExecutor(...args) }
-    await click('Review changes'); await waitFor('document.querySelector("[role=dialog]") !== null'); await click('Confirm Save with administrator approval'); await waitFor('document.body.textContent.includes("Hosts file saved and verified")')
+    await click('Review changes'); await waitFor('document.querySelector("[role=dialog]") !== null'); await click('Save Changes'); await waitFor('document.body.textContent.includes("Hosts file saved and verified")')
     assert.equal(manualElevations, 1); assert.equal(await readFile(tempHosts, 'utf8'), manualDraft(externalManual))
     assert.match(await evaluate('document.body.textContent'), /new.test — Missing/); assert.match(await evaluate('document.body.textContent'), /www.new.test — Conflict/)
     const manualStatus = await evaluate('window.vhostra.allHostsStatus()'); assert.equal(manualStatus.find(row => row.hostname === 'new.test').state, 'required'); assert.equal(manualStatus.find(row => row.hostname === 'www.new.test').state, 'conflict')
@@ -108,7 +110,7 @@ app.whenReady().then(async () => {
     for (const label of ['Keep configurations', 'Remove configurations']) {
       const before = JSON.stringify(await evaluate('window.vhostra.getState()')); await click('Reset Vhostra…'); await click(label); await waitFor('document.querySelector("[role=dialog]").textContent.includes("Are you sure you want to reset?")'); await pause(150)
       await writeFile(`/private/tmp/vhostra-host-reset-${label.startsWith('Keep') ? 'keep' : 'remove'}.png`, (await window.webContents.capturePage()).toPNG())
-      assert.match(await evaluate('document.querySelector("[role=dialog]").textContent'), /Databases will be removed/)
+      assert.match(await evaluate('document.querySelector("[role=dialog]").textContent'), label.startsWith('Keep') ? /preserv/i : /removed/i)
       await click('No'); assert.equal(JSON.stringify(await evaluate('window.vhostra.getState()')), before)
     }
     // Actual backend file reset after final UI confirmation, no Docker resource.
@@ -118,7 +120,7 @@ app.whenReady().then(async () => {
   } catch (error) { failed = true; console.error(error); if (session?.window) console.error(await session.window.webContents.executeJavaScript('document.body.textContent')) }
   finally {
     clearTimeout(timeout); nativeTheme.themeSource = 'system'; await session?.runtime.pauseBackgroundWork(); session?.runtime.dispose(); session?.window?.destroy(); await (await import('../dist-electron/logs.js')).drainApplicationLogs()
-    if (!failed) for (const directory of [profile, project, source].filter(Boolean)) await rm(directory, { recursive: true, force: true })
+    if (!failed) for (const directory of [profile, project, source].filter(Boolean)) await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 150 })
     else console.error(`Native failure profile retained: ${profile}`)
     app.exit(failed ? 1 : 0)
   }

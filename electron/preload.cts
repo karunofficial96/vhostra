@@ -1,11 +1,16 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 
 const api = Object.freeze({
+  previewPreviousHosts: (expected: string) => ipcRenderer.invoke('vhostra:preview-previous-hosts', expected),
+  exportFullBackup: () => ipcRenderer.invoke('vhostra:export-full-backup'),
+  compareBackupDatabase: (key: string) => ipcRenderer.invoke('vhostra:compare-backup-database', key),
+  onBackupProgress: (listener: (message: string) => void) => { const handler = (_event: IpcRendererEvent, message: string) => listener(message); ipcRenderer.on('vhostra:backup-progress', handler); return () => ipcRenderer.removeListener('vhostra:backup-progress', handler) },
   inspectHosts: () => ipcRenderer.invoke('vhostra:inspect-hosts'),
   previewHostsEdit: (contents: string, expected: string) => ipcRenderer.invoke('vhostra:preview-hosts-edit', contents, expected),
   editHosts: (contents: string, expected: string, reviewId: string) => ipcRenderer.invoke('vhostra:edit-hosts', contents, expected, reviewId),
+  cancelBackupPreview: () => ipcRenderer.invoke('vhostra:cancel-backup-preview'),
   previewBackup: () => ipcRenderer.invoke('vhostra:preview-backup'),
-  restoreBackup: (roots: Record<string, string> = {}) => ipcRenderer.invoke('vhostra:restore-backup', roots),
+  restoreBackup: (roots: Record<string, string> = {}, choices: Record<string, string> = {}, server?: string) => ipcRenderer.invoke('vhostra:restore-backup', roots, choices, server),
   resetApp: (keepSites: boolean, confirmation: string) => ipcRenderer.invoke('vhostra:reset-app', keepSites, confirmation),
   newSitePlan: () => ipcRenderer.invoke('vhostra:new-site-plan'),
   repairSite: (id: string) => ipcRenderer.invoke('vhostra:repair-site', id),
@@ -33,7 +38,7 @@ const api = Object.freeze({
   readLogTail: (relative: string) => ipcRenderer.invoke('vhostra:read-log-tail', relative),
   exportConfiguration: (request: unknown) => ipcRenderer.invoke('vhostra:export-configuration', request),
   previewConfigurationImport: () => ipcRenderer.invoke('vhostra:preview-configuration-import'),
-  importConfiguration: (roots: Record<string, string> = {}) => ipcRenderer.invoke('vhostra:import-configuration', roots),
+  importConfiguration: (roots: Record<string, string> = {}, choices: Record<string, string> = {}) => ipcRenderer.invoke('vhostra:import-configuration', roots, choices),
   getRuntimeStatus: () => ipcRenderer.invoke('vhostra:get-runtime-status'),
   startServices: () => ipcRenderer.invoke('vhostra:start-services'),
   stopServices: () => ipcRenderer.invoke('vhostra:stop-services'),

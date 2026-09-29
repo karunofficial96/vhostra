@@ -1,3 +1,64 @@
+# Backup reconciliation / desktop completion — local acceptance complete 2026-09-29
+
+This section supersedes older backup/tray/cache descriptions. Full request is preserved in `docs/backup-reconciliation-request.md`; implementation, test evidence, limitations and the next action are recorded at the top of `VHOSTRA_EXECUTION_STATE.md`. Checkmarks below mean implemented and locally verified; native cross-platform/protected-prompt/release acceptance remains open under R52 and the inherited unchecked items.
+
+- [x] R1: AUDIT FIRST
+- [x] R2: REDIS DEFAULT APPLICATION HOST MUST BE LOCALHOST
+- [x] R3: MEMCACHED DEFAULT APPLICATION HOST MUST BE LOCALHOST
+- [x] R4: LOCALHOST MUST BE REAL, NOT JUST UI TEXT
+- [x] R5: PRESERVE CACHE CONFIGURATION
+- [x] R6: TRAY ICON DISAPPEARS — BUG
+- [x] R7: TRAY LIFECYCLE
+- [x] R8: MINIMIZE VS MINIMIZE TO TRAY
+- [x] R9: EXPLICIT QUIT
+- [x] R10: REMOVE UNNECESSARY ELECTRON MENUS
+- [x] R11: macOS MENU CARE
+- [x] R12: TEXT SELECTION POLICY
+- [x] R13: TEXT THAT MUST REMAIN SELECTABLE
+- [x] R14: HOSTS EDITOR — UNDO
+- [x] R15: HOSTS EDITOR — REDO
+- [x] R16: HOSTS EDITOR — RESTORE LOADED CONTENT
+- [x] R17: HOSTS FILE RECOVERY
+- [x] R18: HOSTS EDITOR BUTTON FLOW
+- [x] R19: REVIEW CHANGES
+- [x] R20: HOSTS SAVE
+- [x] R21: AUTOMATIC HOSTS MANAGEMENT REMAINS RESTRICTED
+- [x] R22: FIRST-RUN BACKUP IMPORT — COMPLETE RESTORE
+- [x] R23: BACKUP MANIFEST
+- [x] R24: BACKUP IMPORT RECONCILIATION
+- [x] R25: NEW ITEMS
+- [x] R26: IDENTICAL ITEMS
+- [x] R27: CHANGED / CONFLICT ITEMS
+- [x] R28: APPLY TO ALL
+- [x] R29: DATABASE CONFLICTS NEED SPECIAL CARE
+- [x] R30: DATABASE USER / ROLE / GRANT RECONCILIATION
+- [x] R31: TRANSACTIONAL RESTORE
+- [x] R32: BACKUP IMPORT PROGRESS UX
+- [x] R33: BACKUP IMPORT SUMMARY
+- [x] R34: SERVER-NEUTRAL RESTORE
+- [x] R35: NATIVE CONFIGS ARE DERIVED
+- [x] R36: PRESERVE UNSUPPORTED SOURCE INFORMATION
+- [x] R37: ONBOARDING RESTORE FLOW
+- [x] R38: DO NOT DUPLICATE DATABASE DATA
+- [x] R39: DO NOT DUPLICATE SITES
+- [x] R40: EXTERNAL SITE ROOTS
+- [x] R41: DATABASE PASSWORDS
+- [x] R42: PRIVACY AUDIT
+- [x] R43: LOCAL DATA PRINCIPLE
+- [x] R44: PRIVACY DOCUMENTATION
+- [x] R45: LIGHTWEIGHT REQUIREMENT
+- [x] R46: HOSTS EDITOR MEMORY
+- [x] R47: BACKUP COMPARISON PERFORMANCE
+- [x] R48: TRAY PERFORMANCE
+- [x] R49: TEXT SELECTION PERFORMANCE
+- [x] R50: COMPLETE PREVIOUS WORK TOO
+- [x] R51: TEST ACTUAL USER FLOWS
+- [ ] R52: PLATFORM TESTING — native macOS tray/menu/window/renderer passed; actual protected administrator prompts, Windows/Linux and signed/licensed environments remain unavailable.
+- [x] R53: HEAVY TESTS SEQUENTIALLY
+- [x] R54: UPDATE PERSISTENT DOCUMENTS
+
+---
+
 # Persistent database/runtime phase — local implementation complete 2026-09-29
 
 Expanded locally implementable acceptance passed; detailed evidence and inherited external platform/release boundaries are in VHOSTRA_EXECUTION_STATE.md. Historical sections below remain superseded where they describe the old architecture.

@@ -1,3 +1,5 @@
+import { exportFullBackup, previewFullBackup, restoreFullDatabase, proveDatabaseEquality, type FullBackupPlan } from './backup.js';
+import type { RestoreChoices } from './reconciliation.js';
 import {
     app,
     BrowserWindow,
@@ -17,7 +19,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { SitePreviews } from "./previews.js";
 import { updateManagedSite } from "./site-workflow.js";
-import { VhostraStore, type AppState } from "./store.js";
+import { VhostraStore, type AppState, type WebServer } from "./store.js";
 import { DockerRuntimeController, type RuntimeState, type RuntimeSnapshot } from "./runtime.js";
 import { HostsFileManager } from "./hosts.js";
 import { listPersistentLogs, readLogTail, recordApplicationLog } from "./logs.js";
@@ -37,7 +39,7 @@ if (!app.isPackaged && process.env.NODE_ENV === "development" && process.env.VHO
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 let store: VhostraStore;
-let pendingBackup: { source: string; checksum: string; plans: Record<string, string> } | null = null;
+let pendingBackup: { source: string; checksum: string; plans: Record<string, string>; full?: FullBackupPlan } | null = null;
 let pendingNativePlans: Record<string, string> = {};
 let pendingNativeImport: NativeImportPreview | null = null;
 let storageCacheRoot = "";
@@ -48,6 +50,9 @@ let services: DockerRuntimeController;
 let hosts: HostsFileManager;
 let primaryWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
+let trayImage: Electron.NativeImage | null = null;
+let windowVisible = false;
+let windowMinimized = false;
 let trayStatusKey = "";
 let loggedRuntimeKey = "";
 let trayRefreshPending = false;
@@ -183,6 +188,7 @@ const createWindow = () => {
         },
     });
     primaryWindow = window;
+    windowVisible = window.isVisible(); windowMinimized = window.isMinimized();
     window.setMenuBarVisibility(false);
     window.setAutoHideMenuBar(true);
     if (process.platform !== "darwin") window.removeMenu();
@@ -197,12 +203,14 @@ const createWindow = () => {
         void services.refresh().then(updateTrayMenu);
     };
     window.on("focus", refreshVisibleRuntime);
-    window.on("show", () => { refreshVisibleRuntime(); updateTrayMenu(); });
-    window.on("restore", () => { publishRuntimeStatus(); updateTrayMenu(); });
-    window.on("hide", updateTrayMenu);
-    window.on("minimize", updateTrayMenu);
+    window.on("show", () => { windowVisible = true; refreshVisibleRuntime(); updateTrayMenu(); });
+    window.on("restore", () => { windowMinimized = false; windowVisible = true; publishRuntimeStatus(); updateTrayMenu(); });
+    const retainTray = () => { if (!tray || tray.isDestroyed()) createTray(); else if (trayImage) tray.setImage(trayImage); updateTrayMenu(); };
+    window.on("hide", () => { windowVisible = false; retainTray(); });
+    window.on("minimize", () => { windowMinimized = true; retainTray(); });
     window.on("closed", () => {
-        primaryWindow = null;
+        primaryWindow = null; windowVisible = false; windowMinimized = false;
+        if (!isQuitting) updateTrayMenu();
     });
     window.on("close", (event) => {
         if (isQuitting) return;
@@ -301,10 +309,11 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
         void openApplicationWindow();
     });
 });
+app.on("window-all-closed", () => { if (!isQuitting) updateTrayMenu(); });
 app.on("before-quit", (event) => {
     if (!isQuitting && services) { event.preventDefault(); void requestExplicitQuit(); return; }
     services?.dispose();
-    tray?.destroy(); tray = null;
+    tray?.destroy(); tray = null; trayImage = null;
 });
 
 /** Raw source stays private on disk; ordinary state IPC does not duplicate it
@@ -313,9 +322,18 @@ function desktopState(state: AppState) {
     return { ...state, virtualHosts: state.virtualHosts.map(host => host.source ? { ...host, source: { ...host.source, raw: undefined } } : host) };
 }
 
+const backupProgress = (message: string) => { if (primaryWindow?.isVisible() && !primaryWindow.isMinimized()) primaryWindow.webContents.send("vhostra:backup-progress", message.slice(0, 2000)); };
+async function previewBackupFile(source: string) {
+    const full = await previewFullBackup(source, services, backupProgress);
+    backupProgress("Checking Site configurations…");
+    const preview = await store.previewBundle(full?.configuration ?? source);
+    const plans = Object.fromEntries(preview.sites.filter((site: { disposition: string }) => site.disposition === "new").map((site: { hostname: string; canonicalId: string }) => [site.hostname, /^[a-f0-9-]{36}$/i.test(site.canonicalId) ? site.canonicalId : randomUUID()]));
+    pendingBackup = { source: preview.source, checksum: preview.checksum, plans, full: full ?? undefined };
+    return { ...preview, warnings: full ? preview.warnings.filter(warning => !warning.startsWith("This configuration bundle")).concat("Full backup includes database data, users, roles and grants. Website files, cache contents, system accounts and private TLS keys are excluded. Keep the private sibling folder with the manifest.") : preview.warnings, source, databaseItems: full?.items ?? [], plannedLogs: Object.fromEntries(Object.entries(plans).map(([hostname, id]) => [hostname, { access: path.join(store.layout.logs, "sites", id, "access.log"), error: path.join(store.layout.logs, "sites", id, "error.log") }])) };
+}
 function registerIpc() {
     const migrationMutations = new Set([
-        "repair-site", "finish-onboarding", "reset-app", "edit-hosts", "restore-backup", "setup-onboarding", "save-onboarding", "apply-native-import", "save-settings", "add-site", "update-site", "remove-site", "sync-all-hosts", "sync-hosts",
+        "cancel-backup-preview", "export-full-backup", "compare-backup-database", "repair-site", "finish-onboarding", "reset-app", "edit-hosts", "restore-backup", "setup-onboarding", "save-onboarding", "apply-native-import", "save-settings", "add-site", "update-site", "remove-site", "sync-all-hosts", "sync-hosts",
         "set-vhost-rewrite", "import-configuration", "start-services", "stop-services", "restart-services",
         "reload-web-server", "set-optional-service", "control-managed-service", "manage-php-extension",
         "configure-cwebp", "create-database", "import-database", "repair-database", "delete-database", "quit-application",
@@ -326,25 +344,53 @@ function registerIpc() {
         if (mutating) desktopMutation = true;
         try { return await listener(event, ...args); } finally { if (mutating) desktopMutation = false; }
     });
+    handle("vhostra:cancel-backup-preview", () => { pendingBackup = null; backupProgress(""); });
+    handle("vhostra:compare-backup-database", async (_event, key: string) => {
+        if (!pendingBackup?.full) throw new Error("Select a full backup first.");
+        return proveDatabaseEquality(pendingBackup.full, services, key, path.join(store.layout.root, "temporary"));
+    });
+    handle("vhostra:export-full-backup", async () => {
+        const result = await dialog.showSaveDialog({ title: "Export full Vhostra backup", defaultPath: path.join(store.layout.exports, "vhostra-backup.json"), filters: [{ name: "Vhostra backup manifest", extensions: ["json"] }] });
+        return result.canceled || !result.filePath ? null : { path: await exportFullBackup(store, services, result.filePath, backupProgress) };
+    });
     handle("vhostra:consume-quit-request", () => { const pending = pendingExplicitQuitRequest; pendingExplicitQuitRequest = false; return pending; });
     handle("vhostra:inspect-hosts", () => hosts.inspect());
+    handle("vhostra:preview-previous-hosts", (_event, expected: string) => hosts.previewPrevious(expected));
     handle("vhostra:preview-hosts-edit", (_event, contents: string, expected: string) => hosts.previewEdit(contents, expected));
     handle("vhostra:edit-hosts", (_event, contents: string, expected: string, reviewId: string) => hosts.edit(contents, expected, reviewId));
     handle("vhostra:preview-backup", async () => {
         pendingBackup = null;
         const choice = await dialog.showOpenDialog({ title: "Import existing Vhostra backup", properties: ["openFile"], filters: [{ name: "Vhostra configuration backup", extensions: ["json"] }] });
         if (choice.canceled || !choice.filePaths[0]) return null;
-        const preview = await store.previewBundle(choice.filePaths[0]);
-        const plans = Object.fromEntries(preview.sites.filter((site: { disposition: string }) => site.disposition === 'new').map((site: { hostname: string }) => [site.hostname, randomUUID()]));
-        pendingBackup = { source: preview.source, checksum: preview.checksum, plans };
-        return { ...preview, plannedLogs: Object.fromEntries(Object.entries(plans).map(([hostname, id]) => [hostname, { access: path.join(store.layout.logs, "sites", id, "access.log"), error: path.join(store.layout.logs, "sites", id, "error.log") }])) };
+        return previewBackupFile(choice.filePaths[0]);
     });
-    handle("vhostra:restore-backup", async (_event, roots: Record<string, string> = {}) => {
+    handle("vhostra:restore-backup", async (_event, roots: Record<string, string> = {}, choices: RestoreChoices = {}, server?: WebServer) => {
         if (!pendingBackup) throw new Error("Select and preview a Vhostra backup first.");
-        const result = await store.restoreOnboardingBundle(pendingBackup.source, pendingBackup.checksum, roots, pendingBackup.plans);
-        pendingBackup = null;
-        const mapping = await safelyEnsureHosts(result.imported.flatMap(site => [site.hostname, ...site.aliases]));
-        return { ...result, warnings: [...result.warnings, mapping.message] };
+        const selected = pendingBackup;
+        const original = await store.getState(); const preferences = await store.getOnboarding();
+        try {
+            if (selected.full) {
+                for (const item of selected.full.items) if (item.disposition === 'conflict' && !choices[item.key]) throw new Error(`${item.name}: conflict review required.`);
+            }
+            backupProgress("Restoring canonical configuration…");
+            const result = await store.restoreOnboardingBundle(selected.source, selected.checksum, roots, selected.plans, choices, backupProgress);
+            if (server) {
+                const current = await store.getState(); await store.saveSettings({ ...current.settings, selectedWebServer: server });
+                result.preferences = await store.saveOnboarding({ ...result.preferences, server });
+            }
+            if (selected.full) {
+                if (await services.databaseBackupStatus() === "absent") await services.controlManagedService("mariadb", "start");
+                const restored = await restoreFullDatabase(selected.full, services, choices, store.layout.backups, backupProgress);
+                for (const key of ["imported", "skipped", "replaced", "conflicted", "failed"] as const) result.summary[key] += restored.summary[key];
+            }
+            pendingBackup = null;
+            const mapping = await safelyEnsureHosts(result.imported.flatMap(site => [site.hostname, ...site.aliases]));
+            backupProgress(`Imported ${result.summary.imported} · Skipped ${result.summary.skipped} · Replaced ${result.summary.replaced} · Conflicts ${result.summary.conflicted} · Failed ${result.summary.failed}`);
+            return { ...result, warnings: [...result.warnings, mapping.message] };
+        } catch (error) {
+            await store.restoreBackupConfiguration(original, preferences);
+            throw error;
+        }
     });
     handle("vhostra:reset-app", async (_event, keepSites: boolean, confirmation: string) => {
         if (typeof keepSites !== "boolean" || confirmation !== "Yes, Reset Vhostra") throw new Error("Final reset confirmation is required.");
@@ -692,19 +738,26 @@ function registerIpc() {
         pendingBackup = null;
         const result = await dialog.showOpenDialog({ title: "Preview Vhostra configuration import", properties: ["openFile"], filters: [{ name: "Vhostra configuration", extensions: ["json"] }] });
         if (result.canceled || !result.filePaths[0]) return null;
-        const preview = await store.previewBundle(result.filePaths[0]);
-        const plans = Object.fromEntries(preview.sites.filter((site: { disposition: string }) => site.disposition === 'new').map((site: { hostname: string }) => [site.hostname, randomUUID()]));
-        pendingBackup = { source: preview.source, checksum: preview.checksum, plans };
-        return { ...preview, plannedLogs: Object.fromEntries(Object.entries(plans).map(([hostname, id]) => [hostname, { access: path.join(store.layout.logs, "sites", id, "access.log"), error: path.join(store.layout.logs, "sites", id, "error.log") }])) };
+        return previewBackupFile(result.filePaths[0]);
     });
-    handle("vhostra:import-configuration", async (_event, roots: Record<string, string> = {}) => {
+    handle("vhostra:import-configuration", async (_event, roots: Record<string, string> = {}, choices: RestoreChoices = {}) => {
         if (!pendingBackup) throw new Error("Select and preview a Vhostra backup first.");
         const preview = await store.previewBundle(pendingBackup.source);
-        for (const site of preview.sites.filter((site: { disposition: string }) => site.disposition === 'new')) {
+        for (const site of preview.sites.filter((site: { disposition: string; hostname: string }) => site.disposition === 'new' || choices[site.hostname] === 'replace')) {
             const root = roots[site.hostname] ?? site.documentRoot;
             if (typeof root !== 'string' || !path.isAbsolute(root) || !(await fs.stat(root).catch(() => null))?.isDirectory()) throw new Error(`Choose an existing host document root for ${site.hostname} before importing.`);
         }
-        const imported = await store.importBundle(pendingBackup.source, roots, pendingBackup.checksum, pendingBackup.plans);
+        const selected = pendingBackup;
+        const original = await store.getState(); const preferences = await store.getOnboarding();
+        let imported;
+        try {
+            imported = await store.importBundle(selected.source, roots, selected.checksum, selected.plans, choices, backupProgress);
+            if (selected.full) {
+                if (await services.databaseBackupStatus() === "absent") await services.controlManagedService("mariadb", "start");
+                const restored = await restoreFullDatabase(selected.full, services, choices, store.layout.backups, backupProgress);
+                for (const key of ["imported", "skipped", "replaced", "conflicted", "failed"] as const) imported.summary[key] += restored.summary[key];
+            }
+        } catch (error) { await store.restoreBackupConfiguration(original, preferences); throw error; }
         pendingBackup = null;
         const mapping = await safelyEnsureHosts(imported.imported.flatMap(site => [site.hostname, ...site.aliases]));
         try { await services.applyConfiguration(); }
@@ -948,10 +1001,19 @@ async function configureLaunchAtLogin(enabled: boolean) {
     });
 }
 
+function hideApplicationWindow() {
+    const window = createWindow();
+    if (!tray || tray.isDestroyed()) createTray();
+    windowVisible = false;
+    window.hide();
+    if (tray && trayImage) tray.setImage(trayImage);
+    updateTrayMenu();
+}
 async function openApplicationWindow() {
     const window = createWindow();
     if (window.isMinimized()) window.restore();
-    window.show();
+    if (process.platform === "darwin") app.show();
+    window.show(); windowVisible = true; windowMinimized = false; updateTrayMenu();
     app.focus({ steal: true });
     window.focus();
 }
@@ -963,7 +1025,7 @@ async function openExternal(value: string) {
 const requestShutdown = createShutdownManager({
     refresh: async () => { const snapshot = await services.refresh(); if (["stopped", "not-created"].includes(snapshot.state) && !(await services.allServicesStopped())) return { ...snapshot, state: "running" }; return snapshot; },
     stop: () => services.stop(),
-    hide: () => createWindow().hide(),
+    hide: hideApplicationWindow,
     quit: () => {
         isQuitting = true;
         app.quit();
@@ -989,6 +1051,7 @@ function reportShutdownFailure(error: unknown) {
 }
 
 function createTray() {
+    if (tray && !tray.isDestroyed()) return;
     // Menu bars render native image pixels directly. Keep the padded source for
     // HiDPI clarity, then use a compact logical size so Vhostra is a small mark
     // rather than a dock icon squeezed into the status area.
@@ -1006,17 +1069,29 @@ function createTray() {
     // images are monochromatically tinted by the menu bar, which would erase the
     // branded red tray mark and make it appear oversized/white.
     image.setTemplateImage(false);
-    tray = new Tray(image);
+    trayImage = image;
+    tray = new Tray(trayImage);
     tray.setToolTip("Vhostra");
-    tray.on("right-click", () => { if (!services.current().progress) void services.refresh().then(updateTrayMenu); });
+    tray.on("right-click", () => {
+        windowVisible = Boolean(primaryWindow?.isVisible()) && !(process.platform === "darwin" && app.isHidden());
+        windowMinimized = Boolean(primaryWindow?.isMinimized());
+        updateTrayMenuWithManaged(lastTrayServices);
+        if (!services.current().progress) void services.refresh().then(updateTrayMenu); });
     tray.on("click", () => {
         void openApplicationWindow();
     });
     updateTrayMenu();
 }
 
+let lastTrayServices: Awaited<ReturnType<typeof services.listManagedServices>> = [];
 function updateTrayMenu() {
+    if (isQuitting) return;
+    if (!tray || tray.isDestroyed()) createTray();
     if (!tray) return;
+    // Visibility must not wait for Docker/service queries.
+    if (trayRefreshPending) {
+        updateTrayMenuWithManaged(lastTrayServices);
+    }
     if (trayRefreshPending) { trayRefreshAgain = true; return; }
     const controller = services;
     const status = services.current();
@@ -1039,7 +1114,7 @@ function updateTrayMenu() {
         .listManagedServices()
         .then((rows) => {
             managed.splice(0, managed.length, ...rows);
-            if (tray && controller === services) updateTrayMenuWithManaged(rows);
+            if (tray && controller === services) { lastTrayServices = rows; updateTrayMenuWithManaged(rows); }
         })
         .catch(() => {})
         .finally(() => { trayRefreshPending = false; if (trayRefreshAgain) { trayRefreshAgain = false; updateTrayMenu(); } });
@@ -1254,11 +1329,11 @@ function registerScreenshotProtocol() {
     });
 }
 
-/** Read-only native acceptance diagnostics; no IPC surface. */
-export function applicationSession() { return { window: primaryWindow, tray, hasSingleInstanceLock, runtime: services, hosts }; }
+/** Native acceptance access; no renderer IPC surface. */
+export function applicationSession() { return { window: primaryWindow, tray, hasSingleInstanceLock, runtime: services, hosts, hide: hideApplicationWindow, open: openApplicationWindow }; }
 
 function openTrayItem(): MenuItemConstructorOptions[] {
-    return primaryWindow && !primaryWindow.isDestroyed() && primaryWindow.isVisible() && !primaryWindow.isMinimized()
+    return primaryWindow && !primaryWindow.isDestroyed() && windowVisible && !windowMinimized
         ? [] : [{ label: "Open Vhostra", click: () => { void openApplicationWindow(); } }];
 }
 let explicitQuitPending = false;
@@ -1275,7 +1350,8 @@ async function requestExplicitQuit() {
 function installApplicationMenu() {
     const quit: MenuItemConstructorOptions = { label: "Quit Vhostra", accelerator: process.platform === "darwin" ? "Command+Q" : "Alt+F4", click: () => { void requestExplicitQuit(); } };
     const items: MenuItemConstructorOptions[] = process.platform === "darwin"
-        ? [{ label: "Vhostra", submenu: [{ role: "about" }, { type: "separator" }, { role: "hide" }, { role: "hideOthers" }, { role: "unhide" }, { type: "separator" }, quit] }, { role: "editMenu" }, { role: "windowMenu" }]
-        : [{ label: "Vhostra", submenu: [quit] }, { role: "editMenu" }];
+        ? [{ label: "Vhostra", submenu: [{ role: "about" }, { type: "separator" }, { label: "Hide Vhostra", accelerator: "Command+H", click: () => { windowVisible = false; app.hide(); updateTrayMenu(); } }, { role: "hideOthers" }, { role: "unhide" }, { type: "separator" }, quit,
+            ...([['undo', 'Command+Z'], ['redo', 'Command+Shift+Z'], ['cut', 'Command+X'], ['copy', 'Command+C'], ['paste', 'Command+V'], ['selectAll', 'Command+A']] as const).map(([role, accelerator]) => ({ role, accelerator, visible: false, acceleratorWorksWhenHidden: true }))] }]
+        : [{ label: "Vhostra", submenu: [quit] }];
     Menu.setApplicationMenu(Menu.buildFromTemplate(items));
 }

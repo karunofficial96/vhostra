@@ -3,7 +3,7 @@ set -euo pipefail
 mkdir -p /run/mysqld /var/log/vhostra
 chown mysql:mysql /run/mysqld /var/log/vhostra
 if [ ! -d /var/lib/mysql/mysql ]; then
-  mariadb-install-db --user=mysql --datadir=/var/lib/mysql >/dev/null
+  mariadb-install-db --skip-test-db --user=mysql --datadir=/var/lib/mysql >/dev/null
   mariadbd --user=mysql --skip-networking --socket=/run/mysqld/mysqld.sock &
   bootstrap=$!
   trap 'kill "$bootstrap" 2>/dev/null || true' EXIT

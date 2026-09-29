@@ -1,5 +1,5 @@
 import type { ConfigurationExportRequest, StorageLayout } from './storage'
-import type { RuntimeSnapshot, Site, VhostraSettings, VhostraState } from './domain'
+import type { RuntimeSnapshot, Site, VhostraSettings, VhostraState, WebServer } from './domain'
 
 export interface SiteInput { vhostId?: string; name: string; documentRoot: string; url: string; framework?: string; aliases?: string[] }
 export interface SiteUpdate extends SiteInput { id: string }
@@ -8,16 +8,22 @@ export interface HostsMappingResult { installed: string[]; alreadyMapped: string
 export interface OnboardingPreferences { themeSaved?: boolean; restoredServices?: { redis: boolean; memcached: boolean }; ready?: boolean; completed: boolean; theme: 'light' | 'dark' | 'system'; server: VhostraSettings['selectedWebServer']; php: VhostraSettings['selectedPhpVersion']; cache: 'none' | 'redis' | 'memcached' }
 export interface NativeImportPreview { plannedLogs?: Record<string, { access: string; error: string }>; source: string; server: string; status: string; hosts: Array<{ hostname: string; aliases: string[]; documentRoot: string; https: { enabled: boolean }; rewriteEnabled: boolean; indexFiles: string[] }>; warnings: string[]; preservedDirectives: string[] }
 export interface RuntimeStatusRow { id: string; label: string; enabled: boolean; state: string }
-export interface BackupPreview { plannedLogs?: Record<string, { access: string; error: string }>; source: string; checksum: string; sites: Array<{ name: string; hostname: string; documentRoot: string; disposition: string }>; settings: { server?: string; php?: string; optionalServices?: { redis: boolean; memcached: boolean } } | null; missing: string[]; warnings: string[] }
+export interface DatabaseBackupItem { key: string; category: 'database' | 'account' | 'role' | 'settings' | 'configuration'; name: string; disposition: 'new' | 'equivalent' | 'conflict' | 'incompatible'; detail: string; local?: unknown; incoming?: unknown }
+export interface BackupPreview { configurationItems?: DatabaseBackupItem[]; databaseItems?: DatabaseBackupItem[]; plannedLogs?: Record<string, { access: string; error: string }>; source: string; checksum: string; sites: Array<{ name: string; hostname: string; documentRoot: string; disposition: string; differences?: string[]; local?: Record<string, unknown>; incoming?: Record<string, unknown> }>; settings: { server?: string; php?: string; optionalServices?: { redis: boolean; memcached: boolean } } | null; missing: string[]; warnings: string[] }
 export interface ResourceReport { statuses: RuntimeStatusRow[]; application: { cpuPercent: number; ramBytes: number; processes: number }; runtime: Array<{ Name?: string; CPUPerc: string; MemUsage: string }> | null; runtimeError: string | null; dockerStorage: { imageBytes: number; writableLayerBytes: number; note: string } | null; storage: { measuredAt: string; categories: Array<{ label: string; bytes: number; partial: boolean }>; localTotalBytes: number; note: string } }
 export interface HostsFileSnapshot { path: string; contents: string; managedLines: Array<{ line: number; text: string; hostnames: string[] }> }
-export interface HostsEditReview { id: string; contents: string; diff: string; removedLines: number; addedLines: number; truncated: boolean; managedChanges: string[] }
+export interface HostsEditReview { id: string; contents: string; diff: string; removedLines: number; addedLines: number; truncated: boolean; managedChanges: string[]; mappingChanges: { added: number; removed: number; modified: number; manual: number }; commentsChanged: number }
 export interface VhostraDesktopApi {
+  previewPreviousHosts(expected: string): Promise<HostsEditReview>
+  exportFullBackup(): Promise<{ path: string } | null>
+  compareBackupDatabase(key: string): Promise<DatabaseBackupItem>
+  onBackupProgress(listener: (message: string) => void): () => void
   inspectHosts(): Promise<HostsFileSnapshot>
   previewHostsEdit(contents: string, expected: string): Promise<HostsEditReview>
   editHosts(contents: string, expected: string, reviewId: string): Promise<HostsFileSnapshot>
+  cancelBackupPreview(): Promise<void>
   previewBackup(): Promise<BackupPreview | null>
-  restoreBackup(roots?: Record<string, string>): Promise<{ message: string; missing: string[]; warnings: string[]; preferences: OnboardingPreferences }>
+  restoreBackup(roots?: Record<string, string>, choices?: Record<string, 'keep' | 'replace' | 'skip'>, server?: WebServer): Promise<{ message: string; summary?: { imported: number; skipped: number; replaced: number; conflicted: number; failed: number }; missing: string[]; warnings: string[]; preferences: OnboardingPreferences }>
   resetApp(keepSites: boolean, confirmation: string): Promise<{ message: string }>
   newSitePlan(): Promise<{ id: string; logs: { access: string; error: string } }>
   repairSite(id: string): Promise<HostsMappingResult>
@@ -45,7 +51,7 @@ export interface VhostraDesktopApi {
   readLogTail(relative: string): Promise<{ path: string; text: string; truncated: boolean; size: number }>
   exportConfiguration(request: Omit<ConfigurationExportRequest, 'destinationDirectory'>): Promise<{ path: string } | null>
   previewConfigurationImport(): Promise<BackupPreview | null>
-  importConfiguration(roots?: Record<string, string>): Promise<{ imported: Array<{ name: string; hostname: string; aliases: string[] }>; backup: string; message: string; mapping: HostsMappingResult } | null>
+  importConfiguration(roots?: Record<string, string>, choices?: Record<string, 'keep' | 'replace' | 'skip'>): Promise<{ imported: Array<{ name: string; hostname: string; aliases: string[] }>; backup: string; message: string; mapping: HostsMappingResult } | null>
   getRuntimeStatus(): Promise<RuntimeSnapshot>
   startServices(): Promise<void>
   stopServices(): Promise<void>

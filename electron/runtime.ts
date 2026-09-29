@@ -737,7 +737,7 @@ export class DockerRuntimeController {
                         "exec",
                         "-T",
                         "runtime",
-                        "redis-cli",
+                        "redis-cli", "-p", String(state.settings.ports.redis),
                         "PING",
                     ]);
                 if (id === "memcached" && action !== "stop")
@@ -747,7 +747,7 @@ export class DockerRuntimeController {
                         "runtime",
                         "/bin/sh",
                         "-lc",
-                        "printf 'version\\r\\n' | nc -w 3 127.0.0.1 11211 | grep -q '^VERSION'",
+                        `printf 'version\\r\\n' | nc -w 3 127.0.0.1 ${state.settings.ports.memcached} | grep -q '^VERSION'`,
                     ]);
                 await this.refresh();
                 return this.listManagedServices();
@@ -1120,6 +1120,71 @@ export class DockerRuntimeController {
             charset: input.charset,
         };
     }
+    /** Backend-only backup primitives. Account authentication never crosses IPC. */
+    async backupCacheState() {
+        const result: Record<'redis' | 'memcached', string | null> = { redis: null, memcached: null };
+        for (const service of ['redis', 'memcached'] as const) {
+            const file = path.join(this.layout.runtime[service], `${service}.conf`);
+            try { if ((await fs.lstat(file)).isSymbolicLink() || (await fs.stat(file)).size > 64 * 1024) throw new Error('Invalid cache configuration.'); result[service] = await fs.readFile(file, 'utf8'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+        }
+        return result;
+    }
+    async restoreBackupCacheState(state: Partial<Record<'redis' | 'memcached', string | null>>) {
+        for (const service of ['redis', 'memcached'] as const) {
+            if (state[service] === undefined) continue;
+            const file = path.join(this.layout.runtime[service], `${service}.conf`);
+            if (state[service] === null) { await fs.rm(file, { force: true }); continue; }
+            if (Buffer.byteLength(state[service]!) > 64 * 1024) throw new Error('Cache configuration exceeds 64 KiB.');
+            await fs.mkdir(path.dirname(file), { recursive: true }); const temporary = `${file}.${randomBytes(8).toString('hex')}.tmp`;
+            try { await fs.writeFile(temporary, state[service]!, { mode: 0o600 }); await fs.rename(temporary, file); } finally { await fs.rm(temporary, { force: true }); }
+        }
+    }
+    async backupDatabaseMetadata() {
+        const version = (await this.databaseCompose(["exec", "-T", "mariadb", "mariadb", "-uroot", "-N", "-e", "SELECT VERSION()"])).trim();
+        const plugins = (await this.databaseCompose(["exec", "-T", "mariadb", "mariadb", "-uroot", "-N", "-e", "SELECT PLUGIN_NAME FROM information_schema.PLUGINS WHERE PLUGIN_STATUS='ACTIVE' AND PLUGIN_TYPE='AUTHENTICATION'"])).trim().split("\n");
+        return { version, plugins };
+    }
+    async backupAccounts() {
+        const rows = await this.databaseCompose(["exec", "-T", "mariadb", "mariadb", "-uroot", "-N", "--raw", "-e", "SELECT HEX(User), HEX(Host), is_role FROM mysql.user ORDER BY is_role DESC, User, Host"]);
+        const accounts: Array<{ user: string; host: string; role: boolean; create: string; grants: string[] }> = [];
+        for (const line of rows.trim().split("\n").filter(Boolean)) {
+            const [userHex, hostHex, isRole] = line.split("\t");
+            const user = Buffer.from(userHex, "hex").toString(); const host = Buffer.from(hostHex, "hex").toString();
+            if (["root", "mysql", "mariadb.sys", "vhostra_phpmyadmin", "vhostra_pma"].includes(user) || !user) continue;
+            const role = isRole === "Y";
+            const identity = role ? sqlLiteral(user) : `${sqlLiteral(user)}@${sqlLiteral(host)}`;
+            const create = role ? `CREATE ROLE ${sqlLiteral(user)}` : (await this.databaseCompose(["exec", "-T", "mariadb", "mariadb", "-uroot", "-N", "--raw", "-e", `SHOW CREATE USER ${identity}`])).trim().split("\t").slice(1).join("\t");
+            const grants = (await this.databaseCompose(["exec", "-T", "mariadb", "mariadb", "-uroot", "-N", "--raw", "-e", `SHOW GRANTS FOR ${identity}`])).trim().split("\n").filter(Boolean).sort();
+            accounts.push({ user, host, role, create, grants });
+        }
+        return accounts;
+    }
+    async restoreBackupAccounts(accounts: Awaited<ReturnType<DockerRuntimeController["backupAccounts"]>>, replace: boolean) {
+        // All selected identities are established before inter-account role grants.
+        for (const account of accounts) {
+            if (["root", "mysql", "mariadb.sys", "vhostra_phpmyadmin", "vhostra_pma"].includes(account.user) || !account.user) throw new Error("Protected database accounts cannot be replaced by a backup.");
+            const identity = account.role ? sqlLiteral(account.user) : `${sqlLiteral(account.user)}@${sqlLiteral(account.host)}`;
+            const drop = replace ? `DROP ${account.role ? 'ROLE' : 'USER'} IF EXISTS ${identity};` : '';
+            await this.databaseCompose(["exec", "-T", "mariadb", "mariadb", "-uroot", "-e", `${drop} ${account.create};`]);
+        }
+        await this.reapplyBackupGrants(accounts);
+    }
+    async reapplyBackupGrants(accounts: Awaited<ReturnType<DockerRuntimeController["backupAccounts"]>>) {
+        for (const account of accounts) for (const grant of account.grants) await this.databaseCompose(["exec", "-T", "mariadb", "mariadb", "-uroot", "-e", `${grant};`]);
+    }
+    async removeBackupAccounts(accounts: Awaited<ReturnType<DockerRuntimeController["backupAccounts"]>>) {
+        for (const account of accounts) {
+            if (["root", "mysql", "mariadb.sys", "vhostra_phpmyadmin", "vhostra_pma"].includes(account.user) || !account.user) throw new Error("Protected database account.");
+            const identity = account.role ? sqlLiteral(account.user) : `${sqlLiteral(account.user)}@${sqlLiteral(account.host)}`;
+            await this.databaseCompose(["exec", "-T", "mariadb", "mariadb", "-uroot", "-e", `DROP ${account.role ? 'ROLE' : 'USER'} IF EXISTS ${identity}`]);
+        }
+    }
+    async prepareBackupDatabase(name: string, replace = false) {
+        const database = sqlIdentifier(name, "database name");
+        if (["mysql", "sys", "information_schema", "performance_schema"].includes(database)) throw new Error("System databases are not restorable Site data.");
+        await this.databaseCompose(["exec", "-T", "mariadb", "mariadb", "-uroot", "-e", `${replace ? `DROP DATABASE IF EXISTS \`${database}\`;` : ''} CREATE DATABASE \`${database}\``]);
+    }
+    async databaseBackupStatus() { await this.requireDocker(); if (!(await this.databaseContainerIds(true)).length && !existsSync(path.join(this.databaseLayout.persistentData.mariaDb, "mysql"))) return "absent" as const; return this.databaseStatus(); }
     async phpMyAdminUrl(database?: string) {
         const state = await this.getState();
         if (this.snapshot.state !== "running")
@@ -1170,6 +1235,10 @@ export class DockerRuntimeController {
                     "mariadb-dump",
                     "-uroot",
                     "--single-transaction",
+                    "--skip-comments",
+                    "--skip-dump-date",
+                    "--hex-blob",
+                    "--databases",
                     "--routines",
                     "--events",
                     database,
@@ -1450,6 +1519,15 @@ export class DockerRuntimeController {
                 { mode: 0o600 },
             ),
             fs.writeFile(
+                path.join(this.layout.sites, "localhost", "public", "vhostra-cache-health.php"),
+                `<?php
+foreach (['localhost', '127.0.0.1'] as $host) {
+  if (${state.settings.optionalServices.redis ? 'true' : 'false'}) { try { $r = new Redis(); if ($r->connect($host, ${state.settings.ports.redis}, 2) && $r->ping()) echo "redis:$host:ok\\n"; $r->close(); } catch (Throwable $e) {} }
+  if (${state.settings.optionalServices.memcached ? 'true' : 'false'}) { try { $m = new Memcached(); $m->setOption(Memcached::OPT_CONNECT_TIMEOUT, 2000); $m->addServer($host, ${state.settings.ports.memcached}); $v = $m->getVersion(); if ($v && !in_array('255.255.255', $v, true)) echo "memcached:$host:ok\\n"; $m->quit(); } catch (Throwable $e) {} }
+}
+`, { mode: 0o600 },
+            ),
+            fs.writeFile(
                 path.join(
                     this.layout.sites,
                     "localhost",
@@ -1497,6 +1575,16 @@ export class DockerRuntimeController {
                 { mode: 0o600 },
             ),
         ]);
+        const redisFile = path.join(this.layout.runtime.redis, "redis.conf");
+        const memcachedFile = path.join(this.layout.runtime.memcached, "memcached.conf");
+        const redisSource = await fs.readFile(redisFile, "utf8");
+        const redisPort = `port ${state.settings.ports.redis}`;
+        const redisConfigured = /^port\s+\d+.*$/m.test(redisSource) ? redisSource.replace(/^port\s+\d+.*$/gm, redisPort) : `${redisSource}\n${redisPort}\n`;
+        if (redisConfigured !== redisSource) await fs.writeFile(redisFile, redisConfigured, { mode: 0o600 });
+        const memcachedSource = await fs.readFile(memcachedFile, "utf8");
+        const memcachedPort = `-p ${state.settings.ports.memcached}`;
+        const memcachedConfigured = /(?:^|\s)-p\s+\d+/.test(memcachedSource) ? memcachedSource.replace(/(^|\s)-p\s+\d+/g, `$1${memcachedPort}`) : `${memcachedSource}\n${memcachedPort}\n`;
+        if (memcachedConfigured !== memcachedSource) await fs.writeFile(memcachedFile, memcachedConfigured, { mode: 0o600 });
         await fs.writeFile(path.join(this.layout.runtime.php, "roots.json"), JSON.stringify(Object.fromEntries(
             mounts.flatMap(({ host, container }) => [host.hostname, ...host.aliases].map(name => [name.toLowerCase(), container])))), { mode: 0o644 });
         await fs.writeFile(path.join(this.layout.runtime.php, "site-logrotate.conf"),
@@ -1893,8 +1981,16 @@ export class DockerRuntimeController {
                 );
         for (const extension of state.settings.php.disabledExtensions)
             if ([...modules].map(normalizeExtensionId).includes(normalizeExtensionId(extension))) throw new Error(`The disabled PHP extension “${extension}” is still loaded in the replacement runtime.`);
+        // Exercise the selected frontend's PHP extensions, not only daemon tools.
+        const cacheHealth = await ready(ports.http, "/vhostra-cache-health.php");
+        for (const service of ["redis", "memcached"] as const) {
+            if (state.settings.optionalServices[service] && !cacheHealth.includes(`${service}:localhost:ok`) )
+                throw new Error(`${service} failed its PHP localhost connectivity check.`);
+            if (state.settings.optionalServices[service] && !cacheHealth.includes(`${service}:127.0.0.1:ok`))
+                throw new Error(`${service} failed its PHP loopback connectivity check.`);
+        }
         if (state.settings.optionalServices.redis)
-            await this.compose(["exec", "-T", "runtime", "redis-cli", "PING"]);
+            await this.compose(["exec", "-T", "runtime", "redis-cli", "-p", String(state.settings.ports.redis), "PING"]);
         if (state.settings.optionalServices.memcached)
             await this.compose([
                 "exec",
@@ -1902,7 +1998,7 @@ export class DockerRuntimeController {
                 "runtime",
                 "/bin/sh",
                 "-lc",
-                "printf 'version\\r\\n' | nc -w 3 127.0.0.1 11211 | grep -q '^VERSION'",
+                `printf 'version\\r\\n' | nc -w 3 127.0.0.1 ${state.settings.ports.memcached} | grep -q '^VERSION'`,
             ]);
         this.appendProgress("✓ Required extensions and optional services healthy");
         this.appendProgress("Checking phpMyAdmin HTTP health…");
@@ -2628,7 +2724,7 @@ async function executeSql(args: string[], statement: string): Promise<string> {
         child.stderr.on("data", data => { errors = (errors + data).slice(-65536); });
         child.stdin.on("error", () => {});
         child.once("error", reject);
-        child.once("close", code => { clearTimeout(timer); code === 0 ? resolve(output) : reject(new Error(errors.trim() || "MariaDB command failed.")); });
+        child.once("close", code => { clearTimeout(timer); code === 0 ? resolve(output) : reject(new Error(databaseErrorMessage(errors.trim()) || "MariaDB command failed.")); });
         const timer = setTimeout(() => child.kill("SIGTERM"), 120000);
         child.stdin.end(statement + "\n");
     });

@@ -37,7 +37,7 @@ if (applicationSession().hasSingleInstanceLock) {
     }
     console.log('Actual Vhostra: second launches exit, retain one window/tray, restore and focus hidden/minimized owner.')
   } catch (error) { console.error(error); process.exitCode = 1 }
-  finally { app.releaseSingleInstanceLock(); await rm(root, { recursive: true, force: true }); app.exit(process.exitCode ?? 0) }
+  finally { app.releaseSingleInstanceLock(); await applicationSession().runtime.pauseBackgroundWork(); applicationSession().runtime.dispose(); applicationSession().window?.destroy(); await (await import('../dist-electron/logs.js')).drainApplicationLogs(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 150 }); app.exit(process.exitCode ?? 0) }
 }
 
 }).catch(error => { console.error(error); app.exit(1) })

@@ -69,7 +69,7 @@ test('onboarding backup preview restores settings/theme/both caches, skips equiv
   assert.equal((await store.getState()).settings.selectedWebServer, 'nginx')
   const edited = JSON.parse(await readFile(bundle, 'utf8')); edited.configuration.sites.find(site => !site.builtIn).documentRoot = '/tmp/different'; edited.configuration.virtualHosts.find(host => !host.builtIn).documentRoot = '/tmp/different'
   await writeFile(bundle, JSON.stringify(edited)); assert.equal((await store.previewBundle(bundle)).sites[0].disposition, 'conflict')
-  const result = await store.importBundle(bundle); assert.equal(result.imported.length, 0); assert.ok(result.warnings.some(warning => warning.includes('differs')))
+  await assert.rejects(store.importBundle(bundle), /conflict review required/); const result = await store.importBundle(bundle, {}, undefined, {}, { 'example.test': 'keep' }); assert.equal(result.imported.length, 0); assert.ok(result.warnings.some(warning => warning.includes('differs')))
   assert.equal((await store.getState()).sites.find(site => !site.builtIn).documentRoot, project)
 }))
 test('backup version, bounded size, changed source and completed-profile overwrite are rejected', () => fixture(async ({ store, profile }) => {
@@ -83,7 +83,7 @@ test('partial backups ask only for absent required settings and preserve website
   const bundle = path.join(profile, 'bundle.json'); await store.addSite({ name: 'Example', documentRoot: project, url: 'http://example.test' }); await store.exportBundle(bundle)
   const data = JSON.parse(await readFile(bundle, 'utf8')); data.configuration.settings = { schemaVersion: 1, selectedWebServer: 'apache' }; await writeFile(bundle, JSON.stringify(data))
   const preview = await store.previewBundle(bundle); assert.deepEqual(preview.missing, ['php', 'cache'])
-  const result = await store.restoreOnboardingBundle(bundle, preview.checksum); assert.deepEqual(result.missing, ['php', 'cache']); assert.match(await readFile(path.join(project, 'index.php'), 'utf8'), /untouched/)
+  const result = await store.restoreOnboardingBundle(bundle, preview.checksum, {}, {}, { settings: 'replace' }); assert.deepEqual(result.missing, ['php', 'cache']); assert.match(await readFile(path.join(project, 'index.php'), 'utf8'), /untouched/)
 }))
 test('Hosts manual editor preserves unrelated CRLF/comment formatting, validates content and uses scoped write concurrency protection', () => fixture(async ({ profile }) => {
   const hostsFile = path.join(profile, 'hosts'); const original = '127.0.0.1 localhost\r\n# Keep this comment\r\n127.0.0.1 old.test # Vhostra 12345678-1234-1234-1234-123456789abc\r\n'

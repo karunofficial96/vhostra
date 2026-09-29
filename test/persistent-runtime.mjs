@@ -57,8 +57,8 @@ try {
     $db=new PDO("mysql:host=$host;port=3306;dbname=wp_fixture",'wp_fixture_user','isolated-fixture-password');
     echo $host . ':pdo:' . $db->query("SELECT value FROM identity_probe WHERE id=1")->fetchColumn() . "\\n";
   }
-  echo 'redis:' . (new Redis())->connect('127.0.0.1',6379) . "\\n";
-  $cache=new Memcached(); $cache->addServer('127.0.0.1',11211); $cache->set('fixture','ok'); echo 'memcached:' . $cache->get('fixture');`)
+  echo 'redis:' . (new Redis())->connect('localhost',${settings.ports.redis}) . "\\n";
+  $cache=new Memcached(); $cache->addServer('localhost',${settings.ports.memcached}); $cache->set('fixture','ok'); echo 'memcached:' . $cache->get('fixture');`)
   await runtime.controlManagedService('mariadb', 'start')
   assert.equal((await runtime.listManagedServices()).find(row => row.id === 'mariadb').state, 'running')
   assert.equal((await runtime.listManagedServices()).find(row => row.id === 'web').state, 'stopped')

@@ -1,3 +1,4 @@
+import { hostsDiff } from './hosts-diff.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
@@ -25,6 +26,7 @@ export interface HostsEditReview {
   addedLines: number
   truncated: boolean
   managedChanges: string[]
+  mappingChanges: { added: number; removed: number; modified: number; manual: number }; commentsChanged: number
 }
 const digest = (text: string) => createHash('sha256').update(text).digest('hex')
 const managedLines = (contents: string) => contents.split(/\r?\n/).flatMap((text, index) => ownedRecord.test(text) ? [{ line: index + 1, text, hostnames: text.split('#')[0].trim().split(/\s+/).slice(1) }] : [])
@@ -44,8 +46,25 @@ export class HostsFileManager {
     return next
   }
   async inspect() { if ((await fs.stat(this.hostsPath)).size > 1024 * 1024) throw new Error('Hosts file exceeds the 1 MiB editor limit.'); const contents = await fs.readFile(this.hostsPath, 'utf8'); if (Buffer.byteLength(contents) > 1024 * 1024) throw new Error('Hosts file exceeds the 1 MiB editor limit.'); return { path: this.hostsPath, contents, managedLines: managedLines(contents) } }
+  /** Recovery only prepares a reviewed buffer; the normal explicit Save elevates. */
+  async previewPrevious(expected: string) {
+    const records: Array<{ original: string; createdAt: string }> = []
+    for (const entry of await fs.readdir(this.recoveryDirectory, { withFileTypes: true }).catch(() => [])) {
+      if (!entry.isFile() || !/^[a-f0-9-]{36}\.json$/i.test(entry.name)) continue
+      try {
+        const file = path.join(this.recoveryDirectory, entry.name)
+        if ((await fs.stat(file)).size > 8 * 1024 * 1024) continue
+        const record = JSON.parse(await fs.readFile(file, 'utf8'))
+        if (record.owner === 'vhostra' && record.kind === 'hosts-recovery' && record.status === 'completed' && record.hostsPath === this.hostsPath && typeof record.original === 'string' && Number.isFinite(Date.parse(record.createdAt))) records.push(record)
+      } catch { /* Invalid records are not recovery candidates. */ }
+    }
+    records.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    if (!records.length) throw new Error('No completed previous Hosts file backup is available.')
+    return this.previewEdit(records[0].original, expected)
+  }
   private validateEdit(contents: string, expected: string) {
     if (typeof contents !== 'string' || typeof expected !== 'string' || Buffer.byteLength(contents) > 1024 * 1024 || Buffer.byteLength(expected) > 1024 * 1024 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\r]/.test(contents.replace(/\r\n/g, '\n'))) throw new Error('Invalid Hosts content (1 MiB limit; no NUL or bare carriage returns).')
+    if (contents.split('\n').length > 16384 || expected.split('\n').length > 16384) throw new Error('Hosts editor supports at most 16,384 lines.');
     if (expected.includes('\r\n') && !/(?<!\r)\n/.test(expected)) contents = contents.replace(/\r?\n/g, '\r\n')
     for (const [index, line] of contents.split(/\r?\n/).entries()) {
       const text = line.replace(/#.*/, '').trim(); if (!text) continue
@@ -59,18 +78,26 @@ export class HostsFileManager {
     contents = this.validateEdit(contents, expected)
     if ((await this.inspect()).contents !== expected) throw changedExternally()
     if (contents === expected) throw new Error('No Hosts changes to review.')
-    const before = expected.match(/[^\n]*\n|[^\n]+$/g) ?? []; const after = contents.match(/[^\n]*\n|[^\n]+$/g) ?? []
-    let start = 0; while (start < before.length && start < after.length && before[start] === after[start]) start++
-    let oldEnd = before.length; let newEnd = after.length
-    while (oldEnd > start && newEnd > start && before[oldEnd - 1] === after[newEnd - 1]) { oldEnd--; newEnd-- }
-    const removedLines = oldEnd - start; const addedLines = newEnd - start
-    const diffLine = (prefix: string, line: string) => `${prefix}${line.replace(/\r?\n$/, '')}\n${line.endsWith('\n') ? '' : '\\ No newline at end of file\n'}`
-    const fullDiff = `@@ -${start + 1},${removedLines} +${start + 1},${addedLines} @@\n` + before.slice(start, oldEnd).map(line => diffLine('-', line)).join('') + after.slice(start, newEnd).map(line => diffLine('+', line)).join('')
+    const diff = hostsDiff(expected, contents)
+    const oldEntries = parseHosts(expected); const newEntries = parseHosts(contents)
+    const ownedNames = new Set([...managedLines(expected), ...managedLines(contents)].flatMap(line => line.hostnames.map(name => name.toLowerCase())))
+    const mappingChanges = { added: 0, removed: 0, modified: 0, manual: 0 }
+    for (const name of new Set([...oldEntries.keys(), ...newEntries.keys()])) {
+      const old = oldEntries.get(name); const next = newEntries.get(name)
+      if (JSON.stringify([...(old ?? [])].sort()) === JSON.stringify([...(next ?? [])].sort())) continue
+      if (!old) mappingChanges.added++; else if (!next) mappingChanges.removed++; else mappingChanges.modified++
+      if (!ownedNames.has(name)) mappingChanges.manual++
+    }
+    const comments = (text: string) => { const counts = new Map<string, number>(); for (const line of text.split(/\r?\n/)) if (line.includes('#')) { const comment = line.slice(line.indexOf('#')); counts.set(comment, (counts.get(comment) ?? 0) + 1) }; return counts }
+    const beforeComments = comments(expected); const afterComments = comments(contents)
+    const commentsChanged = [...new Set([...beforeComments.keys(), ...afterComments.keys()])].reduce((count, comment) => count + Math.abs((beforeComments.get(comment) ?? 0) - (afterComments.get(comment) ?? 0)), 0)
     const remaining = new Map<string, number>()
     for (const line of managedLines(contents)) remaining.set(line.text, (remaining.get(line.text) ?? 0) + 1)
     const managedChanges = managedLines(expected).filter(line => { const count = remaining.get(line.text) ?? 0; if (count) { remaining.set(line.text, count - 1); return false }; return true }).map(line => `Line ${line.line}: ${line.hostnames.join(', ')}`)
+    const oldManaged = new Set(managedLines(expected).map(line => line.text))
+    for (const line of managedLines(contents)) if (!oldManaged.has(line.text)) managedChanges.push(`Added line ${line.line}: ${line.hostnames.join(', ')}`)
     const id = randomUUID(); this.review = { id, source: digest(expected), proposed: digest(contents), expires: Date.now() + 10 * 60 * 1000 }
-    return { id, contents, diff: fullDiff.slice(0, 128 * 1024), truncated: fullDiff.length > 128 * 1024, removedLines, addedLines, managedChanges } satisfies HostsEditReview
+    return { id, contents, ...diff, managedChanges, mappingChanges, commentsChanged } satisfies HostsEditReview
   }) }
   /** Only the explicit full-file editor uses a reviewed, confirmed manual write. */
   edit(contents: string, expected: string, reviewId: string) { return this.serialize(async () => {
@@ -166,6 +193,9 @@ export class HostsFileManager {
       if (after !== before && !(before && !before.endsWith('\n') && after === before + '\n')) throw new Error('Automatic Hosts management must preserve unrelated entries and comments, and may add only Vhostra-owned mappings.')
     }
     if ((await this.inspect()).contents !== expectedSource) throw changedExternally()
+    await this.retainRecoverySnapshots().catch(() => undefined)
+    const records = await fs.readdir(this.recoveryDirectory, { withFileTypes: true }).catch(() => [])
+    if (records.filter(entry => entry.isFile() && /^[a-f0-9-]{36}\.json$/i.test(entry.name)).length >= 60) throw new Error('Hosts recovery storage has reached 60 records. Review retained failed recovery files before saving again; none were deleted.')
     const temporary = await this.writeTemporary(contents)
     const expected = await this.writeTemporary(expectedSource)
     const token = randomUUID()
@@ -196,8 +226,11 @@ export class HostsFileManager {
       recovery.status = 'completed'; await fs.writeFile(recoveryFile, JSON.stringify(recovery), { mode: 0o600 }).catch(() => undefined)
       await this.retainRecoverySnapshots().catch(() => undefined)
     } catch (error) {
-      recovery.status = 'failed'; await fs.writeFile(recoveryFile, JSON.stringify(recovery), { mode: 0o600 }).catch(() => undefined)
-      throw new Error(`Hosts write was not confirmed. Administrator approval was cancelled, the protected write failed, or the file changed externally while approval was pending. Reload and review before retrying. Recovery backup: ${recoveryFile}. ${errorMessage(error)}`)
+      let unchanged = false
+      try { unchanged = await fs.readFile(this.hostsPath, 'utf8') === expectedSource && !(await fs.lstat(backup).catch(() => null)) } catch { /* Keep recovery when its outcome cannot be established. */ }
+      if (unchanged) await fs.rm(recoveryFile, { force: true }).catch(() => undefined)
+      else { recovery.status = 'failed'; await fs.writeFile(recoveryFile, JSON.stringify(recovery), { mode: 0o600 }).catch(() => undefined) }
+      throw new Error(`Hosts write was not confirmed. Administrator approval was cancelled, the protected write failed, or the file changed externally while approval was pending. Reload and review before retrying. ${unchanged ? 'Original file is unchanged; no recovery is needed.' : `Recovery backup: ${recoveryFile}.`} ${errorMessage(error)}`)
     } finally { await Promise.all([temporary, expected].map(file => fs.rm(file, { force: true }))) }
   }
 

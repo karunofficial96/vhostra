@@ -1,3 +1,4 @@
+import { fingerprint, siteDefinition, differences, type RestoreChoices } from './reconciliation.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream, existsSync, promises as fs, readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -136,6 +137,12 @@ export class VhostraStore {
   }
   async updateLocalhostWelcome(runtimeMessage: string) { await this.initialize(); await this.writeLocalhostWelcome(runtimeMessage) }
   async getState(): Promise<AppState> { await this.initialize(); return { settings: await this.readSettings(), sites: await this.readRecords<Site>(this.layout.sites), virtualHosts: await this.readRecords<VirtualHost>(this.layout.virtualHosts) } }
+  restoreBackupConfiguration(original: AppState, preferences: OnboardingState) { return this.serialize(async () => {
+    for (const site of (await this.getState()).sites.filter(site => !site.builtIn && !original.sites.some(item => item.id === site.id))) await this.removeSiteRecord(site.id)
+    for (const site of original.sites) await this.writeJson(this.recordPath(this.layout.sites, site.id), site)
+    for (const host of original.virtualHosts) await this.writeJson(this.recordPath(this.layout.virtualHosts, host.id), host)
+    await this.saveSettings(original.settings); await this.saveOnboarding(preferences)
+  }) }
   async getLocalhostUrl() { return localUrl((await this.readSettings()).ports.http) }
   async saveSettings(settings: Settings) { const normalized = this.normalizeSettings(settings); this.validateSettings(normalized); await this.initialize(); await this.writeJson(this.layout.settings, normalized); await this.updateDefaultSiteUrls(normalized.ports.http); await this.writeLocalhostWelcome(); return normalized }
   addSite(input: Pick<Site, 'name' | 'documentRoot' | 'url' | 'framework'> & { aliases?: string[]; vhostId?: string }) { return this.serialize(() => this.addSiteRecord(input)) }
@@ -194,7 +201,7 @@ export class VhostraStore {
       await this.assertAvailableHostnames([host.hostname, ...host.aliases])
     }
     const snapshot = path.join(this.layout.backups, `before-import-${new Date().toISOString().replace(/[:.]/g, '-')}.json`)
-    await this.exportBundle(snapshot)
+    await this.exportBundle(snapshot, true)
     const recovery = JSON.parse(await fs.readFile(snapshot, 'utf8')); recovery.manifest.automaticRecovery = { owner: 'vhostra', state: 'active', createdAt: new Date().toISOString() }; await this.writeJson(snapshot, recovery)
     const created: Site[] = []
     try {
@@ -247,28 +254,40 @@ export class VhostraStore {
     const ids = new Set((await this.getState()).sites.map(site => `${site.id}.jpg`))
     for (const file of await fs.readdir(this.layout.screenshots)) if ((/^[a-f0-9-]{36}\.jpg$/i.test(file) || file === `${localhostSiteId}.jpg`) && !ids.has(file)) await fs.rm(path.join(this.layout.screenshots, file), { force: true })
   }) }
-  async exportBundle(destination: string) {
+  async exportBundle(destination: string, includePrivateSource = false) {
     const state = await this.getState();
     // Native source can contain arbitrary secrets. Keep it locally, but do not
     // put unclassified raw directives in the default secret-free portable export.
-    const portable = { ...state, virtualHosts: state.virtualHosts.map(host => host.source ? { ...host, source: { ...host.source, raw: undefined, warnings: [...host.source.warnings, 'Raw native source and preserved directives excluded from this secret-free export; retained in the original local canonical record.'] }, preservedDirectives: undefined } : host) };
-    const bundle = { manifest: { format: 'vhostra/config-bundle', schemaVersion: 1, bundleId: randomUUID(), createdAt: new Date().toISOString(), appVersion: '1.0.0', scopes: ['all'], excludedByDefault: ['website-content', 'database-content', 'passwords-and-secrets', 'private-tls-keys'], includesPrivateKeys: false, includesSecrets: false, entries: [{ id: 'settings', type: 'settings', relativePath: 'settings.json', ownership: 'vhostra-source' }, { id: 'sites', type: 'site', relativePath: 'sites/', ownership: 'vhostra-source' }, { id: 'virtual-hosts', type: 'virtual-host', relativePath: 'virtual-hosts/', ownership: 'vhostra-source' }] }, configuration: portable, preferences: { theme: (await this.getOnboarding()).theme } }
+    const portable = includePrivateSource ? state : { ...state, virtualHosts: state.virtualHosts.map(host => host.source ? { ...host, source: { ...host.source, raw: undefined, warnings: [...host.source.warnings, 'Raw native source and preserved directives excluded from this secret-free export; retained in the original local canonical record.'] }, preservedDirectives: undefined } : host) };
+    const bundle = { manifest: { format: 'vhostra/config-bundle', schemaVersion: 1, bundleId: randomUUID(), createdAt: new Date().toISOString(), appVersion: '1.0.0', scopes: ['all'], excludedByDefault: ['website-content', 'database-content', 'passwords-and-secrets', 'private-tls-keys'], includesPrivateKeys: false, includesSecrets: includePrivateSource, settingsFingerprint: fingerprint(portable.settings), siteIdentities: portable.sites.filter(site => !site.builtIn).map(site => { const host = portable.virtualHosts.find(host => host.id === site.vhostId)!; return { siteId: site.id, canonicalId: host.id, hostname: host.hostname, fingerprint: fingerprint(siteDefinition(site, host as VirtualHost)) } }), entries: [{ id: 'settings', type: 'settings', relativePath: 'settings.json', ownership: 'vhostra-source' }, { id: 'sites', type: 'site', relativePath: 'sites/', ownership: 'vhostra-source' }, { id: 'virtual-hosts', type: 'virtual-host', relativePath: 'virtual-hosts/', ownership: 'vhostra-source' }] }, configuration: portable, preferences: { theme: (await this.getOnboarding()).theme } }
+    if (Buffer.byteLength(JSON.stringify(bundle)) > 4 * 1024 * 1024) throw new Error('Configuration exceeds the 4 MiB portable backup limit. Export smaller Site sets before a complete backup.');
     await this.writeJson(destination, bundle); return destination
   }
   async previewBundle(source: string) {
     const candidate = await this.readBundle(source)
     const existing = await this.getState()
-    const warnings = ['Website files, databases, secrets and private keys are not restored by this configuration bundle. Existing configurations are never overwritten.']
+    const warnings = ['This configuration bundle excludes website files, database data/accounts, secrets and private keys. Site root contents are never overwritten.']
     const sites = candidate.configuration.sites.filter((site: Site) => !site.builtIn).map((site: Site) => {
       const host = candidate.configuration.virtualHosts.find((host: VirtualHost) => host.id === site.vhostId)!
-      const collision = existing.virtualHosts.find(current => [current.hostname, ...current.aliases].some(name => [host.hostname, ...host.aliases].includes(name)))
-      const disposition = collision ? (collision.hostname === host.hostname && collision.documentRoot === host.documentRoot && JSON.stringify([...collision.aliases].sort()) === JSON.stringify([...host.aliases].sort()) ? 'equivalent' : 'conflict') : 'new'
-      if (disposition === 'conflict') warnings.push(`${host.hostname}: existing configuration differs; preserved without overwriting.`)
-      return { name: site.name, hostname: host.hostname, documentRoot: site.documentRoot, disposition }
+      const names = [host.hostname, ...host.aliases].map(name => name.toLowerCase())
+      const collisions = existing.virtualHosts.filter(current => current.id === host.id || existing.sites.some(localSite => localSite.id === site.id && localSite.vhostId === current.id) || [current.hostname, ...current.aliases].some(name => names.includes(name.toLowerCase())))
+      const local = collisions.length === 1 ? existing.sites.find(current => current.vhostId === collisions[0].id && !current.builtIn) : undefined
+      const localHost = local ? collisions[0] : undefined
+      const definition = siteDefinition(site, host)
+      const localDefinition = local && localHost ? siteDefinition(local, localHost) : undefined
+      const disposition = !collisions.length ? 'new' : !localDefinition ? 'incompatible' : fingerprint(localDefinition) === fingerprint(definition) ? 'equivalent' : 'conflict'
+      if (disposition === 'conflict') warnings.push(`${host.hostname}: existing configuration differs; choose Keep Existing, Replace with Backup or Skip.`)
+      if (disposition === 'incompatible') warnings.push(`${host.hostname}: collides with multiple Sites or protected localhost; replacement is unavailable.`)
+      if ([host.redirects, host.rewrites, host.headers].some(rules => rules?.length)) warnings.push(`${host.hostname}: Requires review — custom redirect, rewrite and header rules are preserved as canonical metadata but are not activated by this generator.`);
+      if (host.source?.status === 'Requires review' || host.preservedDirectives?.length) warnings.push(`${host.hostname}: Requires review — unsupported source directives are retained but not activated on another server.`)
+      return { canonicalId: host.id, name: site.name, hostname: host.hostname, documentRoot: site.documentRoot, disposition, localId: local?.id, differences: localDefinition ? differences(localDefinition, definition) : [], local: localDefinition, incoming: definition }
     })
     for (const site of sites) if (!(await fs.stat(site.documentRoot).catch(() => null))?.isDirectory()) warnings.push(`${site.hostname}: host document root is unavailable on this computer. Edit the Site path before starting Services.`)
     const settings = candidate.configuration.settings
-    return { manifest: candidate.manifest, source, checksum: candidate.checksum, sites, settings: settings ? { server: settings.selectedWebServer, php: settings.selectedPhpVersion, optionalServices: settings.optionalServices } : null,
+    const localPreferences = await this.getOnboarding()
+    const settingsDisposition = !settings ? null : !existing.sites.some(site => !site.builtIn) && !localPreferences.completed && !localPreferences.ready ? 'new' : fingerprint(existing.settings) === fingerprint(this.normalizeSettings(settings)) ? 'equivalent' : 'conflict'
+    const configurationItems = settingsDisposition ? [{ key: 'settings', category: 'settings' as const, name: 'Vhostra settings', disposition: settingsDisposition, detail: settingsDisposition === 'conflict' ? 'The saved server/PHP, ports, cache and extension preferences differ. Replace applies backup preferences; Keep Existing preserves current settings. Login/service autostart are never enabled solely from a backup.' : 'Restore the included environment preferences.', local: existing.settings, incoming: this.normalizeSettings(settings) }] : []
+    return { configurationItems, manifest: candidate.manifest, source, checksum: candidate.checksum, sites, settings: settings ? { server: settings.selectedWebServer, php: settings.selectedPhpVersion, optionalServices: settings.optionalServices } : null,
       missing: [!settings?.selectedWebServer && 'server', !settings?.selectedPhpVersion && 'php', !settings?.optionalServices && 'cache'].filter(Boolean) as string[], warnings }
   }
   private async readBundle(source: string) {
@@ -278,10 +297,13 @@ export class VhostraStore {
     if (Buffer.byteLength(raw) > 4 * 1024 * 1024) throw new Error('Backup grew beyond the supported size.')
     const candidate = JSON.parse(raw)
     if (candidate.manifest?.format !== 'vhostra/config-bundle' || candidate.manifest.schemaVersion !== 1 || !Array.isArray(candidate.manifest.entries) || !Array.isArray(candidate.configuration?.sites) || !Array.isArray(candidate.configuration?.virtualHosts)) throw new Error('This file is not a supported Vhostra configuration bundle.')
+    if (candidate.manifest.entries.some((entry: { type: string; ownership?: string }) => !['settings', 'site', 'virtual-host'].includes(entry.type) && entry.ownership !== 'generated-runtime-reference')) throw new Error('Configuration bundle contains unsupported components; no state was silently omitted.');
+    if (candidate.databases || candidate.accounts || candidate.databaseBackup || candidate.manifest.includesSecrets && !candidate.manifest.excludedByDefault?.includes('database-content')) throw new Error('Use a supported full-backup manifest for database/account restoration; unknown database payload cannot be omitted.');
     if (candidate.configuration.sites.length > 500 || candidate.configuration.virtualHosts.length > 500) throw new Error('A backup can contain at most 500 Site definitions.')
-    const names = new Set<string>()
+    const names = new Set<string>(); const siteIds = new Set<string>(); const hostIds = new Set<string>()
     for (const site of candidate.configuration.sites as Site[]) {
       if (site.builtIn === 'localhost') continue
+      if (siteIds.has(site.id) || hostIds.has(site.vhostId)) throw new Error('Duplicate canonical identity in backup.'); siteIds.add(site.id); hostIds.add(site.vhostId)
       const host = candidate.configuration.virtualHosts.find((host: VirtualHost) => host.id === site.vhostId)
       if (!host || host.documentRoot !== site.documentRoot || new URL(site.url).hostname !== host.hostname) throw new Error('Backup Site and canonical configuration disagree.')
       this.validateSiteInput({ ...site, aliases: host.aliases }, true)
@@ -292,71 +314,94 @@ export class VhostraStore {
     if (candidate.configuration.settings) this.validateSettings(this.normalizeSettings(candidate.configuration.settings))
     return { ...candidate, checksum: createHash('sha256').update(raw).digest('hex') }
   }
-  async restoreOnboardingBundle(source: string, checksum: string, roots: Record<string, string> = {}, plans: Record<string, string> = {}) {
+  async restoreOnboardingBundle(source: string, checksum: string, roots: Record<string, string> = {}, plans: Record<string, string> = {}, choices: RestoreChoices = {}, progress: (message: string) => void = () => {}) {
     if ((await this.getOnboarding()).completed) throw new Error('Use Sites import for an existing profile; setup restoration cannot overwrite current settings.')
     const candidate = await this.readBundle(source)
     if (candidate.checksum !== checksum) throw new Error('Backup changed after preview. Select and review it again.')
     const preview = await this.previewBundle(source)
-    for (const site of preview.sites.filter((site: { disposition: string; hostname: string; documentRoot: string }) => site.disposition === 'new')) {
+    for (const site of preview.sites.filter((site: { disposition: string; hostname: string; documentRoot: string }) => site.disposition === 'new' || choices[site.hostname] === 'replace')) {
       const root = roots[site.hostname] ?? site.documentRoot
       if (typeof root !== 'string' || !path.isAbsolute(root) || !(await fs.stat(root).catch(() => null))?.isDirectory()) throw new Error(`Choose an existing host document root for ${site.hostname} before restoring.`)
     }
-    const result = await this.importBundle(source, roots, checksum, plans)
+    if (preview.configurationItems[0]?.disposition === 'conflict' && !['keep', 'replace', 'skip'].includes(choices.settings)) throw new Error('Settings conflict review required before restore.');
+    const result = await this.importBundle(source, roots, checksum, plans, choices, progress)
     const previous = await this.getOnboarding()
+    const settingsItem = preview.configurationItems[0]
+    if (settingsItem?.disposition === 'conflict' && !['keep', 'replace', 'skip'].includes(choices.settings)) throw new Error('Settings conflict review required before restore.')
     if (candidate.configuration.settings) {
-      const settings = this.normalizeSettings(candidate.configuration.settings)
+      const keep = choices.settings === 'keep' || choices.settings === 'skip' || settingsItem?.disposition === 'equivalent'
+      const settings = keep ? (await this.getState()).settings : this.normalizeSettings(candidate.configuration.settings)
       // Login integration is a native action, not merely a restored JSON flag.
-      settings.startup.launchAtLogin = false; settings.startup.startServicesOnLaunch = false
-      await this.saveSettings(settings)
+      if (!keep) { settings.startup.launchAtLogin = false; settings.startup.startServicesOnLaunch = false; await this.saveSettings(settings) }
       const theme = ['light', 'dark', 'system'].includes(candidate.preferences?.theme) ? candidate.preferences.theme : previous.theme
       await this.saveOnboarding({ ...previous, theme, server: settings.selectedWebServer, php: settings.selectedPhpVersion,
         cache: settings.optionalServices.redis ? 'redis' : settings.optionalServices.memcached ? 'memcached' : 'none', restoredServices: settings.optionalServices })
     }
+    if (candidate.configuration.settings) { if (choices.settings === 'keep' || choices.settings === 'skip' || settingsItem?.disposition === 'equivalent') result.summary.skipped++; else result.summary.imported++ }
     return { ...result, warnings: preview.warnings.filter(warning => !Object.keys(roots).some(hostname => warning.startsWith(`${hostname}: host document root is unavailable`))), missing: preview.missing, preferences: await this.getOnboarding() }
   }
   /** Imports portable site definitions only. Website files, database data, and
    * secrets are intentionally outside configuration bundles and are never copied. */
-  importBundle(source: string, roots: Record<string, string> = {}, checksum?: string, plans: Record<string, string> = {}) { return this.serialize(() => this.importBundleRecords(source, roots, checksum, plans)) }
-  private async importBundleRecords(source: string, roots: Record<string, string>, checksum: string | undefined, plans: Record<string, string>) {
+  importBundle(source: string, roots: Record<string, string> = {}, checksum?: string, plans: Record<string, string> = {}, choices: RestoreChoices = {}, progress: (message: string) => void = () => {}) { return this.serialize(() => this.importBundleRecords(source, roots, checksum, plans, choices, progress)) }
+  private async importBundleRecords(source: string, roots: Record<string, string>, checksum: string | undefined, plans: Record<string, string>, choices: RestoreChoices, progress: (message: string) => void) {
     const candidate = await this.readBundle(source) as { configuration: AppState; checksum: string }
     if (checksum && candidate.checksum !== checksum) throw new Error('Backup changed after preview. Select and review it again.')
     const preview = await this.previewBundle(source)
     await this.initialize()
     const snapshot = path.join(this.layout.backups, `before-import-${new Date().toISOString().replace(/[:.]/g, '-')}.json`)
-    await this.exportBundle(snapshot)
+    await this.exportBundle(snapshot, true)
     const recovery = JSON.parse(await fs.readFile(snapshot, 'utf8'))
     recovery.manifest.automaticRecovery = { owner: 'vhostra', state: 'active', createdAt: new Date().toISOString() }
     await this.writeJson(snapshot, recovery)
     const imported: Array<{ name: string; hostname: string; aliases: string[] }> = []
     const existing = await this.getState()
-    const knownHostnames = new Set(existing.virtualHosts.flatMap(host => [host.hostname, ...host.aliases]).map(name => name.toLowerCase()))
-    const planned: Array<{ incoming: Site; host: VirtualHost }> = []
-    for (const site of candidate.configuration.sites) {
-      if (!site || typeof site !== 'object' || (site as Site).builtIn === 'localhost') continue
-      const incoming = { ...site, documentRoot: roots[new URL(site.url).hostname] ?? site.documentRoot } as Site
-      const host = candidate.configuration.virtualHosts.find(item => item && typeof item === 'object' && (item as VirtualHost).id === incoming.vhostId) as VirtualHost | undefined
-      if (!host || [host.hostname, ...(host.aliases ?? [])].some(name => knownHostnames.has(name?.toLowerCase()))) continue
-      if (new URL(incoming.url).hostname.toLowerCase() !== host.hostname.toLowerCase()) throw new Error('Imported site URL and virtual-host hostname disagree.')
-      const input = { name: incoming.name, documentRoot: incoming.documentRoot, url: incoming.url, framework: incoming.framework, aliases: host.aliases }
-      this.validateSiteInput(input); await this.assertExternalRoot(input.documentRoot)
-      await this.assertAvailableHostnames([host.hostname, ...host.aliases])
-      if (host.indexFiles && (!Array.isArray(host.indexFiles) || !host.indexFiles.length || host.indexFiles.length > 16 || host.indexFiles.some(index => typeof index !== 'string' || !/^[a-zA-Z0-9_.-]+$/.test(index)))) throw new Error('Invalid imported index filename.')
-      planned.push({ incoming, host })
-      for (const name of [host.hostname, ...host.aliases]) knownHostnames.add(name.toLowerCase())
+    const summary = { imported: 0, skipped: 0, replaced: 0, conflicted: 0, failed: 0 }
+    const planned: Array<{ incoming: Site; host: VirtualHost; localId?: string }> = []
+    for (const item of preview.sites) {
+      const choice = choices[item.hostname]
+      if (choice !== undefined && !['keep', 'replace', 'skip'].includes(choice)) throw new Error('Invalid conflict choice.')
+      if (item.disposition === 'incompatible') { if (choice !== 'skip' && choice !== 'keep') throw new Error(`${item.hostname}: incompatible hostname collision; explicitly skip this item.`); summary.skipped++; continue }
+      if (item.disposition === 'conflict' && !choice) throw new Error(`${item.hostname}: conflict review required before restore.`)
+      if (item.disposition === 'equivalent' || choice === 'skip' || choice === 'keep') { summary.skipped++; progress(`${item.hostname} — skipping`); continue }
+      const site = candidate.configuration.sites.find(site => !site.builtIn && new URL(site.url).hostname === item.hostname)!
+      const host = candidate.configuration.virtualHosts.find(host => host.id === site.vhostId)!
+      const incoming = { ...site, documentRoot: roots[item.hostname] ?? site.documentRoot }
+      this.validateSiteInput({ ...incoming, aliases: host.aliases }); await this.assertExternalRoot(incoming.documentRoot)
+      planned.push({ incoming, host, localId: item.disposition === 'conflict' ? item.localId : undefined })
     }
     const created: string[] = []
-    try { for (const { incoming, host } of planned) {
-      const added = await this.addSiteRecord({ name: incoming.name, documentRoot: incoming.documentRoot, url: incoming.url, framework: incoming.framework, aliases: host.aliases, vhostId: plans[host.hostname] })
-      created.push(added.sites.find(item => item.url === incoming.url)!.id)
-      const saved = (await this.getState()).virtualHosts.find(item => item.hostname === host.hostname)!
-      await this.writeJson(this.recordPath(this.layout.virtualHosts, saved.id), { ...saved, rewriteEnabled: host.rewriteEnabled !== false, indexFiles: host.indexFiles, source: host.source, preservedDirectives: host.preservedDirectives })
+    try { for (const { incoming, host, localId } of planned) {
+      progress(`${localId ? 'Replacing' : 'Importing'} ${host.hostname}…`)
+      const localSite = localId ? existing.sites.find(site => site.id === localId)! : undefined
+      if (this.validateHostMappings) await this.validateHostMappings([host.hostname, ...host.aliases])
+      let saved: VirtualHost
+      if (localSite) saved = existing.virtualHosts.find(item => item.id === localSite.vhostId)!
+      else {
+        const added = await this.addSiteRecord({ name: incoming.name, documentRoot: incoming.documentRoot, url: incoming.url, framework: incoming.framework, aliases: host.aliases, vhostId: plans[host.hostname] ?? (/^[a-f0-9-]{36}$/i.test(host.id) ? host.id : undefined) })
+        const addedSite = added.sites.find(item => item.url === incoming.url)!
+        created.push(addedSite.id)
+        saved = added.virtualHosts.find(item => item.id === addedSite.vhostId)!
+      }
+      const siteId = localSite?.id ?? created.at(-1)!
+      const currentSite = (await this.getState()).sites.find(site => site.id === siteId)!
+      await this.writeJson(this.recordPath(this.layout.sites, siteId), { ...currentSite, name: incoming.name, framework: incoming.framework, documentRoot: incoming.documentRoot, url: incoming.url, screenshot: undefined, updatedAt: new Date().toISOString() })
+      await this.writeJson(this.recordPath(this.layout.virtualHosts, saved.id), { ...host, id: saved.id, documentRoot: incoming.documentRoot, runtimeDocumentRoot: runtimeDocumentRoot(saved), logs: { ...host.logs, paths: siteLogPaths(this.layout, saved.id) } })
       imported.push({ name: incoming.name, hostname: host.hostname, aliases: host.aliases })
+      if (localSite) summary.replaced++; else summary.imported++
     }
-    } catch (error) { for (const id of created) await this.removeSiteRecord(id); throw error }
+      await this.writeLocalhostWelcome()
+    } catch (error) {
+      for (const id of created) await this.removeSiteRecord(id)
+      for (const site of existing.sites) await this.writeJson(this.recordPath(this.layout.sites, site.id), site)
+      for (const host of existing.virtualHosts) await this.writeJson(this.recordPath(this.layout.virtualHosts, host.id), host)
+      recovery.manifest.automaticRecovery.state = 'failed'; await this.writeJson(snapshot, recovery)
+      await this.writeLocalhostWelcome()
+      throw new Error(`Restore failed; original Site definitions recovered. Recovery snapshot: ${snapshot}. ${error instanceof Error ? error.message : 'Unknown error'}`)
+    }
     recovery.manifest.automaticRecovery.state = 'completed'
     await this.writeJson(snapshot, recovery)
     await this.retainCompletedImportSnapshots().catch(error => console.error('Vhostra snapshot retention deferred:', error.message))
-    return { imported, warnings: preview.warnings, backup: snapshot, message: imported.length ? `Imported ${imported.length} portable site definition${imported.length === 1 ? '' : 's'}.` : 'No new portable site definitions were found in this bundle.' }
+    return { imported, summary, warnings: preview.warnings, backup: snapshot, message: imported.length ? `Imported ${imported.length} portable site definition${imported.length === 1 ? '' : 's'}.` : 'No new portable site definitions were found in this bundle.' }
   }
   async assertResetSafe() {
     const state = await this.getState()
