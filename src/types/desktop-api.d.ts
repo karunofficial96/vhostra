@@ -9,7 +9,7 @@ export interface OnboardingPreferences { themeSaved?: boolean; restoredServices?
 export interface NativeImportPreview { plannedLogs?: Record<string, { access: string; error: string }>; source: string; server: string; status: string; hosts: Array<{ hostname: string; aliases: string[]; documentRoot: string; https: { enabled: boolean }; rewriteEnabled: boolean; indexFiles: string[] }>; warnings: string[]; preservedDirectives: string[] }
 export interface RuntimeStatusRow { id: string; label: string; enabled: boolean; state: string }
 export interface BackupPreview { plannedLogs?: Record<string, { access: string; error: string }>; source: string; checksum: string; sites: Array<{ name: string; hostname: string; documentRoot: string; disposition: string }>; settings: { server?: string; php?: string; optionalServices?: { redis: boolean; memcached: boolean } } | null; missing: string[]; warnings: string[] }
-export interface ResourceReport { statuses: RuntimeStatusRow[]; application: { cpuPercent: number; ramBytes: number; processes: number }; runtime: Array<{ CPUPerc: string; MemUsage: string }> | null; runtimeError: string | null; dockerStorage: { imageBytes: number; writableLayerBytes: number; note: string } | null; storage: { measuredAt: string; categories: Array<{ label: string; bytes: number; partial: boolean }>; localTotalBytes: number; note: string } }
+export interface ResourceReport { statuses: RuntimeStatusRow[]; application: { cpuPercent: number; ramBytes: number; processes: number }; runtime: Array<{ Name?: string; CPUPerc: string; MemUsage: string }> | null; runtimeError: string | null; dockerStorage: { imageBytes: number; writableLayerBytes: number; note: string } | null; storage: { measuredAt: string; categories: Array<{ label: string; bytes: number; partial: boolean }>; localTotalBytes: number; note: string } }
 export interface HostsFileSnapshot { path: string; contents: string; managedLines: Array<{ line: number; text: string; hostnames: string[] }> }
 export interface HostsEditReview { id: string; contents: string; diff: string; removedLines: number; addedLines: number; truncated: boolean; managedChanges: string[] }
 export interface VhostraDesktopApi {
@@ -55,7 +55,7 @@ export interface VhostraDesktopApi {
   findAvailablePort(port: number): Promise<number>
   reloadWebServer(): Promise<void>
   setOptionalService(id: 'redis' | 'memcached', enabled: boolean): Promise<Array<{ id: 'web' | 'mariadb' | 'redis' | 'memcached'; label: string; enabled: boolean; state: string }>>
-  listManagedServices(): Promise<Array<{ id: 'web' | 'mariadb' | 'redis' | 'memcached'; label: string; enabled: boolean; state: 'running' | 'stopped' | 'starting' | 'failed' | 'disabled' | 'unavailable' }>>
+  listManagedServices(): Promise<Array<{ id: 'web' | 'mariadb' | 'redis' | 'memcached'; label: string; enabled: boolean; state: 'running' | 'stopped' | 'starting' | 'failed' | 'unhealthy' | 'disabled' | 'unavailable' }>>
   controlManagedService(id: 'web' | 'mariadb' | 'redis' | 'memcached', action: 'start' | 'stop' | 'restart'): Promise<Array<{ id: 'web' | 'mariadb' | 'redis' | 'memcached'; label: string; enabled: boolean; state: string }>>
   listDatabases(): Promise<string[]>
   listPhpExtensions(): Promise<Array<{ id: string; label: string; required: boolean; enabled: boolean; installed: boolean; category: string; status: string }>>
@@ -74,6 +74,8 @@ export interface VhostraDesktopApi {
   hostsStatus(id: string): Promise<Array<{ hostname: string; state: 'mapped' | 'required' | 'conflict'; address?: string; issue?: string }>>
   getAppInfo(): Promise<{ name: string; version: string }>
   checkForUpdates(): Promise<{ state: 'unconfigured' | 'up-to-date' | 'available' | 'error'; currentVersion: string; availableVersion?: string; notes?: string; url?: string; message: string }>
+  onExplicitQuit(listener: () => void): () => void
+  capturePreview(siteId: string, force?: boolean): Promise<{ captured: boolean; message: string }>
   onRuntimeStatus(listener: (status: RuntimeSnapshot) => void): () => void
 }
 

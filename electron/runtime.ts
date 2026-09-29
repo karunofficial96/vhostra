@@ -41,6 +41,7 @@ export interface ManagedServiceStatus {
         | "stopped"
         | "starting"
         | "failed"
+        | "unhealthy"
         | "disabled"
         | "unavailable";
 }
@@ -86,6 +87,7 @@ export class DockerRuntimeController {
         private readonly getState: () => Promise<AppState>,
         private readonly updateWelcome?: (message: string) => Promise<void>,
         private readonly scope = projectName,
+        private readonly databaseOwner?: DockerRuntimeController,
     ) {
         if (!/^[a-z0-9][a-z0-9_-]*$/.test(scope))
             throw new Error("Invalid Vhostra runtime project scope.");
@@ -103,23 +105,25 @@ export class DockerRuntimeController {
             htaccessWatchers: this.htaccessWatchers.size, state: this.snapshot.state };
     }
     async resourceUsage() {
-        if (!existsSync(this.composeFile)) return null;
+        if (!existsSync(this.composeFile) && !existsSync(path.join(this.databaseRoot, "compose.yml"))) return null;
         const ids = (await this.docker(["ps", "--filter", `label=${managedLabel}`, "--filter", `label=com.docker.compose.project=${this.scope}`,
             "--filter", "label=com.docker.compose.service=runtime", "--quiet"])).trim().split(/\s+/).filter(Boolean);
+        ids.push(...await this.databaseContainerIds());
         if (!ids.length) return null;
         return parseJsonLines(await this.docker(["stats", "--no-stream", "--format", "{{json .}}", ...ids]));
     }
     private resourceStorageCache: { measuredAt: number; value: { imageBytes: number; writableLayerBytes: number; note: string } } | null = null;
     async resourceStorage() {
-        if (!existsSync(this.composeFile)) return null;
+        if (!existsSync(this.composeFile) && !existsSync(path.join(this.databaseRoot, "compose.yml"))) return null;
         if (this.resourceStorageCache && Date.now() - this.resourceStorageCache.measuredAt < 300000) return this.resourceStorageCache.value;
         const ids = (await this.docker(["ps", "--all", "--filter", `label=${managedLabel}`, "--filter", `label=com.docker.compose.project=${this.scope}`, "--filter", "label=com.docker.compose.service=runtime", "--quiet"])).trim().split(/\s+/).filter(Boolean);
+        ids.push(...await this.databaseContainerIds(true));
         if (!ids.length) return null;
         const containers = JSON.parse(await this.docker(["inspect", "--size", ...ids]));
-        const cachedIds = (await this.docker(["image", "ls", "--filter", "label=com.vhostra.managed=true", "--filter", "label=com.vhostra.purpose=runtime-image", "--quiet", "--no-trunc"])).trim().split(/\s+/).filter(Boolean);
+        const cachedIds = (await this.docker(["image", "ls", "--filter", "label=com.vhostra.managed=true", "--quiet", "--no-trunc"])).trim().split(/\s+/).filter(Boolean);
         const imageIds = [...new Set<string>([...containers.map((item: { Image: string }) => item.Image), ...cachedIds])];
         const images = JSON.parse(await this.docker(["image", "inspect", ...imageIds]));
-        const value = { imageBytes: images.filter((item: { Config?: { Labels?: Record<string, string> } }) => item.Config?.Labels?.['com.vhostra.managed'] === 'true' && item.Config.Labels['com.vhostra.purpose'] === 'runtime-image').reduce((sum: number, item: { Size: number }) => sum + item.Size, 0),
+        const value = { imageBytes: images.filter((item: { Config?: { Labels?: Record<string, string> } }) => item.Config?.Labels?.['com.vhostra.managed'] === 'true' && ['runtime-image', 'mariadb-image'].includes(item.Config.Labels['com.vhostra.purpose'])).reduce((sum: number, item: { Size: number }) => sum + item.Size, 0),
             writableLayerBytes: containers.reduce((sum: number, item: { SizeRw?: number }) => sum + (item.SizeRw ?? 0), 0), note: 'Exact current Vhostra project writable layers and positively labeled managed images/cache across Vhostra profiles, deduplicated by image ID. Image sizes include shared layers; volumes are host bind mounts counted in local storage. Docker Desktop and other projects are excluded.' };
         this.resourceStorageCache = { measuredAt: Date.now(), value }; return value;
     }
@@ -159,8 +163,8 @@ export class DockerRuntimeController {
                 .filter((value): value is string => Boolean(value));
             const running =
                 rows.length > 0 &&
-                rows.every(
-                    (row: { State?: string }) => row.State === "running",
+                rows.some(
+                    (row: { Service?: string; State?: string }) => row.Service === "runtime" && row.State === "running",
                 );
             const state: RuntimeState = running ? "running" : "stopped";
             const snapshot = this.set({
@@ -180,7 +184,7 @@ export class DockerRuntimeController {
             });
         }
     }
-    async start() {
+    async start(includeDatabase = true) {
         return this.runExclusive(
             "starting",
             "Preparing Vhostra runtime…",
@@ -205,6 +209,7 @@ export class DockerRuntimeController {
                     services: [],
                 });
                 await this.generate(state);
+                if (includeDatabase) await this.startDatabase();
                 await this.compose(["config", "--quiet"]);
                 this.set({
                     state: "starting",
@@ -241,7 +246,7 @@ export class DockerRuntimeController {
         );
     }
     /** Removes only exact inspected resources, never Compose projects by name alone. */
-    async resetRuntime() {
+    async resetRuntime(keepSites = false) {
         return this.runExclusive("stopping", "Removing Vhostra runtime for reset…", async () => {
             this.clearHtaccessWatchers(); await this.welcomeWrites; await this.requireDocker();
             const ids = (await this.docker(["ps", "--all", "--filter", `label=com.docker.compose.project=${this.scope}`, "--quiet"])).trim().split(/\s+/).filter(Boolean);
@@ -253,6 +258,7 @@ export class DockerRuntimeController {
                 }
                 await this.docker(["rm", "--force", ...ids]);
             }
+            if (!keepSites) await this.removeDatabase();
             const networks = (await this.docker(["network", "ls", "--filter", `label=com.docker.compose.project=${this.scope}`, "--quiet"])).trim().split(/\s+/).filter(Boolean);
             if (networks.length) {
                 const inspected = JSON.parse(await this.docker(["network", "inspect", ...networks]));
@@ -272,7 +278,8 @@ export class DockerRuntimeController {
             requestLocalHttp(settings.ports.phpMyAdmin, "/phpmyadmin/index.php", 2000),
         ]) : ["", ""];
         rows.push({ id: "php", label: `PHP / LSPHP ${settings.selectedPhpVersion}`, enabled: true, state: available ? (php.includes(`vhostra-lsphp:${settings.selectedPhpVersion}`) ? "running" : "failed") : inactiveState });
-        rows.push({ id: "phpmyadmin", label: "phpMyAdmin", enabled: true, state: available ? (/^HTTP\/\d(?:\.\d)? 200/.test(pma) ? "running" : "failed") : inactiveState });
+        const databaseRunning = rows.find(row => row.id === "mariadb")?.state === "running";
+        rows.push({ id: "phpmyadmin", label: "phpMyAdmin", enabled: true, state: available && databaseRunning ? (/^HTTP\/\d(?:\.\d)? 200/.test(pma) ? "running" : "failed") : databaseRunning ? inactiveState : rows.find(row => row.id === "mariadb")?.state ?? "stopped" });
         return rows;
     }
     async stop() {
@@ -281,10 +288,16 @@ export class DockerRuntimeController {
             "Stopping Vhostra services…",
             async () => {
                 await this.requireDocker();
-                if (existsSync(this.composeFile)) await this.compose(["stop"]);
+                if (existsSync(this.composeFile)) await this.compose(["stop", "runtime"]);
+                await this.databaseCompose(["stop"]);
                 await this.refresh();
             },
         );
+    }
+    async restartAll() {
+        if (!existsSync(this.composeFile)) return this.start();
+        await this.controlManagedService("mariadb", "restart");
+        return this.restart();
     }
     async restart(preserveStopped = false) {
         const restoreStopped = preserveStopped && this.snapshot.state !== "running";
@@ -300,6 +313,8 @@ export class DockerRuntimeController {
                 });
                 await this.requireDocker();
                 const state = await this.getState();
+                await this.prepareDatabase(state);
+                if (!(await this.databaseContainerIds(true)).length) await this.startDatabase();
                 await this.ensurePortsAvailable(requiredHostPorts(state), true);
                 await this.checkOptionalHttpsPort(true);
                 let previous: AppState | null = null;
@@ -334,7 +349,7 @@ export class DockerRuntimeController {
                     await fs.cp(
                         this.runtimeRoot,
                         path.join(backup, "runtime"),
-                        { recursive: true, verbatimSymlinks: true },
+                        { recursive: true, verbatimSymlinks: true, filter: source => path.resolve(source) !== path.resolve(this.layout.runtime.mariaDb) },
                     );
                     await fs.cp(this.layout.configuration.generated, path.join(backup, "generated"), { recursive: true, verbatimSymlinks: true });
                     if (
@@ -350,17 +365,6 @@ export class DockerRuntimeController {
                                 "Verifying a candidate runtime before replacing the working services…",
                             services: ["runtime"],
                         });
-                        // MariaDB files are copied only while its owning runtime is stopped.
-                        await this.compose(["stop"]);
-                        try {
-                            await fs.cp(
-                                this.layout.persistentData.mariaDb,
-                                path.join(backup, "candidate-database"),
-                                { recursive: true },
-                            );
-                        } finally {
-                            await this.compose(["start"]);
-                        }
                         const candidateLayout: StoreLayout = {
                             ...this.layout,
                             sites: path.join(backup, "candidate-sites"),
@@ -384,12 +388,6 @@ export class DockerRuntimeController {
                                     path.join(backup, "candidate", key),
                                 ]),
                             ) as unknown as StoreLayout["runtime"],
-                            persistentData: {
-                                mariaDb: path.join(
-                                    backup,
-                                    "candidate-database",
-                                ),
-                            },
                             configuration: {
                                 ...this.layout.configuration,
                                 generated: path.join(
@@ -426,6 +424,7 @@ export class DockerRuntimeController {
                             async () => candidateState,
                             undefined,
                             candidateScope,
+                            this,
                         );
                         candidate.subscribe(() => {
                             const next = candidate!.current().progress;
@@ -437,7 +436,7 @@ export class DockerRuntimeController {
                             }
                         });
                         await candidate.start();
-                        await candidate.stop();
+                        await candidate.compose(["stop", "runtime"]);
                         await candidate.compose(["down"]);
                         candidateRemoved = true;
                     }
@@ -456,7 +455,7 @@ export class DockerRuntimeController {
                         JSON.stringify(state),
                         { mode: 0o600 },
                     );
-                    if (restoreStopped) await this.compose(["stop"]);
+                    if (restoreStopped) await this.compose(["stop", "runtime"]);
                     await this.refresh();
                     await this.cleanGenerated(state).catch(error => console.error("Generated cleanup deferred:", error.message));
                     recoveredOrPromoted = true;
@@ -474,20 +473,27 @@ export class DockerRuntimeController {
                             .catch(() => { candidateRemoved = false; });
                     if (previous) {
                         try {
-                            await this.compose(["stop"]).catch(() => undefined);
+                            await this.compose(["stop", "runtime"]).catch(() => undefined);
                             await fs.cp(
                                 path.join(backup, "runtime"),
                                 this.runtimeRoot,
-                                { recursive: true, force: true },
+                                { recursive: true, force: true, filter: source => path.basename(source) !== path.basename(this.layout.runtime.mariaDb) },
                             );
                             await restoreGenerated(this.layout.configuration.generated, path.join(backup, "generated"));
-                            await this.compose(["up", "--detach", "--no-build"]);
+                            // A pre-separation Compose/image can contain a second
+                            // MariaDB server/datadir mount. Never restart it during
+                            // recovery after the independent DB owns that data.
+                            const restoredCompose = await fs.readFile(this.composeFile, "utf8");
+                            if (restoredCompose.includes("/var/lib/mysql")) {
+                                await this.generate(previous);
+                                await this.upCompatibleImage(true);
+                            } else await this.compose(["up", "--detach", "--no-build", "--no-deps", "runtime"]);
                             await this.provisionPhpMyAdmin();
                             await this.healthCheck(
                                 previous.settings.selectedWebServer,
                                 previous,
                             );
-                            if (restoreStopped) await this.compose(["stop"]);
+                            if (restoreStopped) await this.compose(["stop", "runtime"]);
                             recoveredOrPromoted = true;
                         } catch (recoveryError) {
                             throw new Error(`Runtime replacement failed: ${error instanceof Error ? error.message : String(error)}. Runtime replacement and recovery failed. Recovery files were retained at ${backup}. ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`);
@@ -557,10 +563,10 @@ export class DockerRuntimeController {
     }
     async listDatabases() {
         await this.requireDocker();
-        const output = await this.compose([
+        const output = await this.databaseCompose([
             "exec",
             "-T",
-            "runtime",
+            "mariadb",
             "mariadb",
             "-uroot",
             "-N",
@@ -583,6 +589,7 @@ export class DockerRuntimeController {
     }
     async listManagedServices(): Promise<ManagedServiceStatus[]> {
         const state = await this.getState();
+        const databaseState = await this.databaseStatus();
         if (this.snapshot.state !== "running")
             return [
                 {
@@ -603,10 +610,7 @@ export class DockerRuntimeController {
                     id: "mariadb",
                     label: "MariaDB",
                     enabled: true,
-                    state:
-                        this.snapshot.state === "unavailable"
-                            ? "unavailable"
-                            : "stopped",
+                    state: databaseState,
                 },
                 {
                     id: "redis",
@@ -663,7 +667,7 @@ export class DockerRuntimeController {
                 id: "mariadb",
                 label: "MariaDB",
                 enabled: true,
-                state: supervisorState("mariadb"),
+                state: databaseState,
             },
             {
                 id: "redis",
@@ -688,6 +692,12 @@ export class DockerRuntimeController {
         action: "start" | "stop" | "restart",
     ) {
         const state = await this.getState();
+        if (id === "mariadb") return this.runExclusive(action === "stop" ? "stopping" : "starting", `${actionLabel(action)} MariaDB…`, async () => {
+            await this.requireDocker();
+            if (action === "stop") await this.databaseCompose(["stop", "mariadb"]);
+            else { await this.prepareDatabase(state); if (action === "restart") await this.databaseCompose(["stop", "mariadb"]); await this.startDatabase(); }
+            await this.refresh(); return this.listManagedServices();
+        });
         const name = id === "web" ? "web" : id;
         if (
             (id === "redis" && !state.settings.optionalServices.redis) ||
@@ -722,16 +732,6 @@ export class DockerRuntimeController {
                     await this.compose(["exec", "-T", "runtime", "/bin/sh", "-lc", "pkill -x lsphp || true"]);
                 if (id === "web" && action !== "stop")
                     await this.healthCheck(state.settings.selectedWebServer);
-                if (id === "mariadb" && action !== "stop")
-                    await this.compose([
-                        "exec",
-                        "-T",
-                        "runtime",
-                        "mariadb",
-                        "-uroot",
-                        "-e",
-                        "SELECT 1",
-                    ]);
                 if (id === "redis" && action !== "stop")
                     await this.compose([
                         "exec",
@@ -1102,10 +1102,10 @@ export class DockerRuntimeController {
         this.secrets.add(input.password);
         const password = sqlLiteral(input.password);
         const sql = `CREATE DATABASE \`${name}\` CHARACTER SET ${input.charset}; CREATE USER '${username}'@'%' IDENTIFIED BY ${password}; GRANT ALL PRIVILEGES ON \`${name}\`.* TO '${username}'@'%'; FLUSH PRIVILEGES;`;
-        await this.compose([
+        await this.databaseCompose([
             "exec",
             "-T",
-            "runtime",
+            "mariadb",
             "mariadb",
             "-uroot",
             "-e",
@@ -1139,10 +1139,10 @@ export class DockerRuntimeController {
         return this.runDatabaseOperation(`Importing ${database}…`, async () => {
             await executeWithInput(
                 "docker",
-                this.composeArguments([
+                this.databaseComposeArguments([
                     "exec",
                     "-T",
-                    "runtime",
+                    "mariadb",
                     "mariadb",
                     "-uroot",
                     database,
@@ -1160,12 +1160,13 @@ export class DockerRuntimeController {
         if (path.extname(destination).toLowerCase() !== ".sql")
             throw new Error("Database exports must use a .sql filename.");
         return this.runDatabaseOperation(`Exporting ${database}…`, async () => {
-            await executeWithOutput(
+            const temporary = `${destination}.vhostra-${randomBytes(8).toString("hex")}.tmp`;
+            try { await executeWithOutput(
                 "docker",
-                this.composeArguments([
+                this.databaseComposeArguments([
                     "exec",
                     "-T",
-                    "runtime",
+                    "mariadb",
                     "mariadb-dump",
                     "-uroot",
                     "--single-transaction",
@@ -1173,8 +1174,10 @@ export class DockerRuntimeController {
                     "--events",
                     database,
                 ]),
-                destination,
+                temporary,
             );
+            await fs.rename(temporary, destination);
+            } finally { await fs.rm(temporary, { force: true }); }
             return {
                 database,
                 message: `Exported ${database} to ${path.basename(destination)}.`,
@@ -1187,10 +1190,10 @@ export class DockerRuntimeController {
             `Checking ${database} tables…`,
             async () => {
                 const rows = (
-                    await this.compose([
+                    await this.databaseCompose([
                         "exec",
                         "-T",
-                        "runtime",
+                        "mariadb",
                         "mariadb",
                         "-uroot",
                         "-N",
@@ -1204,10 +1207,10 @@ export class DockerRuntimeController {
                 const results: string[] = [];
                 for (const [table, engine] of rows) {
                     if (engine === "MyISAM" || engine === "Aria") {
-                        await this.compose([
+                        await this.databaseCompose([
                             "exec",
                             "-T",
-                            "runtime",
+                            "mariadb",
                             "mariadb",
                             "-uroot",
                             "-e",
@@ -1215,10 +1218,10 @@ export class DockerRuntimeController {
                         ]);
                         results.push(`${table}: repaired (${engine})`);
                     } else {
-                        await this.compose([
+                        await this.databaseCompose([
                             "exec",
                             "-T",
-                            "runtime",
+                            "mariadb",
                             "mariadb",
                             "-uroot",
                             "-e",
@@ -1241,10 +1244,10 @@ export class DockerRuntimeController {
     async deleteDatabase(name: string) {
         const database = sqlIdentifier(name, "database name");
         return this.runDatabaseOperation(`Deleting ${database}…`, async () => {
-            await this.compose([
+            await this.databaseCompose([
                 "exec",
                 "-T",
-                "runtime",
+                "mariadb",
                 "mariadb",
                 "-uroot",
                 "-e",
@@ -1353,7 +1356,7 @@ export class DockerRuntimeController {
      * Recovery tags lease old images until the corresponding transaction succeeds. */
     async cleanupImages() {
         const ids = (await this.docker(["image", "ls", "--filter", `label=${managedLabel}`,
-            "--filter", "label=com.vhostra.purpose=runtime-image", "--quiet", "--no-trunc"])).trim().split(/\s+/).filter(Boolean);
+            "--quiet", "--no-trunc"])).trim().split(/\s+/).filter(Boolean);
         if (!ids.length) return;
         const images = JSON.parse(await this.docker(["image", "inspect", ...new Set(ids)])) as Array<{
             Id: string; Created: string; RepoTags?: string[]; Config?: { Labels?: Record<string, string> };
@@ -1361,11 +1364,17 @@ export class DockerRuntimeController {
         const containers = (await this.docker(["ps", "--all", "--quiet"])).trim().split(/\s+/).filter(Boolean);
         const used = new Set<string>(containers.length ? JSON.parse(await this.docker(["inspect", ...containers])).map((row: { Image: string }) => row.Image) : []);
         const sorted = images.sort((a, b) => b.Created.localeCompare(a.Created));
-        for (const image of sorted.slice(6)) {
+        const retained = new Map<string, number>();
+        for (const image of sorted) {
+            const purpose = image.Config?.Labels?.["com.vhostra.purpose"];
+            if (!purpose || !["runtime-image", "mariadb-image"].includes(purpose)) continue;
+            const count = retained.get(purpose) ?? 0;
+            retained.set(purpose, count + 1);
+            if (count < (purpose === "runtime-image" ? 6 : 2)) continue;
             const tags = image.RepoTags ?? [];
             if (used.has(image.Id) || image.Config?.Labels?.["com.vhostra.managed"] !== "true"
-                || image.Config.Labels["com.vhostra.purpose"] !== "runtime-image" || !tags.length
-                || tags.some(tag => !/^vhostra-runtime:build-[a-f0-9]{24}$/.test(tag)) || tags.includes(this.imageName)) continue;
+                || !tags.length
+                || tags.some(tag => !(purpose === "runtime-image" ? /^vhostra-runtime:build-[a-f0-9]{24}$/ : /^vhostra-mariadb:build-[a-f0-9]{24}$/).test(tag)) || tags.includes(this.imageName)) continue;
             // No force; Docker refuses images that acquire container references.
             await this.docker(["image", "rm", ...tags]);
         }
@@ -1384,7 +1393,7 @@ export class DockerRuntimeController {
             if (!compatible) throw new Error("The compatible runtime tag is owned by an unrecognized image; refusing to overwrite it.");
         }
         if (!compatible) { this.counters.builds++; await this.compose(["build", "runtime"]); }
-        await this.compose(["up", "--detach", "--no-build", "--pull", "never", ...(forceRecreate ? ["--force-recreate"] : [])]);
+        await this.compose(["up", "--detach", "--no-build", "--pull", "never", ...(forceRecreate ? ["--force-recreate"] : []), "--no-deps", "runtime"]);
     }
     private async requireDocker() {
         await this.docker(["info"]);
@@ -1418,6 +1427,7 @@ export class DockerRuntimeController {
             ].map((directory) => fs.mkdir(directory, { recursive: true })),
         );
         await this.ensureEnvironment();
+        await this.prepareDatabase(state);
         await Promise.all([
             fs.writeFile(
                 path.join(
@@ -1468,12 +1478,7 @@ export class DockerRuntimeController {
         await Promise.all([
             fs.writeFile(
                 path.join(this.layout.runtime.php, "vhostra.ini"),
-                "expose_php=Off\nlog_errors=On\nerror_log=/dev/stderr\n",
-                { mode: 0o600 },
-            ),
-            fs.writeFile(
-                path.join(this.layout.runtime.mariaDb, "vhostra.cnf"),
-                "[mariadb]\nskip-name-resolve\ninnodb_buffer_pool_size=64M\nmax_connections=50\nthread_cache_size=4\ntable_open_cache=400\ntmp_table_size=16M\nmax_heap_table_size=16M\nmax_allowed_packet=64M\nperformance_schema=OFF\n",
+                "expose_php=Off\nlog_errors=On\nerror_log=/dev/stderr\nmysqli.default_socket=/run/mysqld/mysqld.sock\npdo_mysql.default_socket=/run/mysqld/mysqld.sock\n",
                 { mode: 0o600 },
             ),
             fs.writeFile(
@@ -1481,14 +1486,14 @@ export class DockerRuntimeController {
                 "phpMyAdmin is configured by the generated Vhostra Compose project.\n",
                 { mode: 0o600 },
             ),
-            fs.writeFile(
+            writeIfMissing(
                 path.join(this.layout.runtime.redis, "redis.conf"),
                 "bind 127.0.0.1\nprotected-mode yes\nappendonly no\nsave \"\"\nmaxmemory 64mb\nmaxmemory-policy allkeys-lru\n",
                 { mode: 0o600 },
             ),
-            fs.writeFile(
+            writeIfMissing(
                 path.join(this.layout.runtime.memcached, "memcached.conf"),
-                "-m 32\n",
+                "-u nobody\n-l 127.0.0.1\n-m 32\n-c 128\n-t 1\n",
                 { mode: 0o600 },
             ),
         ]);
@@ -1529,16 +1534,31 @@ export class DockerRuntimeController {
                 this.scope,
                 !this.httpsWarning,
                 this.imageName,
+                this.databaseNetwork,
             ),
             { mode: 0o600 },
         );
     }
+    async redactLocalLog(value: string) {
+        // Reading a log must not initialize credentials or start services.
+        try {
+            const file = path.join(this.databaseLayout.runtime.mariaDb, "secrets.env");
+            if ((await fs.stat(file)).size <= 64 * 1024) {
+                for (const line of (await fs.readFile(file, "utf8")).split(/\r?\n/)) {
+                    const match = line.match(/^[^#=]*(?:PASSWORD|SECRET|TOKEN|KEY)[^=]*=(.+)$/i);
+                    if (match) this.secrets.add(match[1]);
+                }
+            }
+        } catch { /* no managed credentials yet */ }
+        return redactProgress(value, this.secrets);
+    }
     private async ensureEnvironment() {
+        await fs.mkdir(this.databaseLayout.runtime.mariaDb, { recursive: true });
         let contents = "";
         try {
-            contents = await fs.readFile(this.environmentFile, "utf8");
+            contents = await fs.readFile(path.join(this.databaseLayout.runtime.mariaDb, "secrets.env"), "utf8");
         } catch {
-            /* generated on first use */
+            try { contents = await fs.readFile(this.databaseOwner?.environmentFile ?? this.environmentFile, "utf8"); } catch { /* first use */ }
         }
         const missing = (name: string) =>
             !new RegExp(`^${name}=`, "m").test(contents);
@@ -1552,9 +1572,11 @@ export class DockerRuntimeController {
             const match = line.match(/^[^#=]*(?:PASSWORD|SECRET|TOKEN|KEY)[^=]*=(.*)$/i);
             if (match) this.secrets.add(match[1]);
         }
-        await fs.writeFile(this.environmentFile, contents, { mode: 0o600 });
+        await writeIfMissing(path.join(this.databaseLayout.runtime.mariaDb, "secrets.env"), contents, { mode: 0o600 });
+        await fs.writeFile(this.environmentFile, contents.split(/\r?\n/).filter(line => line.startsWith("VHOSTRA_PMA_")).join("\n") + "\n", { mode: 0o600 });
     }
     private async provisionPhpMyAdmin() {
+        if (await this.databaseStatus() === "stopped") return;
         const contents = await fs.readFile(this.environmentFile, "utf8");
         const password = contents
             .match(/^VHOSTRA_PMA_PASSWORD=(.+)$/m)?.[1]
@@ -1563,20 +1585,24 @@ export class DockerRuntimeController {
             throw new Error(
                 "Vhostra could not prepare secure phpMyAdmin credentials.",
             );
+        const marker = path.join(this.databaseRoot, "pma-provisioned");
+        const identity = createHash("sha256").update(password).digest("hex");
+        if (await fs.readFile(marker, "utf8").catch(() => "") === identity) return;
         const secret = sqlLiteral(password);
-        const statement = `CREATE USER IF NOT EXISTS 'vhostra_pma'@'localhost' IDENTIFIED BY ${secret}; CREATE USER IF NOT EXISTS 'vhostra_pma'@'127.0.0.1' IDENTIFIED BY ${secret}; ALTER USER 'vhostra_pma'@'localhost' IDENTIFIED BY ${secret}; ALTER USER 'vhostra_pma'@'127.0.0.1' IDENTIFIED BY ${secret}; GRANT ALL PRIVILEGES ON *.* TO 'vhostra_pma'@'localhost' WITH GRANT OPTION; GRANT ALL PRIVILEGES ON *.* TO 'vhostra_pma'@'127.0.0.1' WITH GRANT OPTION; FLUSH PRIVILEGES;`;
+        const statement = `CREATE USER IF NOT EXISTS 'vhostra_pma'@'localhost' IDENTIFIED BY ${secret}; CREATE USER IF NOT EXISTS 'vhostra_pma'@'%' IDENTIFIED BY ${secret}; ALTER USER 'vhostra_pma'@'localhost' IDENTIFIED BY ${secret}; ALTER USER 'vhostra_pma'@'%' IDENTIFIED BY ${secret}; GRANT ALL PRIVILEGES ON *.* TO 'vhostra_pma'@'localhost' WITH GRANT OPTION; GRANT ALL PRIVILEGES ON *.* TO 'vhostra_pma'@'%' WITH GRANT OPTION; FLUSH PRIVILEGES;`;
         let lastError: unknown;
         for (let attempt = 0; attempt < 20; attempt += 1) {
             try {
-                await this.compose([
+                await this.databaseCompose([
                     "exec",
                     "-T",
-                    "runtime",
+                    "mariadb",
                     "mariadb",
                     "-uroot",
                     "-e",
                     statement,
                 ]);
+                await fs.writeFile(marker, identity, { mode: 0o600 });
                 return;
             } catch (error) {
                 lastError = error;
@@ -1776,6 +1802,7 @@ export class DockerRuntimeController {
     }
     private async vhostraOwnsPort(port: number) {
         try {
+            if (await this.databaseOwnsPort(port)) return true;
             const ids = (await this.docker(["ps", "--filter", `label=${managedLabel}`,
                 "--filter", `label=com.docker.compose.project=${this.scope}`, "--quiet"]))
                 .trim().split(/\s+/).filter(Boolean);
@@ -1819,10 +1846,10 @@ export class DockerRuntimeController {
             throw new Error(
                 `The ${server} frontend did not invoke selected LSPHP ${state.settings.selectedPhpVersion}. Health response: ${php.slice(0, 300)}`,
             );
-        await this.compose([
+        if (await this.databaseStatus() !== "stopped") await this.databaseCompose([
             "exec",
             "-T",
-            "runtime",
+            "mariadb",
             "mariadb",
             "-uroot",
             "-e",
@@ -1879,7 +1906,7 @@ export class DockerRuntimeController {
             ]);
         this.appendProgress("✓ Required extensions and optional services healthy");
         this.appendProgress("Checking phpMyAdmin HTTP health…");
-        if (!(await ready(ports.phpMyAdmin, "/phpmyadmin/index.php")))
+        if (await this.databaseStatus() !== "stopped" && !(await ready(ports.phpMyAdmin, "/phpmyadmin/index.php")))
             throw new Error(
                 "phpMyAdmin did not pass its shared-runtime health check.",
             );
@@ -2026,6 +2053,168 @@ export class DockerRuntimeController {
         if (this.htaccessDebounce) clearTimeout(this.htaccessDebounce);
         this.htaccessDebounce = null;
     }
+    private get databaseLayout(): StoreLayout { return this.databaseOwner?.databaseLayout ?? this.layout; }
+    private get databaseScope(): string { return this.databaseOwner?.databaseScope ?? `${this.scope}-database`; }
+    private get databaseNetwork(): string { return `${this.databaseScope}-network`; }
+    private get databaseRoot(): string { return this.databaseLayout.runtime.mariaDb; }
+    private databaseComposeArguments(args: string[]): string[] {
+        return ["compose", "--project-name", this.databaseScope, "--project-directory", this.databaseRoot,
+            "--env-file", path.join(this.databaseRoot, "secrets.env"), "--file", path.join(this.databaseRoot, "compose.yml"), ...args];
+    }
+    private async databaseCompose(args: string[], allowFailure = false): Promise<string> {
+        if (!existsSync(path.join(this.databaseRoot, "compose.yml"))) {
+            if (args[0] === "stop") return "";
+            throw new Error("MariaDB has not been prepared. Start Services first.");
+        }
+        // SQL containing account passwords never appears in process arguments,
+        // Docker exec metadata, renderer progress, or errors containing commands.
+        const sqlIndex = args.indexOf("-e");
+        if (sqlIndex !== -1) {
+            const statement = args[sqlIndex + 1];
+            return executeSql(this.databaseComposeArguments(args.slice(0, sqlIndex)), statement);
+        }
+        return execute("docker", this.databaseComposeArguments(args), allowFailure, undefined, ["up", "build"].includes(args[0]) ? 900000 : 120000);
+    }
+    private async databaseContainerIds(all = false): Promise<string[]> {
+        if (!this.databaseLayout.runtime.mariaDb || !existsSync(path.join(this.databaseRoot, "compose.yml"))) return [];
+        const ids = (await this.docker(["ps", ...(all ? ["--all"] : []), "--filter", `label=${managedLabel}`,
+            "--filter", `label=com.docker.compose.project=${this.databaseScope}`, "--filter", "label=com.docker.compose.service=mariadb", "--quiet"])).trim().split(/\s+/).filter(Boolean);
+        if (ids.length) for (const row of JSON.parse(await this.docker(["inspect", ...ids]))) {
+            const labels = row.Config?.Labels ?? {};
+            if (path.resolve(labels["com.docker.compose.project.working_dir"] ?? "/") !== path.resolve(this.databaseRoot)
+                || !row.Mounts?.some((mount: { Source: string; Destination: string; Type: string }) => mount.Type === "bind" && mount.Destination === "/var/lib/mysql" && path.resolve(mount.Source) === path.resolve(this.databaseLayout.persistentData.mariaDb)))
+                throw new Error("MariaDB ownership or persistent mount does not match this Vhostra profile.");
+        }
+        return ids;
+    }
+    private async databaseStatus(): Promise<ManagedServiceStatus["state"]> {
+        try {
+            const ids = await this.databaseContainerIds(true);
+            if (!ids.length) return "stopped";
+            const [row] = JSON.parse(await this.docker(["inspect", ...ids]));
+            if (row.State.Status === "restarting" || row.State.Status === "created") return "starting";
+            if (!row.State.Running) return row.State.ExitCode ? "failed" : "stopped";
+            return row.State.Health?.Status === "healthy" ? "running" : row.State.Health?.Status === "unhealthy" ? "unhealthy" : "starting";
+        } catch { return "unavailable"; }
+    }
+    async allServicesStopped() {
+        const primary = await this.refresh();
+        const ids = await this.databaseContainerIds(true);
+        const databaseStopped = !ids.length || JSON.parse(await this.docker(["inspect", ...ids])).every((row: { State: { Running: boolean; Restarting?: boolean } }) => !row.State.Running && !row.State.Restarting);
+        return ["stopped", "not-created"].includes(primary.state) && databaseStopped;
+    }
+    private async databaseOwnsPort(port: number) {
+        const ids = await this.databaseContainerIds();
+        if (!ids.length) return false;
+        return JSON.parse(await this.docker(["inspect", ...ids])).some((row: { NetworkSettings?: { Ports?: Record<string, Array<{ HostIp: string; HostPort: string }> | null> } }) =>
+            Object.values(row.NetworkSettings?.Ports ?? {}).some(bindings => bindings?.some(binding => binding.HostIp === "127.0.0.1" && Number(binding.HostPort) === port)));
+    }
+    private async prepareDatabase(state: AppState) {
+        if (this.databaseOwner) return;
+        await fs.mkdir(this.databaseRoot, { recursive: true });
+        await fs.mkdir(this.layout.persistentData.mariaDb, { recursive: true });
+        const managedRoot = await fs.realpath(this.layout.root);
+        const realData = await fs.realpath(this.layout.persistentData.mariaDb);
+        if (!realData.startsWith(managedRoot + path.sep)) throw new Error("MariaDB data links must stay inside Vhostra managed storage.");
+        await fs.mkdir(path.join(this.layout.logs, "mariadb"), { recursive: true });
+        await this.ensureEnvironment();
+        const version = await fs.readFile(path.join(this.layout.persistentData.mariaDb, "mariadb_upgrade_info"), "utf8").catch(() =>
+            fs.readFile(path.join(this.layout.persistentData.mariaDb, "mysql_upgrade_info"), "utf8").catch(() => ""));
+        const hasData = existsSync(path.join(this.layout.persistentData.mariaDb, "mysql"));
+        const series = hasData ? version.trim().match(/^(\d+\.\d+)\./)?.[1] : "11.8";
+        if (!series || !["10.6", "10.11", "11.4", "11.8"].includes(series)) throw new Error("This MariaDB datadir requires its original server series. Export a logical backup with that server before a supported migration; Vhostra will not implicitly upgrade or reset it.");
+        await writeIfMissing(path.join(this.databaseRoot, "vhostra.cnf"), "[mariadb]\nskip-name-resolve\ninnodb_buffer_pool_size=64M\nmax_connections=50\nthread_cache_size=4\ntable_open_cache=400\ntmp_table_size=16M\nmax_heap_table_size=16M\nmax_allowed_packet=64M\nperformance_schema=OFF\nlog_error=/var/log/vhostra/mariadb.log\n", { mode: 0o600 });
+        const source = existsSync(fileURLToPath(new URL("../runtime-image/mariadb/", import.meta.url))) ? fileURLToPath(new URL("../runtime-image/mariadb/", import.meta.url)) : path.join(process.resourcesPath, "runtime-image/mariadb");
+        await fs.cp(source, path.join(this.databaseRoot, "image"), { recursive: true });
+        const secret = (await fs.readFile(path.join(this.databaseRoot, "secrets.env"), "utf8")).match(/^MARIADB_ROOT_PASSWORD=(.+)$/m)?.[1];
+        if (!secret) throw new Error("Missing local MariaDB initialization secret.");
+        await writeIfMissing(path.join(this.databaseRoot, "root-password"), secret, { mode: 0o600 });
+        const identity = createHash("sha256").update(series);
+        for (const name of ["Dockerfile", "entrypoint.sh", "logrotate.conf"]) identity.update(await fs.readFile(path.join(this.databaseRoot, "image", name)));
+        const imageName = `vhostra-mariadb:build-${identity.digest("hex").slice(0, 24)}`;
+        const name = this.scope === projectName ? "vhostra-mariadb" : `${this.scope}-mariadb`;
+        const file = `name: ${this.databaseScope}
+services:
+  mariadb:
+    image: ${imageName}
+    build:
+      context: ./image
+      args: { MARIADB_SERIES: ${q(series)} }
+      labels: { com.vhostra.managed: "true", com.vhostra.purpose: "mariadb-image" }
+    container_name: ${name}
+    labels: { com.vhostra.managed: "true", com.vhostra.purpose: "mariadb" }
+    stop_grace_period: 60s
+    ports:
+      - ${q(`127.0.0.1:${state.settings.ports.mariadb}:3306`)}
+    volumes:
+      - ${q(`${this.layout.persistentData.mariaDb}:/var/lib/mysql`)}
+      - ${q(`${this.databaseRoot}/vhostra.cnf:/etc/mysql/mariadb.conf.d/99-vhostra.cnf:ro`)}
+      - ${q(`${this.databaseRoot}/root-password:/run/secrets/root-password:ro`)}
+      - ${q(`${this.layout.logs}/mariadb:/var/log/vhostra`)}
+    healthcheck:
+      test: [CMD-SHELL, "mariadb --protocol=socket -uroot -N -e 'SELECT 1' >/dev/null && pgrep -x socat >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 6
+    logging:
+      driver: json-file
+      options: { max-size: "5m", max-file: "3" }
+    networks:
+      database:
+        aliases: [vhostra-mariadb]
+networks:
+  database:
+    name: ${this.databaseNetwork}
+    internal: true
+    labels: { com.vhostra.managed: "true", com.vhostra.purpose: "database-network" }
+`;
+        const target = path.join(this.databaseRoot, "compose.yml");
+        // Byte-identical configuration does not touch the independently running DB.
+        if (await fs.readFile(target, "utf8").catch(() => "") !== file) await fs.writeFile(target, file, { mode: 0o600 });
+    }
+    private async startDatabase() {
+        if (this.databaseOwner) { if (await this.databaseStatus() === "stopped") return; await this.waitForDatabase(); return; }
+        // One-time handover: never allow two servers to open the same datadir.
+        const all = (await this.docker(["ps", "--all", "--quiet"])).trim().split(/\s+/).filter(Boolean);
+        if (all.length) for (const row of JSON.parse(await this.docker(["inspect", ...all]))) {
+            if (!row.Mounts?.some((mount: { Source: string; Destination: string }) => mount.Destination === "/var/lib/mysql" && path.resolve(mount.Source) === path.resolve(this.layout.persistentData.mariaDb))) continue;
+            if (row.Config?.Labels?.["com.docker.compose.project"] === this.databaseScope) continue;
+            const labels = row.Config?.Labels ?? {};
+            if (labels["com.vhostra.managed"] !== "true" || labels["com.docker.compose.project"] !== this.scope || labels["com.docker.compose.service"] !== "runtime"
+                || path.resolve(labels["com.docker.compose.project.working_dir"] ?? "/") !== path.resolve(this.runtimeRoot)) throw new Error("Another container owns this MariaDB datadir. Refusing concurrent access.");
+            if (row.State.Running) await this.docker(["stop", "--time", "60", row.Id]);
+        }
+        const tag = (await fs.readFile(path.join(this.databaseRoot, "compose.yml"), "utf8")).match(/image: (vhostra-mariadb:build-[a-f0-9]{24})/)?.[1];
+        if (!tag) throw new Error("Invalid MariaDB image identity.");
+        const image = (await this.docker(["image", "ls", "--quiet", "--filter", `reference=${tag}`])).trim();
+        if (image) {
+            const [row] = JSON.parse(await this.docker(["image", "inspect", image]));
+            if (row.Config?.Labels?.["com.vhostra.managed"] !== "true" || row.Config?.Labels?.["com.vhostra.purpose"] !== "mariadb-image") throw new Error("MariaDB image tag is not Vhostra owned.");
+        } else await this.databaseCompose(["build", "mariadb"]);
+        // No force-recreate and no automatic rebuild on PHP/server changes.
+        await this.databaseContainerIds(true);
+        await this.databaseCompose(["up", "--detach", "--no-build", "--pull", "never", "mariadb"]);
+        await this.waitForDatabase();
+    }
+    private async waitForDatabase() {
+        for (let attempt = 0; attempt < 90; attempt++) {
+            const status = await this.databaseStatus();
+            if (status === "running") return;
+            if (status === "failed" || status === "unhealthy") throw new Error(`MariaDB is ${status}. Inspect its local bounded logs; persistent data was retained.`);
+            await wait(1000);
+        }
+        throw new Error("MariaDB did not become healthy within 90 seconds. Persistent data was retained.");
+    }
+    private async removeDatabase() {
+        const ids = await this.databaseContainerIds(true);
+        if (ids.length) { await this.databaseCompose(["stop", "mariadb"]); await this.docker(["rm", ...ids]); }
+        const networks = (await this.docker(["network", "ls", "--filter", `name=^${this.databaseNetwork}$`, "--quiet"])).trim().split(/\s+/).filter(Boolean);
+        for (const id of networks) {
+            const [row] = JSON.parse(await this.docker(["network", "inspect", id]));
+            if (row.Name === this.databaseNetwork && row.Labels?.["com.vhostra.managed"] === "true" && row.Labels?.["com.vhostra.purpose"] === "database-network" && !Object.keys(row.Containers ?? {}).length) await this.docker(["network", "rm", id]);
+        }
+    }
     private async docker(args: string[]) {
         this.counters.dockerCalls++;
         return execute("docker", args, false, undefined, 30000);
@@ -2127,7 +2316,7 @@ const executeWithInput = async (
                     ? resolve()
                     : reject(
                           new Error(
-                              stderr.trim() ||
+                              databaseErrorMessage(stderr) ||
                                   `${command} import failed with ${code}`,
                           ),
                       ),
@@ -2145,7 +2334,7 @@ const executeWithOutput = async (
     child.stderr.on("data", (data) => {
         stderr = (stderr + String(data)).slice(-65536);
     });
-    const destination = createWriteStream(output, { mode: 0o600 });
+    const destination = createWriteStream(output, { mode: 0o600, flags: "wx" });
     try { await Promise.all([
         pipeline(child.stdout, destination),
         new Promise<void>((resolve, reject) => {
@@ -2155,7 +2344,7 @@ const executeWithOutput = async (
                     ? resolve()
                     : reject(
                           new Error(
-                              stderr.trim() ||
+                              databaseErrorMessage(stderr) ||
                                   `${command} export failed with ${code}`,
                           ),
                       ),
@@ -2345,6 +2534,7 @@ function singleRuntimeComposeYaml(
     scope: string,
     httpsEnabled: boolean,
     imageName: string,
+    databaseNetwork: string,
 ) {
     const php = state.settings.selectedPhpVersion.replace(".", "");
     return `name: ${scope}
@@ -2365,7 +2555,6 @@ services:
     ports:
       - ${q(`127.0.0.1:${state.settings.ports.http}:8088`)}
       - ${q(`127.0.0.1:${state.settings.ports.phpMyAdmin}:8088`)}
-      - ${q(`127.0.0.1:${state.settings.ports.mariadb}:3306`)}
       ${httpsEnabled ? `- ${q(`127.0.0.1:${state.settings.ports.https}:8443`)}` : ""}
     environment:
       VHOSTRA_LSPHP_VERSION: ${q(php)}
@@ -2395,7 +2584,7 @@ services:
       - ${q(`${path.join(layout.sites, "localhost", "public")}:/var/www/html`)}
       - ${q(`${layout.runtime.openLiteSpeed}:/etc/vhostra/openlitespeed:ro`)}
       - ${q(`${layout.runtime.php}:/etc/vhostra/php:ro`)}
-      - ${q(`${layout.runtime.mariaDb}/vhostra.cnf:/etc/mysql/mariadb.conf.d/99-vhostra.cnf:ro`)}
+      - ${q(`${layout.runtime.memcached}/memcached.conf:/etc/vhostra/memcached.conf:ro`)}
       - ${q(`${layout.runtime.redis}/redis.conf:/etc/redis/vhostra.conf:ro`)}
       - ${q(`${layout.runtime.apache}:/etc/vhostra/apache:ro`)}
       - ${q(`${layout.runtime.nginx}:/etc/vhostra/nginx:ro`)}
@@ -2411,16 +2600,44 @@ services:
           create_host_path: false`,
           )
           .join("\n      ")}
-      - ${q(`${layout.persistentData.mariaDb}:/var/lib/mysql`)}
       - ${q(`${layout.logs}:/var/log/vhostra`)}
     logging:
       driver: json-file
       options: { max-size: "5m", max-file: "3" }
-    networks: [vhostra]
+    networks: [vhostra, database]
 networks:
+  database:
+    external: true
+    name: ${q(databaseNetwork)}
   vhostra:
     name: ${scope}-network
     labels:
       ${managedLabel.split("=").map(q).join(": ")}
 `;
+}
+
+async function writeIfMissing(file: string, contents: string, options: { mode: number }) {
+    try { await fs.writeFile(file, contents, { ...options, flag: "wx" }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+}
+async function executeSql(args: string[], statement: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const child = spawn("docker", args, { stdio: ["pipe", "pipe", "pipe"] });
+        let output = ""; let errors = "";
+        child.stdout.on("data", data => { output = (output + data).slice(-65536); });
+        child.stderr.on("data", data => { errors = (errors + data).slice(-65536); });
+        child.stdin.on("error", () => {});
+        child.once("error", reject);
+        child.once("close", code => { clearTimeout(timer); code === 0 ? resolve(output) : reject(new Error(errors.trim() || "MariaDB command failed.")); });
+        const timer = setTimeout(() => child.kill("SIGTERM"), 120000);
+        child.stdin.end(statement + "\n");
+    });
+}
+
+/** SQL clients can echo entire failed statements containing imported secrets. */
+function databaseErrorMessage(stderr: string) {
+    const errors = stderr.split(/\r?\n/).filter(line => /^ERROR\s+\d+/i.test(line.trim()));
+    return (errors.length ? errors.join("\n") : stderr.replace(/--------------[\s\S]*?--------------/g, "[SQL statement omitted]"))
+        .replace(/near\s+[\s\S]*$/i, "near [SQL fragment omitted]")
+        .replace(/'[^']*'|"[^"]*"/g, "[SQL value omitted]").slice(-2000);
 }

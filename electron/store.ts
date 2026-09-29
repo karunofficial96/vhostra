@@ -155,7 +155,7 @@ export class VhostraStore {
     if (current.builtIn) throw new Error('The built-in localhost site is protected.'); this.validateSiteInput(input); await this.assertExternalRoot(input.documentRoot)
     const existingHost = state.virtualHosts.find(host => host.id === current.vhostId)
     await this.assertAvailableHostnames([new URL(input.url).hostname, ...(input.aliases ?? existingHost?.aliases ?? [])], current.vhostId)
-    const updated: Site = { ...current, name: input.name.trim(), documentRoot: input.documentRoot, url: input.url, ...(input.framework?.trim() ? { framework: input.framework.trim() } : { framework: undefined }), updatedAt: new Date().toISOString() }
+    const updated: Site = { ...current, name: input.name.trim(), documentRoot: input.documentRoot, url: input.url, ...(input.framework?.trim() ? { framework: input.framework.trim() } : { framework: undefined }), updatedAt: new Date().toISOString(), ...(input.url !== current.url || input.documentRoot !== current.documentRoot ? { screenshot: undefined } : {}) }
     const vhost = state.virtualHosts.find(host => host.id === current.vhostId); if (!vhost) throw new Error('Related virtual-host definition not found.')
     await Promise.all([this.writeJson(this.recordPath(this.layout.sites, current.id), updated), this.writeJson(this.recordPath(this.layout.virtualHosts, vhost.id), { ...vhost, hostname: new URL(input.url).hostname, aliases: input.aliases === undefined ? vhost.aliases : this.validateAliases(input.aliases), documentRoot: input.documentRoot, https: { enabled: new URL(input.url).protocol === 'https:' } })])
     await this.writeLocalhostWelcome(); return this.getState()
@@ -177,6 +177,7 @@ export class VhostraStore {
   private async removeSiteRecord(id: string) {
     const state = await this.getState(); const site = state.sites.find(item => item.id === id); if (!site) throw new Error('Site definition not found.'); if (site.builtIn === 'localhost') throw new Error('The built-in localhost vhost is protected. Its document root and configuration remain inspectable.')
     await Promise.all([fs.rm(this.recordPath(this.layout.sites, site.id), { force: true }), fs.rm(this.recordPath(this.layout.virtualHosts, site.vhostId), { force: true })])
+    await fs.rm(path.join(this.layout.screenshots, `${site.id}.jpg`), { force: true })
     await this.writeLocalhostWelcome(); return this.getState()
   }
   async setVirtualHostRewrite(id: string, enabled: boolean) {
@@ -215,17 +216,37 @@ export class VhostraStore {
   }) }
   /** Static previews are capped and read only for the browser image request—never retained in app state. */
   async readScreenshot(siteId: string) {
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(siteId)) return null
+    if (siteId !== localhostSiteId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(siteId)) return null
     await this.initialize()
     try {
       const site = JSON.parse(await fs.readFile(this.recordPath(this.layout.sites, siteId), 'utf8')) as Site
       if (!site.screenshot || !/^[a-zA-Z0-9._-]+\.(png|jpe?g|webp)$/i.test(site.screenshot.cacheFile)) return null
-      const file = path.join(this.layout.screenshots, site.screenshot.cacheFile); const details = await fs.stat(file)
+      const file = path.join(this.layout.screenshots, site.screenshot.cacheFile);
+      const actual = await fs.realpath(file); const cacheRoot = await fs.realpath(this.layout.screenshots)
+      if (!actual.startsWith(cacheRoot + path.sep)) return null
+      const details = await fs.stat(file)
       if (!details.isFile() || details.size > 6 * 1024 * 1024) return null
       const extension = path.extname(file).toLowerCase(); const mime = extension === '.png' ? 'image/png' : extension === '.webp' ? 'image/webp' : 'image/jpeg'
       return { data: await fs.readFile(file), mime }
     } catch { return null }
   }
+  saveScreenshot(id: string, expectedUrl: string, bytes: Buffer, source: Screenshot['source'], expected?: Pick<Site, 'documentRoot' | 'updatedAt'>) { return this.serialize(async () => {
+    await this.initialize()
+    const site = (await this.getState()).sites.find(site => site.id === id)
+    if (!site || site.url !== expectedUrl || expected && (site.documentRoot !== expected.documentRoot || site.updatedAt !== expected.updatedAt)) throw new Error('Site changed during capture; preview discarded.')
+    if (!bytes.length || bytes.length > 1024 * 1024) throw new Error('Preview exceeds the local cache limit.')
+    const cacheFile = `${id}.jpg`
+    await fs.mkdir(this.layout.screenshots, { recursive: true })
+    const cacheRoot = await fs.realpath(this.layout.screenshots); const managedRoot = await fs.realpath(this.layout.root)
+    if (!cacheRoot.startsWith(managedRoot + path.sep)) throw new Error('Preview cache must stay in Vhostra managed storage.')
+    const temporary = path.join(cacheRoot, `${id}.${randomUUID()}.tmp`)
+    try { await fs.writeFile(temporary, bytes, { mode: 0o600, flag: 'wx' }); await fs.rename(temporary, path.join(cacheRoot, cacheFile)) }
+    finally { await fs.rm(temporary, { force: true }) }
+    await this.writeJson(this.recordPath(this.layout.sites, id), { ...site, screenshot: { cacheFile, capturedAt: new Date().toISOString(), source } })
+    // Only exact Vhostra UUID preview files lacking a live Site are obsolete.
+    const ids = new Set((await this.getState()).sites.map(site => `${site.id}.jpg`))
+    for (const file of await fs.readdir(this.layout.screenshots)) if ((/^[a-f0-9-]{36}\.jpg$/i.test(file) || file === `${localhostSiteId}.jpg`) && !ids.has(file)) await fs.rm(path.join(this.layout.screenshots, file), { force: true })
+  }) }
   async exportBundle(destination: string) {
     const state = await this.getState();
     // Native source can contain arbitrary secrets. Keep it locally, but do not
@@ -354,20 +375,26 @@ export class VhostraStore {
     if (typeof keepSites !== 'boolean') throw new Error('Choose whether to keep Site configurations.')
     await this.assertResetSafe()
     await this.exportBundle(path.join(this.layout.backups, `before-reset-${Date.now()}.json`))
+    const previousPorts = (await this.getState()).settings.ports
     // Records only. Never remove the sites directory or document roots.
     if (!keepSites) {
       for (const site of (await this.getState()).sites.filter(site => !site.builtIn)) await this.removeSiteRecord(site.id)
       for (const host of (await this.getState()).virtualHosts.filter(host => !host.builtIn)) await fs.rm(this.recordPath(this.layout.virtualHosts, host.id), { force: true })
     }
-    for (const target of [path.dirname(this.layout.runtime.apache), this.layout.persistentData.mariaDb, this.layout.certificates.directory]) await fs.rm(target, { recursive: true, force: true })
-    await this.writeJson(this.layout.settings, defaults)
+    const runtimeRoot = path.dirname(this.layout.runtime.apache)
+    for (const entry of await fs.readdir(runtimeRoot, { withFileTypes: true })) {
+      if (keepSites && entry.name === path.basename(this.layout.runtime.mariaDb)) continue
+      await fs.rm(path.join(runtimeRoot, entry.name), { recursive: true, force: true })
+    }
+    if (!keepSites) for (const target of [this.layout.persistentData.mariaDb, this.layout.certificates.directory]) await fs.rm(target, { recursive: true, force: true })
+    await this.writeJson(this.layout.settings, keepSites ? { ...defaults, ports: previousPorts } : defaults)
     await this.saveOnboarding({ completed: false, theme: 'system', server: defaults.selectedWebServer, php: defaults.selectedPhpVersion, cache: 'none' })
     // Generated native configuration is reproducible; delete positively owned files only.
     const generated = await import('./generated-config.js')
     for (const server of ['apache', 'nginx', 'openlitespeed'] as WebServer[]) await generated.cleanObsoleteGenerated(this.layout.configuration.generated, server)
     await fs.rm(path.join(this.layout.configuration.generated, 'runtime-selection.json'), { force: true })
     this.initialized = null; await this.initialize()
-    return { message: `Vhostra reset. Databases removed; Site configurations ${keepSites ? 'kept' : 'removed'}. External site files untouched.` }
+    return { message: `Vhostra reset. MariaDB databases/users/roles/grants ${keepSites ? 'preserved' : 'removed'}; Site configurations ${keepSites ? 'kept' : 'removed'}. External site files untouched.` }
   }) }
   /** Keep ten completed automatic configuration snapshots. Active/failed imports,
    * exported user backups, website/database content, and unknown files are untouched. */

@@ -4,7 +4,7 @@
 
 Vhostra is a lightweight, cross-platform graphical local PHP development environment. It is designed around one shared runtime: many local websites use one selected web server, one selected PHP version, and shared supporting services.
 
-> Development status: Vhostra persists settings and site/neutral-vhost definitions locally, creates a protected localhost welcome page, and manages its dedicated single-container runtime. The current desktop UI includes real MariaDB management, phpMyAdmin launching, port checks, hosts-file integration, PHP extension discovery, and runtime lifecycle controls. Portable JSON configuration import/apply and verified configuration-location migration are implemented. Bounded Apache/Nginx/LiteSpeed configuration import, first-run onboarding, and visible-only resource monitoring are implemented. First-run Vhostra JSON backup restoration and protected reset are implemented. Screenshot capture and backups from unrelated formats remain outside the supported workflows.
+> Development status: Vhostra persists settings and site/neutral-vhost definitions locally, creates a protected localhost welcome page, and manages its dedicated web/PHP runtime and independent persistent MariaDB container. The current desktop UI includes real MariaDB management, phpMyAdmin launching, port checks, hosts-file integration, PHP extension discovery, and runtime lifecycle controls. Portable JSON configuration import/apply and verified configuration-location migration are implemented. Bounded Apache/Nginx/LiteSpeed configuration import, first-run onboarding, and visible-only resource monitoring are implemented. First-run Vhostra JSON backup restoration and protected reset are implemented. Dashboard previews are captured locally and cached. Backups from unrelated formats remain outside the supported workflows.
 
 ![Vhostra Dashboard with shared runtime controls and host-backed Sites](docs/images/dashboard.png)
 
@@ -93,13 +93,13 @@ By default, a portable configuration bundle excludes website content, database c
 
 Clicking a saved site URL, preview, or external-link button opens the validated `http` or `https` URL with the operating system's default browser via Electron's main-process `shell.openExternal` API. Websites are never opened in a Vhostra `BrowserWindow`; the renderer remains isolated with `contextIsolation` enabled and `nodeIntegration` disabled.
 
-Dashboard previews use a screenshot only when a site's definition references a real supported image file in Vhostra's host-side screenshot cache. Otherwise, Vhostra shows an explicit no-preview fallback. Screenshot capture is not implemented yet; the model and cache location are ready for a later capture service without changing site records.
+Dashboard previews use a screenshot only when a site's definition references a real supported image file in Vhostra's host-side screenshot cache. Otherwise, Vhostra shows an explicit no-preview fallback. Missing/stale previews are captured locally on Dashboard visibility, with explicit Refresh Preview, a first-screen desktop viewport, compressed host JPEG cache, bounded retries and a placeholder on failure. No screenshot service receives Site URLs or content.
 
 ## Tray and application lifecycle
 
-Vhostra creates a platform tray/menu-bar icon and keeps the application available after its primary window is hidden. Settings provides a persisted close-button policy: minimize to the tray (the default), quit while keeping the Vhostra runtime running, or stop only Vhostra-managed services and then quit. The tray and Settings each provide the two explicit quit actions: **Quit Vhostra, Keep Services Running** and **Quit Vhostra and Stop Services**.
+Vhostra creates a platform tray/menu-bar icon and keeps the application available after its primary window is hidden. Settings provides a persisted close-button policy: minimize to the tray (the default), quit while keeping the Vhostra runtime running, or stop only Vhostra-managed services and then quit. Native application-menu Quit, tray Quit and sidebar Quit open **Quit Vhostra?** with **Quit Vhostra and Keep Services Running**, **Quit Vhostra and Stop Services**, and **Cancel**. Keep exits Electron/tray completely; Stop first verifies both web/PHP and MariaDB stopped. Title-bar Close retains its saved policy. The tray shows Open Vhostra only while the window is hidden/minimized; the in-window menubar is removed on Windows/Linux.
 
-Start, Stop, and Restart actions—including individual active-web-server, MariaDB, Redis, and Memcached controls when the runtime supports them—use the same Vhostra-only runtime controller in the Dashboard, Services workspace, tray, and CLI. They operate only against the generated `vhostra` project and never target unrelated Docker resources.
+Start, Stop, and Restart actions—including individual active-web-server, MariaDB, Redis, and Memcached controls when the runtime supports them—use the same Vhostra-only runtime controller in the Dashboard, Services workspace, tray, and CLI. They operate only against the generated `vhostra` web project and `vhostra-database` MariaDB project and never target unrelated Docker resources.
 
 ## Bind mounts
 
@@ -107,7 +107,7 @@ Docker configuration uses explicit host-to-container mount plans. Host paths and
 
 ## Docker isolation and safety principles
 
-The Docker layer uses the dedicated `vhostra` Compose project, `com.vhostra.managed=true` labels, and `vhostra-network`. It invokes Compose only against Vhostra's generated project file; it never uses global cleanup or broad Docker stop/remove operations. Website roots, generated configuration, database data, logs, certificates, and service configuration are host bind mounts. A running server/PHP change checks a candidate against an isolated database copy and temporary ports, then promotes the selected configuration and health-checks localhost and phpMyAdmin. Failed promotion restores the verified previous configuration and image. If recovery fails, Vhostra retains recovery files and reports their location.
+The Docker layer uses the dedicated `vhostra` web/PHP Compose project and independent `vhostra-database` project, exact ownership labels/mount checks, and an internal database network. It invokes Compose only against Vhostra's generated project file; it never uses global cleanup or broad Docker stop/remove operations. Website roots, generated configuration, database data, logs, certificates, and service configuration are host bind mounts. A server/PHP change checks a candidate web runtime on temporary ports against the same independent MariaDB container, then promotes only the web/PHP service. It never copies a datadir, stops/restarts the DB, or rebuilds its image for a PHP/frontend change. An intentionally stopped DB stays stopped during a web switch. Legacy recovery never restarts a database-bearing web image alongside the independent DB. Failed promotion restores the verified previous configuration and image. If recovery fails, Vhostra retains recovery files and reports their location.
 
 Security configuration for generated runtimes includes `expose_php=Off` and web-server response version hiding where supported.
 
@@ -222,7 +222,7 @@ test/               Persistent-store and URL-safety tests
 
 ## Current limitations
 
-Automatic Site management requests elevation to create/remove only its own marked hosts-file mappings for sites and aliases. The explicit manual Hosts editor supports reviewed full-file changes. It does not yet capture screenshots or restore arbitrary external backups. Native configuration import is limited to the documented convertible text formats; unsupported directives remain inactive and visible. Configuration imports create a local backup, and configuration migration retains the source until destination health checks succeed. A cancelled elevation request during creation/import preserves the new definition and reports missing mappings. An existing Site edit restores its previous canonical/runtime definition if native validation or Hosts elevation fails.
+Automatic Site management requests elevation to create/remove only its own marked hosts-file mappings for sites and aliases. The explicit manual Hosts editor supports reviewed full-file changes. It captures local homepage viewport previews; arbitrary external backups remain unsupported. Native configuration import is limited to the documented convertible text formats; unsupported directives remain inactive and visible. Configuration imports create a local backup, and configuration migration retains the source until destination health checks succeed. A cancelled elevation request during creation/import preserves the new definition and reports missing mappings. An existing Site edit restores its previous canonical/runtime definition if native validation or Hosts elevation fails.
 
 ## PHP extensions and cwebp
 
@@ -249,8 +249,8 @@ renderer. This avoids retaining huge log files in Electron memory.
 
 ## Tray component controls
 
-When the single Vhostra runtime is running, the tray obtains actual Supervisor
-state for the active web server, MariaDB, and enabled Redis/Memcached services.
+The tray obtains actual Supervisor state for web/PHP and enabled Redis/Memcached,
+and Docker health/process state for the independent MariaDB container.
 It exposes only meaningful Start, Stop, and Restart actions for those
 Vhostra-managed processes. PHP/LSPHP uses the selected package inside the shared runtime: native LSAPI
 for OpenLiteSpeed, or its loopback PHP development backend for Apache/Nginx.
@@ -401,10 +401,30 @@ Manual saving uses **Review changes → Confirm Save with administrator approval
 
 A private recovery snapshot is created before elevation. Writes stage metadata-preserving files, replace atomically and verify the resulting bytes. Cancellation leaves the protected file unchanged. Failed writes recover the original only when the target still equals the attempted bytes; otherwise newer/ambiguous bytes remain untouched and native/private recovery backups are retained, with the recovery path in the error. Administrative passwords never enter the renderer, logs or configuration. After a successful manual save, Site mapping statuses are recalculated and display missing/conflicting names. Vhostra does not silently repair intentional changes; use Sites → Repair when wanted. Rename/alias edits share a GUI/CLI transaction: persist candidate definition, validate/promote runtime, reconcile protected mappings atomically, verify; rollback restores the previous definition on failure. Creation/import can retain a valid definition after declined mapping permission and display Repair.
 
-Settings → **Reset Vhostra** warns to back up databases/configuration first. Keep/Remove/Cancel is followed by a separate **Are you sure you want to reset?** with No / **Yes, Reset Vhostra**. **Databases are removed in either choice.** Keeping Site configurations does not keep database data. The backend removes only positively inspected Vhostra containers/networks, managed runtime/database/certificate state and reproducible generated files. Configuration backups and diagnostic logs remain. It never recursively removes the Sites directory or an external document root; unsafe legacy overlaps/symlinks cause refusal. Successful reset returns to onboarding. CLI reset repeats both interactive confirmations, accepts no destructive flags, and routes native-login-enabled resets to the graphical app. Inactive web frontends cannot be started through specific service aliases.
+Settings → **Reset Vhostra** warns to back up databases/configuration first. Keep/Remove/Cancel is followed by a separate **Are you sure you want to reset?** with No / **Yes, Reset Vhostra**. **Keep configurations preserves MariaDB databases/users/roles/grants, credentials, data/configuration, certificates and Site ports/definitions. Remove configurations resets Vhostra-managed database state and definitions after final confirmation.** The backend removes only positively inspected Vhostra containers/networks, the replaceable web runtime and reproducible generated files; database/certificate state is removed only in Remove mode. Configuration backups and diagnostic logs remain. It never recursively removes the Sites directory or an external document root; unsafe legacy overlaps/symlinks cause refusal. Successful reset returns to onboarding. CLI reset repeats both interactive confirmations, accepts no destructive flags, and routes native-login-enabled resets to the graphical app. Inactive web frontends cannot be started through specific service aliases.
 
 Privacy: no analytics, telemetry, tracking IDs, remote logs or crash uploads. Legitimate network activity includes Docker images/packages, PHP extension repositories, explicit user-opened URLs and configured HTTPS update metadata. No Site paths/names, Hosts entries, databases or logs are attached to update checks. Update responses are bounded to 64 KiB, reject credentials/redirects, and use an eight-second timeout. Update checking remains unconfigured unless a release endpoint is supplied.
 
 Configuration import previews support choosing a local host document root for each new Site, including backups or native source paths from a different operating system. Source files remain unchanged. Backup import from Sites adds missing definitions and preserves current settings; first-run restoration can restore settings and theme.
 
 OpenLiteSpeed validation treats a strictly warning-only exit status 1 as reviewable and rejects errors or unknown failure output, matching [upstream configuration-test exit handling](https://github.com/litespeedtech/openlitespeed/blob/master/src/main/lshttpdmain.cpp). Native OLS parser backups use a disposable working copy of host-generated configuration so a stop/start does not write into the read-only source mount.
+
+
+## Independent persistent MariaDB
+
+`vhostra-mariadb` uses a purpose-built `vhostra-mariadb:build-…` image based on the official MariaDB image for the datadir's recorded series (new profiles: 11.8). The existing profile's datadir records 11.8.6. Supported recorded series are 10.6, 10.11, 11.4 and 11.8; unknown/missing legacy version metadata is refused for recovery with the original server, rather than reset or implicitly upgraded. The image contains MariaDB, tiny socat bridges and bounded log rotation; it does not duplicate web servers/PHP. Test profiles use their own scoped container/network names.
+
+The existing platform-selected local application-data root remains authoritative:
+
+- `data/mariadb`: direct durable datadir, including users, roles, grants and metadata.
+- `runtime/mariadb`: persisted configuration, private credentials, Compose/image metadata.
+- `logs/mariadb`: host error logs, 5 MiB threshold with three retained rotations.
+- `backups` / explicitly selected SQL destinations: intentional recovery exports.
+
+Web/PHP connects over a Vhostra-owned internal Docker network using the stable `vhostra-mariadb` alias. Its tiny loopback TCP and Unix-socket listeners let ordinary mysqli/PDO/WordPress use `localhost`, `localhost:3306` or `127.0.0.1`. The DB-side TCP-to-socket gateway preserves localhost-account matching without rewriting stored grants. phpMyAdmin keeps its backend-managed local automatic authentication. Database root credentials do not enter renderer state or URLs. Optional external clients retain the existing intentional port setting, bound only to host loopback.
+
+Host persistence is separate from backup. Database Export streams a logical SQL dump (tables, routines, triggers and events) and atomically replaces the chosen file only after success; Import streams from disk and reports success only on command completion. Selected-database exports do not claim to include all server users/roles/grants. Export those administratively for a full server recovery plan. A live copied datadir is not the sole recovery backup. SQL failure messages omit echoed statements/literals; the renderer never loads a dump into memory.
+
+Service controls and CLI `start|stop|restart mariadb` operate the actual independent container. All-service commands include it; web/PHP configuration replacement leaves it alone. Resource metrics show Web/PHP and MariaDB separately, count host data once, and retain visible-only polling and cached storage scans. MariaDB's bounded Docker health check is independent of Electron; no application idle health timer is introduced.
+
+Managed image cleanup retains six recent web/PHP builds and two recent MariaDB builds, preserving all referenced images, recovery leases and unknown tags. Explicit native Quit also works during first-time setup; it always offers keep services, stop services, or Cancel.

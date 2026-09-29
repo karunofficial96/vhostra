@@ -10,7 +10,7 @@ RUN test -n "$LSPHP_VERSION" && case "$LSPHP_VERSION" in 81|82|83|84|85) ;; *) e
 # LiteSpeed's repository is required because the upstream OLS image only bundles
 # one LSPHP version. Fail the build if the requested package cannot be resolved.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates openssl curl gnupg supervisor logrotate apache2 nginx mariadb-server redis-server memcached netcat-openbsd \
+ && apt-get install -y --no-install-recommends ca-certificates openssl curl gnupg supervisor logrotate apache2 nginx mariadb-client socat redis-server memcached netcat-openbsd \
  && curl -fsSL https://repo.litespeed.sh | bash \
  && apt-get update \
  && apt-cache show "lsphp${LSPHP_VERSION}" >/dev/null \
@@ -53,3 +53,6 @@ RUN chmod 0755 /usr/local/bin/vhostra-php-backend
 
 COPY web-server.sh /usr/local/bin/vhostra-web-server
 RUN chmod 0755 /usr/local/bin/vhostra-web-server && a2enmod rewrite proxy proxy_http ssl headers && a2dissite 000-default
+
+COPY mysql-forward.sh /usr/local/bin/vhostra-mysql-forward
+RUN chmod 0755 /usr/local/bin/vhostra-mysql-forward

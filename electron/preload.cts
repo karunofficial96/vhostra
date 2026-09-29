@@ -62,6 +62,8 @@ const api = Object.freeze({
   hostsStatus: (id: string) => ipcRenderer.invoke('vhostra:hosts-status', id),
   getAppInfo: () => ipcRenderer.invoke('vhostra:get-app-info'),
   checkForUpdates: () => ipcRenderer.invoke('vhostra:check-for-updates'),
+  capturePreview: (siteId: string, force = false) => ipcRenderer.invoke('vhostra:capture-preview', siteId, force),
+  onExplicitQuit: (listener: () => void) => { let live = true; const handler = () => { void ipcRenderer.invoke('vhostra:consume-quit-request').then(pending => { if (live && pending) listener() }) }; ipcRenderer.on('vhostra:explicit-quit', handler); handler(); return () => { live = false; ipcRenderer.removeListener('vhostra:explicit-quit', handler) } },
   onRuntimeStatus: (listener: (status: unknown) => void) => { const handler = (_event: IpcRendererEvent, status: unknown) => listener(status); ipcRenderer.on('vhostra:runtime-status', handler); return () => ipcRenderer.removeListener('vhostra:runtime-status', handler) },
 })
 

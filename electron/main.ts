@@ -15,6 +15,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { SitePreviews } from "./previews.js";
 import { updateManagedSite } from "./site-workflow.js";
 import { VhostraStore, type AppState } from "./store.js";
 import { DockerRuntimeController, type RuntimeState, type RuntimeSnapshot } from "./runtime.js";
@@ -182,6 +183,9 @@ const createWindow = () => {
         },
     });
     primaryWindow = window;
+    window.setMenuBarVisibility(false);
+    window.setAutoHideMenuBar(true);
+    if (process.platform !== "darwin") window.removeMenu();
     // Electron's Linux maximizable setter is a documented no-op. Honor the
     // policy when the window manager emits the native event; some managers may
     // still display their maximize control. Manual resizing remains available.
@@ -193,8 +197,10 @@ const createWindow = () => {
         void services.refresh().then(updateTrayMenu);
     };
     window.on("focus", refreshVisibleRuntime);
-    window.on("show", refreshVisibleRuntime);
-    window.on("restore", publishRuntimeStatus);
+    window.on("show", () => { refreshVisibleRuntime(); updateTrayMenu(); });
+    window.on("restore", () => { publishRuntimeStatus(); updateTrayMenu(); });
+    window.on("hide", updateTrayMenu);
+    window.on("minimize", updateTrayMenu);
     window.on("closed", () => {
         primaryWindow = null;
     });
@@ -267,6 +273,7 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     createRuntimeController();
     registerIpc();
     registerScreenshotProtocol();
+    installApplicationMenu();
     createTray();
     createWindow();
     startResourceDiagnostics(() => services, () => Boolean(primaryWindow?.isVisible() && !primaryWindow.isMinimized()));
@@ -294,9 +301,10 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
         void openApplicationWindow();
     });
 });
-app.on("before-quit", () => {
-    isQuitting = true;
+app.on("before-quit", (event) => {
+    if (!isQuitting && services) { event.preventDefault(); void requestExplicitQuit(); return; }
     services?.dispose();
+    tray?.destroy(); tray = null;
 });
 
 /** Raw source stays private on disk; ordinary state IPC does not duplicate it
@@ -318,6 +326,7 @@ function registerIpc() {
         if (mutating) desktopMutation = true;
         try { return await listener(event, ...args); } finally { if (mutating) desktopMutation = false; }
     });
+    handle("vhostra:consume-quit-request", () => { const pending = pendingExplicitQuitRequest; pendingExplicitQuitRequest = false; return pending; });
     handle("vhostra:inspect-hosts", () => hosts.inspect());
     handle("vhostra:preview-hosts-edit", (_event, contents: string, expected: string) => hosts.previewEdit(contents, expected));
     handle("vhostra:edit-hosts", (_event, contents: string, expected: string, reviewId: string) => hosts.edit(contents, expected, reviewId));
@@ -346,7 +355,7 @@ function registerIpc() {
             await services.pauseBackgroundWork();
             // A declined Hosts prompt leaves runtime, definitions and databases unchanged.
             if (!keepSites) await hosts.removeVhostraMappings((await store.getState()).virtualHosts.filter(host => !host.builtIn).flatMap(host => [host.hostname, ...host.aliases]));
-            await services.resetRuntime(); await services.pauseBackgroundWork();
+            await services.resetRuntime(keepSites); await services.pauseBackgroundWork();
             const result = await store.resetConfiguration(keepSites);
             pendingBackup = null; pendingNativeImport = null; storageCache = null;
             createRuntimeController(); await services.refresh(); return result;
@@ -566,16 +575,19 @@ function registerIpc() {
             recordMigrationStage("Preparing configuration migration…");
             // Coordinate Vhostra's own writer before copying. This stops only the
             // Vhostra-labeled runtime; host project files and unrelated Docker resources remain untouched.
+            await services.refresh();
             const wasRunning = services.current().state === "running";
+            const databaseWasRunning = (await services.listManagedServices()).find(row => row.id === "mariadb")?.state === "running";
             try {
-                if (wasRunning) await services.stop();
+                await services.resetRuntime(false);
                 await services.pauseBackgroundWork();
                 const result = await store.migrateConfiguration(
                     directory,
                     async () => {
                         createRuntimeController();
                         await services.refresh();
-                        if (wasRunning) await services.start();
+                        if (wasRunning) await services.start(databaseWasRunning);
+                        else if (databaseWasRunning) await services.controlManagedService("mariadb", "start");
                     },
                     recordMigrationStage,
                 );
@@ -590,17 +602,18 @@ function registerIpc() {
                 // Vhostra runtime if this operation had stopped it before the attempt.
                 // The failed destination can still own the host ports. Stop that scoped
                 // container before rebuilding the controller for the restored source.
-                if (wasRunning) await services.stop();
+                await services.resetRuntime(false);
                 createRuntimeController();
                 if (wasRunning)
                     await services
-                        .start()
+                        .start(databaseWasRunning)
                         .catch((restartError) =>
                             console.error(
                                 "[Vhostra] Could not restore runtime after configuration migration failure:",
                                 restartError,
                             ),
                         );
+                if (!wasRunning && databaseWasRunning) await services.controlManagedService("mariadb", "start").catch(reportServiceFailure);
                 throw error;
             } finally {
                 migrationProgress = undefined;
@@ -653,14 +666,15 @@ function registerIpc() {
     });
     handle("vhostra:list-persistent-logs", async (_event, filter = "all") => {
         if (filter === "all") return listPersistentLogs(store.layout.logs);
-        if (filter === "runtime") return listPersistentLogs(store.layout.logs, false);
+        if (filter === "runtime") return [...await listPersistentLogs(store.layout.logs, false), ...(await listPersistentLogs(path.join(store.layout.logs, "mariadb"))).map(file => ({ ...file, path: path.join("mariadb", file.path) }))].sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt)).slice(0, 100);
         if (!(await store.getState()).virtualHosts.some(host => host.id === filter)) throw new Error("Unknown Site log source.");
         const prefix = path.join("sites", filter);
         return (await listPersistentLogs(path.join(store.layout.logs, prefix))).map(file => ({ ...file, path: path.join(prefix, file.path) }));
     });
-    handle("vhostra:read-log-tail", (_event, relative: string) =>
-        readLogTail(store.layout.logs, relative),
-    );
+    handle("vhostra:read-log-tail", async (_event, relative: string) => {
+        const tail = await readLogTail(store.layout.logs, relative);
+        return { ...tail, text: await services.redactLocalLog(tail.text) };
+    });
     handle("vhostra:export-configuration", async () => {
         const result = await dialog.showSaveDialog({
             title: "Export Vhostra configuration",
@@ -697,11 +711,17 @@ function registerIpc() {
         catch (error) { mapping.message += ` Imported definitions were saved, but runtime configuration requires retry: ${error instanceof Error ? error.message : String(error)}`; }
         return { ...imported, mapping };
     });
+    let previews = new SitePreviews(store);
+    handle("vhostra:capture-preview", async (_event, id: string, force = false) => {
+        if (typeof id !== "string" || typeof force !== "boolean") throw new Error("Invalid preview request.");
+        if (!primaryWindow?.isVisible() || primaryWindow.isMinimized()) return { captured: false, message: "Open Dashboard to refresh previews." };
+        return previews.capture(id, force);
+    });
     handle("vhostra:get-runtime-status", desktopRuntimeSnapshot);
     handle("vhostra:runtime-statuses", () => services.runtimeStatuses());
     handle("vhostra:start-services", () => services.start());
     handle("vhostra:stop-services", () => services.stop());
-    handle("vhostra:restart-services", () => services.restart());
+    handle("vhostra:restart-services", () => services.restartAll());
     handle(
         "vhostra:quit-application",
         (
@@ -941,7 +961,7 @@ async function openExternal(value: string) {
 }
 
 const requestShutdown = createShutdownManager({
-    refresh: () => services.refresh(),
+    refresh: async () => { const snapshot = await services.refresh(); if (["stopped", "not-created"].includes(snapshot.state) && !(await services.allServicesStopped())) return { ...snapshot, state: "running" }; return snapshot; },
     stop: () => services.stop(),
     hide: () => createWindow().hide(),
     quit: () => {
@@ -1005,7 +1025,7 @@ function updateTrayMenu() {
         status.state,
     );
     const action = (operation: "start" | "stop" | "restart") => () => {
-        void services[operation]()
+        void (operation === "restart" ? services.restartAll() : services[operation]())
             .catch(reportServiceFailure)
             .finally(updateTrayMenu);
         updateTrayMenu();
@@ -1024,12 +1044,7 @@ function updateTrayMenu() {
         .catch(() => {})
         .finally(() => { trayRefreshPending = false; if (trayRefreshAgain) { trayRefreshAgain = false; updateTrayMenu(); } });
     const items: MenuItemConstructorOptions[] = [
-        {
-            label: "Open Vhostra",
-            click: () => {
-                void openApplicationWindow();
-            },
-        },
+        ...openTrayItem(),
         {
             label: "Open localhost in default browser",
             click: () => {
@@ -1073,20 +1088,7 @@ function updateTrayMenu() {
             click: action("restart"),
         },
         { type: "separator" },
-        {
-            label: "Quit Vhostra, Keep Services Running",
-            click: () => {
-                void requestShutdown("keep-services");
-            },
-        },
-        {
-            label: "Quit Vhostra and Stop Services",
-            click: () => {
-                void requestShutdown("stop-services").catch(
-                    reportShutdownFailure,
-                );
-            },
-        },
+        { label: "Quit Vhostra…", click: () => { void requestExplicitQuit(); } },
     ];
     tray.setContextMenu(Menu.buildFromTemplate(items));
     tray.setToolTip(
@@ -1122,7 +1124,7 @@ function updateTrayMenuWithManaged(
                       {
                           label: "Start",
                           enabled:
-                              controlsAvailable &&
+                              (controlsAvailable || service.id === "mariadb") &&
                               service.state !== "running" &&
                               service.state !== "starting",
                           click: control(service.id, "start"),
@@ -1130,13 +1132,13 @@ function updateTrayMenuWithManaged(
                       {
                           label: "Stop",
                           enabled:
-                              controlsAvailable && service.state === "running",
+                              (controlsAvailable || service.id === "mariadb") && ["running", "unhealthy"].includes(service.state),
                           click: control(service.id, "stop"),
                       },
                       {
                           label: "Restart",
                           enabled:
-                              controlsAvailable && service.state === "running",
+                              (controlsAvailable || service.id === "mariadb") && ["running", "unhealthy"].includes(service.state),
                           click: control(service.id, "restart"),
                       },
                       ...(service.id === "redis" || service.id === "memcached"
@@ -1178,18 +1180,13 @@ function updateTrayMenuWithManaged(
         }),
     );
     const action = (operation: "start" | "stop" | "restart") => () => {
-        void services[operation]()
+        void (operation === "restart" ? services.restartAll() : services[operation]())
             .catch(reportServiceFailure)
             .finally(updateTrayMenu);
     };
     tray.setContextMenu(
         Menu.buildFromTemplate([
-            {
-                label: "Open Vhostra",
-                click: () => {
-                    void openApplicationWindow();
-                },
-            },
+            ...openTrayItem(),
             {
                 label: "Open localhost in default browser",
                 click: () => {
@@ -1227,20 +1224,7 @@ function updateTrayMenuWithManaged(
                 click: action("restart"),
             },
             { type: "separator" },
-            {
-                label: "Quit Vhostra, Keep Services Running",
-                click: () => {
-                    void requestShutdown("keep-services");
-                },
-            },
-            {
-                label: "Quit Vhostra and Stop Services",
-                click: () => {
-                    void requestShutdown("stop-services").catch(
-                        reportShutdownFailure,
-                    );
-                },
-            },
+            { label: "Quit Vhostra…", click: () => { void requestExplicitQuit(); } },
         ]),
     );
 }
@@ -1272,3 +1256,26 @@ function registerScreenshotProtocol() {
 
 /** Read-only native acceptance diagnostics; no IPC surface. */
 export function applicationSession() { return { window: primaryWindow, tray, hasSingleInstanceLock, runtime: services, hosts }; }
+
+function openTrayItem(): MenuItemConstructorOptions[] {
+    return primaryWindow && !primaryWindow.isDestroyed() && primaryWindow.isVisible() && !primaryWindow.isMinimized()
+        ? [] : [{ label: "Open Vhostra", click: () => { void openApplicationWindow(); } }];
+}
+let explicitQuitPending = false;
+let pendingExplicitQuitRequest = false;
+async function requestExplicitQuit() {
+    if (explicitQuitPending || isQuitting) return;
+    explicitQuitPending = true;
+    try {
+        await openApplicationWindow();
+        pendingExplicitQuitRequest = true;
+        primaryWindow?.webContents.send("vhostra:explicit-quit");
+    } finally { explicitQuitPending = false; }
+}
+function installApplicationMenu() {
+    const quit: MenuItemConstructorOptions = { label: "Quit Vhostra", accelerator: process.platform === "darwin" ? "Command+Q" : "Alt+F4", click: () => { void requestExplicitQuit(); } };
+    const items: MenuItemConstructorOptions[] = process.platform === "darwin"
+        ? [{ label: "Vhostra", submenu: [{ role: "about" }, { type: "separator" }, { role: "hide" }, { role: "hideOthers" }, { role: "unhide" }, { type: "separator" }, quit] }, { role: "editMenu" }, { role: "windowMenu" }]
+        : [{ label: "Vhostra", submenu: [quit] }, { role: "editMenu" }];
+    Menu.setApplicationMenu(Menu.buildFromTemplate(items));
+}

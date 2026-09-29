@@ -58,10 +58,10 @@ for (const keep of [true, false]) {
       // Real interactive CLI reset in a PTY: no actual protected Hosts mutation
       // because configurations are kept. Every resource remains test-scoped.
       const output = execFileSync('python3', ['test/cli-reset-pty.py', process.execPath, 'scripts/vhostra.mjs', 'reset'], { env: environment, encoding: 'utf8', timeout: 130000 })
-      assert.match(output, /Databases removed; Site configurations kept/)
+      assert.match(output, /MariaDB databases\/users\/roles\/grants preserved; Site configurations kept/)
     } else { await store.assertResetSafe(); await hosts.removeVhostraMappings([newHostname, `www.${newHostname}`]); await runtime.resetRuntime(); await runtime.pauseBackgroundWork(); await store.resetConfiguration(false) }
     const reopened = new VhostraStore(profile); assert.equal((await reopened.getOnboarding()).completed, false); assert.equal((await reopened.getState()).sites.length, keep ? 2 : 1)
-    await assert.rejects(stat(path.join(store.layout.persistentData.mariaDb, 'host_reset_probe')), /ENOENT/); assert.match(await readFile(path.join(project, 'index.php'), 'utf8'), /host-root/); assert.equal(await readFile(path.join(project, 'sentinel'), 'utf8'), 'after')
+    if (keep) assert.ok((await stat(path.join(store.layout.persistentData.mariaDb, 'host_reset_probe'))).isDirectory()); else await assert.rejects(stat(path.join(store.layout.persistentData.mariaDb, 'host_reset_probe')), /ENOENT/); assert.match(await readFile(path.join(project, 'index.php'), 'utf8'), /host-root/); assert.equal(await readFile(path.join(project, 'sentinel'), 'utf8'), 'after')
     assert.equal(await readFile(host.logs.paths.access, 'utf8'), logBeforeReset, 'Reset preserves diagnostic logs')
     console.log(`LIVE ${keep ? 'KEEP / CLI reset' : 'REMOVE reset'}: backup settings/theme, actual bind-mounted host edits, per-site access/PHP errors, shared hostname/alias transaction, all/specific CLI controls, disposable-container DB persistence, database reset and external-file preservation passed.`)
     complete = true

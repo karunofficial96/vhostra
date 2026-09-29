@@ -39,7 +39,7 @@ Usage:
   vhostra memcached <status|enable|disable|start|stop|restart>
 
 Set VHOSTRA_USER_DATA only when using a non-default Electron user-data directory.
-Reset is interactive only: warns about database loss, asks Keep/Remove/Cancel, then requires explicit final confirmation. Back up in the graphical app first. No non-interactive destructive reset flags exist.
+Reset is interactive only: explains database preservation or removal, asks Keep/Remove/Cancel, then requires explicit final confirmation. Back up in the graphical app first. No non-interactive destructive reset flags exist.
 All runtime commands target only Vhostra's generated Compose project.`
 
 let activeRuntime
@@ -74,27 +74,27 @@ try {
   }
   if (subject === 'reset') {
     if (process.argv.length !== 3) throw new Error('Reset accepts no destructive flags. Use the interactive workflow.')
-    print('Back up databases, Site definitions and important configuration using the Vhostra graphical application first. Databases are deleted/reset regardless of Keep/Remove. External site root files remain untouched.')
+    print('Back up databases, Site definitions and important configuration using the Vhostra graphical application first. Keep preserves MariaDB databases/users/roles/grants and credentials. Remove resets Vhostra database state after final confirmation. External site root files remain untouched.')
     const choice = (await confirm('Keep Site/vhost configurations, Remove configurations, or Cancel? [keep/remove/cancel]: ')).toLowerCase()
     if (!['keep', 'remove'].includes(choice)) print('Reset cancelled. State unchanged.')
     else {
-      print(`Settings and runtime reset; databases removed; Site configurations ${choice === 'keep' ? 'kept' : 'removed'}. External website files remain untouched.`)
+      print(`Settings and runtime reset; databases ${choice === 'keep' ? 'preserved' : 'removed'}; Site configurations ${choice === 'keep' ? 'kept' : 'removed'}. External website files remain untouched.`)
       if ((await confirm('Are you sure you want to reset? Type "Yes, Reset Vhostra" to confirm: ')) !== 'Yes, Reset Vhostra') print('Reset cancelled. State unchanged.')
       else {
         const previous = (await store.getState()).settings
         if (previous.startup.launchAtLogin) throw new Error('Open Vhostra Settings → Reset Vhostra to unregister the native login integration and complete reset.')
         await store.assertResetSafe()
         if (choice === 'remove') await hosts.removeVhostraMappings((await store.getState()).virtualHosts.filter(host => !host.builtIn).flatMap(host => [host.hostname, ...host.aliases]))
-        await runtime.resetRuntime(); await runtime.pauseBackgroundWork(); print(await store.resetConfiguration(choice === 'keep'))
+        await runtime.resetRuntime(choice === 'keep'); await runtime.pauseBackgroundWork(); print(await store.resetConfiguration(choice === 'keep'))
       }
     }
   } else if (['start', 'stop', 'restart'].includes(subject)) {
     if (action) { await runtime.refresh(); print(await runtime.controlManagedService(await selectedTarget(action), subject)) }
-    else { await runtime[subject](); print(runtime.current()) }
+    else { await (subject === 'restart' ? runtime.restartAll() : runtime[subject]()); print(runtime.current()) }
   } else if (subject === 'status' && action) {
     const selected = (await store.getState()).settings.selectedWebServer
     if (['apache', 'nginx', 'openlitespeed'].includes(action) && action !== selected) print({ id: action, state: 'inactive', selected })
-    else { const rows = await runtime.runtimeStatuses(); const row = rows.find(row => row.id === (action === selected ? 'web' : action)); if (!row) throw new Error('Unknown runtime status target.'); print(row); if (['failed', 'unavailable'].includes(row.state)) process.exitCode = 2 }
+    else { const rows = await runtime.runtimeStatuses(); const row = rows.find(row => row.id === (action === selected ? 'web' : action)); if (!row) throw new Error('Unknown runtime status target.'); print(row); if (['failed', 'unhealthy', 'unavailable'].includes(row.state)) process.exitCode = 2 }
   } else if (subject === 'sites' && action === 'list') print((await store.getState()).sites)
   else if (subject === 'sites' && ['add', 'edit'].includes(action)) {
     const source = action === 'add' ? process.argv[4] : process.argv[5]; if (!source) throw new Error('Provide a JSON file with name, url, documentRoot, optional aliases/framework.')
@@ -160,8 +160,8 @@ try {
   } else if (['web', 'mariadb'].includes(subject) && ['status', 'start', 'stop', 'restart'].includes(action)) {
     await runtime.refresh(); print(action === 'status' ? (await runtime.listManagedServices()).find(service => service.id === subject) : await runtime.controlManagedService(subject, action))
   }
-  else if (subject === 'status' || (subject === 'runtime' && (!action || action === 'status'))) { await runtime.refresh(); print({ runtime: runtime.current(), services: await runtime.runtimeStatuses() }); if (['unavailable', 'error'].includes(runtime.current().state)) process.exitCode = 2 }
-  else if (subject === 'runtime' && ['start', 'stop', 'restart'].includes(action)) { await runtime[action](); print(runtime.current()) }
+  else if (subject === 'status' || (subject === 'runtime' && (!action || action === 'status'))) { await runtime.refresh(); const rows = await runtime.runtimeStatuses(); print({ runtime: runtime.current(), services: rows }); if (['unavailable', 'error'].includes(runtime.current().state) || rows.some(row => row.enabled && ['failed','unhealthy','unavailable'].includes(row.state))) process.exitCode = 2 }
+  else if (subject === 'runtime' && ['start', 'stop', 'restart'].includes(action)) { await (action === 'restart' ? runtime.restartAll() : runtime[action]()); print(runtime.current()) }
   else if (subject === 'service' && (action === 'list' || !action)) { await runtime.refresh(); print(await runtime.listManagedServices()) }
   else if (subject === 'service' && ['web', 'mariadb', 'redis', 'memcached'].includes(action) && ['status', 'start', 'stop', 'restart'].includes(process.argv[4])) {
     await runtime.refresh(); print(process.argv[4] === 'status' ? (await runtime.listManagedServices()).find(service => service.id === action) : await runtime.controlManagedService(action, process.argv[4]))

@@ -18,7 +18,7 @@ for (const recoveryFails of [false, true]) test(`replacement recovery ${recovery
         await writeFile(path.join(runtime.runtimeRoot, 'healthy-state.json'), JSON.stringify(state));
         await writeFile(path.join(runtime.runtimeRoot, 'compose.yml'), 'verified-original');
         await writeFile(path.join(store.layout.configuration.generated, 'apache-vhosts.conf'), '# Vhostra generated configuration; owner=vhostra; schema=1\nverified-host-config');
-        runtime.requireDocker = runtime.ensurePortsAvailable = runtime.checkOptionalHttpsPort = runtime.provisionPhpMyAdmin = async () => {};
+        runtime.prepareDatabase = runtime.startDatabase = runtime.requireDocker = runtime.ensurePortsAvailable = runtime.checkOptionalHttpsPort = runtime.provisionPhpMyAdmin = async () => {};
         runtime.docker = async () => '';
         runtime.compose = async (args) => {
             if (args[0] === 'images') return 'immutable-image-id';
@@ -48,3 +48,14 @@ for (const recoveryFails of [false, true]) test(`replacement recovery ${recovery
         await rm(root, { recursive: true, force: true });
     }
 });
+test('legacy rollback regenerates web-only Compose before restarting beside independent MariaDB',async()=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'vhostra-legacy-recovery-'));let runtime;
+ try{
+  const store=new VhostraStore(root,path.resolve('dist-welcome'));const state=await store.getState();runtime=new DockerRuntimeController(store.layout,async()=>state);
+  await mkdir(runtime.runtimeRoot,{recursive:true});await writeFile(path.join(runtime.runtimeRoot,'healthy-state.json'),JSON.stringify(state));await writeFile(runtime.composeFile,'legacy bind /var/lib/mysql');
+  runtime.prepareDatabase=runtime.startDatabase=runtime.requireDocker=runtime.ensurePortsAvailable=runtime.checkOptionalHttpsPort=runtime.provisionPhpMyAdmin=runtime.cleanupImages=async()=>{};runtime.docker=async()=>'';let generations=0;let recovered=false;
+  runtime.generate=async()=>{generations++;await writeFile(runtime.composeFile,'web-only regenerated')};
+  let builds=0;runtime.compose=async args=>{if(args[0]==='build'&&++builds===1)throw Error('new build failed');if(args[0]==='up'){assert.equal(await readFile(runtime.composeFile,'utf8'),'web-only regenerated');recovered=true}return ''};
+  runtime.healthCheck=async()=>{};await assert.rejects(runtime.restart(),/rolled back to the verified previous/);assert.equal(generations,2);assert.ok(recovered);
+ }finally{runtime?.dispose();await rm(root,{recursive:true,force:true})}
+})

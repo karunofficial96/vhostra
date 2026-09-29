@@ -14,10 +14,8 @@ const scope = `vhostra-migration-${process.pid}`
 const store = new VhostraStore(directory)
 const controller = () => new DockerRuntimeController(store.layout, () => store.getState(), undefined, scope)
 let runtime = controller()
-const cleanup = () => {
-  const root = path.dirname(store.layout.runtime.apache)
-  execFileSync('docker', ['compose', '--project-name', scope, '--project-directory', root, '--env-file', path.join(root, '.env'), '-f', path.join(root, 'compose.yml'), 'down'], { stdio: 'inherit' })
-}
+const cleanup = () => runtime.resetRuntime(false)
+
 try {
   const { settings } = await store.getState()
   settings.ports = { http: 28180, https: 28443, phpMyAdmin: 28181, mariadb: 28306, redis: 28379, memcached: 28211 }
@@ -43,13 +41,13 @@ try {
     assert.equal((await runtime.controlManagedService(id, 'start')).find(service => service.id === id).state, 'running')
     assert.equal((await runtime.controlManagedService(id, 'restart')).find(service => service.id === id).state, 'running')
   }
-  await runtime.stop(); runtime.dispose()
+  await runtime.resetRuntime(false); await runtime.pauseBackgroundWork(); runtime.dispose()
   await store.migrateConfiguration(destination, async () => {
     runtime = controller(); await runtime.start()
     assert.ok((await runtime.listDatabases()).includes('migration_probe'))
   })
   const verifiedRoot = store.layout.root
-  await runtime.stop(); runtime.dispose()
+  await runtime.resetRuntime(false); await runtime.pauseBackgroundWork(); runtime.dispose()
   await assert.rejects(store.migrateConfiguration(failureDestination, async () => {
     runtime = controller(); await runtime.start()
     // Fail the actual final PHP health check after successful startup.
@@ -61,14 +59,14 @@ try {
   assert.equal(store.layout.root, verifiedRoot)
   assert.equal(new VhostraStore(directory).layout.root, verifiedRoot)
   await access(path.join(verifiedRoot, 'settings.json'))
-  await runtime.stop(); runtime.dispose(); runtime = controller(); await runtime.start()
+  await runtime.resetRuntime(false); await runtime.pauseBackgroundWork(); runtime.dispose(); runtime = controller(); await runtime.start()
   assert.ok((await runtime.listDatabases()).includes('migration_probe'))
   await runtime.deleteDatabase('migration_probe')
   assert.ok(!(await runtime.listDatabases()).includes('migration_probe'))
   console.log('Live database operations, phpMyAdmin authentication, Supervisor actions, and migration, database preservation, final health rollback, and original runtime recovery passed.')
 } finally {
   runtime.dispose()
-  try { cleanup() } finally {
+  try { await cleanup() } finally {
     await Promise.all([directory, destination, failureDestination].map(root => rm(root, { recursive: true, force: true })))
   }
 }

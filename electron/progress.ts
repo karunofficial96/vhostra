@@ -3,6 +3,7 @@ export function redactProgress(value: string, secrets: Iterable<string> = []) {
     let text = value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
     for (const secret of secrets) if (secret.length) text = text.split(secret).join('********');
     return text
+        .replace(/(IDENTIFIED\s+(?:BY|VIA)[^;\r\n]*|PASSWORD\s*\([^)]*\))/gi, '[database authentication clause redacted]')
         .replace(/-----BEGIN [^-]*(?:PRIVATE KEY|CERTIFICATE)-----[\s\S]*?(?:-----END [^-]+-----|$)/g, '[private material redacted]')
         .replace(/(authorization\s*[:=]\s*)(?:Basic|Bearer)?\s*[^\r\n]+/gi, '$1********')
         .replace(/((?:[\w-]*(?:password|passwd|secret|token|credential|api[_-]?key)[\w-]*)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1********')

@@ -133,7 +133,8 @@ fi
 
 # Preserve the stock protected context's authentication policy while providing
 # its empty managed directory for strict native configuration validation.
-mkdir -p /var/log/vhostra /var/lib/mysql /var/www/html/protected
+mkdir -p /var/log/vhostra /run/mysqld /var/www/html/protected
+ln -sfn /run/mysqld/mysqld.sock /tmp/mysql.sock
 # This is a Vhostra-managed built-in document root. OLS deliberately rejects
 # symlinks which leave its vhost root, so seed the immutable bundled source on
 # first use instead of exposing it through a cross-root link. It remains in the
@@ -149,8 +150,4 @@ chmod 0644 /var/www/html/phpmyadmin/config.inc.php
 chmod -R a+rX /var/www/html
 # Validate generated native syntax before any managed web/database process starts.
 /usr/local/bin/vhostra-web-server --validate
-if [ ! -d /var/lib/mysql/mysql ]; then
-  mariadb-install-db --user=mysql --datadir=/var/lib/mysql
-fi
-chown -R mysql:mysql /var/lib/mysql
 exec /usr/bin/supervisord -c /etc/supervisor/supervisord.conf

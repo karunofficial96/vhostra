@@ -47,6 +47,6 @@ try {
 } finally {
   runtime.dispose()
   const runtimeRoot = path.dirname(store.layout.runtime.apache)
-  try { execFileSync('docker', ['compose', '-p', scope, '--project-directory', runtimeRoot, '--env-file', path.join(runtimeRoot, '.env'), '-f', path.join(runtimeRoot, 'compose.yml'), 'down'], { stdio: 'inherit' }) }
+  try { await runtime.resetRuntime(false); await runtime.pauseBackgroundWork() }
   finally { await rm(root, { recursive: true, force: true }) }
 }

@@ -1,3 +1,13 @@
+# Persistent database/runtime phase audit (local implementation complete 2026-09-29)
+
+The expanded phase reopens previous runtime/reset/preview completion claims. Current code separates MariaDB from disposable web/PHP, with host data/config/secrets and rotated host logs. The private network gateway enters MariaDB through its socket to preserve imported localhost-only user accounts, while PHP has both loopback TCP and Unix-socket listeners. Candidate validation shares the same DB and never copies the datadir. Existing 11.8.6 data selects the recorded series; unknown series fail safely. New database state uses 11.8. No implicit major upgrade is permitted.
+
+Reset Keep now preserves DB/container/config/secrets/certificates and Site definitions. Remove deletes exact owned containers and managed DB state while retaining external Site files. Services/CLI controls target the independent DB; Resources adds DB metrics/images and retains cached/bounded/visible-only sampling. Native Quit/tray visibility and local screenshot/SQL alert paths passed compiled Electron acceptance, including final GUI reset host effects; first-run explicit Quit also passed.
+
+Expanded acceptance is complete: 88/88 final contracts, production build, sequential actual WordPress/import/switch/CLI/reset tests, legacy datadir handover/independent-DB migration, resource measurements and native UI/Close/Quit acceptance. Exact logs, privacy audit, diagnostic incidents and external acceptance boundaries are recorded in VHOSTRA_EXECUTION_STATE.md. Prior counts and single-container/reset descriptions below are historical. SQL failures omit echoed secrets, persistent log tails redact known backend credentials, and the final inventory verifies original containers remain unchanged.
+
+---
+
 # Functional audit — 2026-09-28
 
 This audit uses the current source and targeted acceptance; earlier checkmarks alone were not accepted as proof.

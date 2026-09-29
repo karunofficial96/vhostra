@@ -163,6 +163,6 @@ try {
   if (httpsOwner?.listening) await close(httpsOwner)
   const runtimeRoot = path.dirname(store.layout.runtime.apache)
   if (!completed) { console.error(`Failure diagnostics retained at ${root}`); try { console.error(execFileSync('docker', ['logs', '--tail', '100', `${scope}-runtime-1`], { encoding: 'utf8' })) } catch {} }
-  try { execFileSync('docker', ['compose', '-p', scope, '--project-directory', runtimeRoot, '--env-file', path.join(runtimeRoot, '.env'), '-f', path.join(runtimeRoot, 'compose.yml'), 'down'], { stdio: 'inherit' }) }
+  try { await runtime.resetRuntime(false); await runtime.pauseBackgroundWork() }
   finally { if (completed) await Promise.all([root, siteRoot].map(directory => rm(directory, { recursive: true, force: true }))) }
 }

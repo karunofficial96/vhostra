@@ -87,6 +87,6 @@ try {
  console.log('All selected-server, PHP, HTTPS, database, cache daemon, catalog, and image-reuse checks passed.')
 } finally {
  runtime.dispose()
- try { await runtime.compose(['down']) } finally { await Promise.all([root,site].map(directory=>rm(directory,{recursive:true,force:true}))) }
+ try { await runtime.resetRuntime(false); await runtime.pauseBackgroundWork() } finally { await Promise.all([root,site].map(directory=>rm(directory,{recursive:true,force:true}))) }
  assert.deepEqual(docker(['ps','-a','--format','{{.ID}}']).trim().split('\n').sort(),before,'Unrelated container inventory must remain unchanged')
 }

@@ -19,7 +19,7 @@ test('build identity includes meaningful build inputs and is shared by candidate
   await runtime.generate(state); assert.equal(runtime.imageName,first)
   state.settings.php.extensions.push('apcu'); await runtime.generate(state); assert.notEqual(runtime.imageName,first)
   const commands=[]; runtime.compose=async args=>{commands.push(args);return ''}; runtime.docker=async args=>args[1]==='inspect' ? JSON.stringify([{Config:{Labels:{'com.vhostra.managed':'true','com.vhostra.purpose':'runtime-image'}}}]) : 'existing-image-id'
-  await runtime.upCompatibleImage(); assert.deepEqual(commands,[['up','--detach','--no-build','--pull','never']])
+  await runtime.upCompatibleImage(); assert.deepEqual(commands,[['up','--detach','--no-build','--pull','never','--no-deps','runtime']])
  } finally { runtime.dispose();candidate.dispose();await rm(root,{recursive:true,force:true}) }
 })
 
@@ -79,4 +79,10 @@ test('enabling an installed PHP extension never refreshes package indexes or rei
  const commands=[];runtime.compose=async args=>{commands.push(args);return args.at(-1).includes('dpkg-query')?'installed':''}
  try { await runtime.managePhpExtension('apcu','enable');await runtime.operation;assert.equal(commands.some(args=>args.some(value=>value.includes('apt-get'))),false) }
  finally { runtime.dispose(); await new Promise(resolve=>server.close(resolve)) }
+})
+test('database cache retains two recent builds and protects referenced or foreign-tagged images', async()=>{
+ const runtime=new DockerRuntimeController({runtime:{apache:'/nonexistent/runtime/apache'}},async()=>({}));const tag=n=>`vhostra-mariadb:build-${String(n).padStart(24,'0')}`;
+ const images=Array.from({length:5},(_,n)=>({Id:`db${n}`,Created:`2026-09-${20-n}`,RepoTags:[tag(n)],Config:{Labels:{'com.vhostra.managed':'true','com.vhostra.purpose':'mariadb-image'}}}));images[3].RepoTags.push('other-project:keep');const removed=[];
+ runtime.docker=async args=>{if(args[0]==='image'&&args[1]==='ls')return images.map(row=>row.Id).join('\n');if(args[0]==='image'&&args[1]==='inspect')return JSON.stringify(images);if(args[0]==='ps')return 'container';if(args[0]==='inspect')return JSON.stringify([{Image:'db2'}]);if(args[0]==='image'&&args[1]==='rm'){removed.push(...args.slice(2));return ''}throw Error('Unexpected command')};
+ try{await runtime.cleanupImages();assert.deepEqual(removed,[tag(4)])}finally{runtime.dispose()}
 })

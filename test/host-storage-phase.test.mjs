@@ -32,7 +32,7 @@ test('all generated servers use stable host-mounted per-site access/error logs; 
     assert.match(await readFile(path.join(project, 'index.php'), 'utf8'), /untouched/)
   } finally { runtime.dispose() }
 }))
-for (const keep of [true, false]) test(`reset ${keep ? 'keeps' : 'removes'} definitions, deletes databases and preserves external roots across restart`, () => fixture(async ({ store, profile, project }) => {
+for (const keep of [true, false]) test(`reset ${keep ? 'keeps' : 'removes'} definitions, ${keep ? 'preserves' : 'deletes'} databases and preserves external roots across restart`, () => fixture(async ({ store, profile, project }) => {
   await store.addSite({ name: 'Example', documentRoot: project, url: 'http://example.test' })
   await writeFile(path.join(store.layout.persistentData.mariaDb, 'database-fixture'), 'db')
   await store.saveOnboarding({ ...(await store.getOnboarding()), theme: 'dark', completed: true })
@@ -40,7 +40,8 @@ for (const keep of [true, false]) test(`reset ${keep ? 'keeps' : 'removes'} defi
   const reopened = new VhostraStore(profile); const state = await reopened.getState()
   assert.equal(state.sites.length, keep ? 2 : 1); assert.equal((await reopened.getOnboarding()).completed, false)
   assert.equal((await reopened.getOnboarding()).theme, 'system'); assert.deepEqual(state.settings.optionalServices, { redis: false, memcached: false })
-  await assert.rejects(stat(path.join(store.layout.persistentData.mariaDb, 'database-fixture')), /ENOENT/)
+  if (keep) assert.equal(await readFile(path.join(store.layout.persistentData.mariaDb, 'database-fixture'), 'utf8'), 'db')
+  else await assert.rejects(stat(path.join(store.layout.persistentData.mariaDb, 'database-fixture')), /ENOENT/)
   assert.match(await readFile(path.join(project, 'index.php'), 'utf8'), /untouched/)
 }))
 test('reset refuses external data-directory links and leaves data unchanged', () => fixture(async ({ store, project }) => {

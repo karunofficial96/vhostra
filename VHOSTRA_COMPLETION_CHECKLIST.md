@@ -1,3 +1,21 @@
+# Persistent database/runtime phase — local implementation complete 2026-09-29
+
+Expanded locally implementable acceptance passed; detailed evidence and inherited external platform/release boundaries are in VHOSTRA_EXECUTION_STATE.md. Historical sections below remain superseded where they describe the old architecture.
+
+- [x] Independent MariaDB lifecycle and host data/config/logs; safe existing-data handover/series compatibility.
+- [x] Actual database/users/localhost accounts/roles/grants/credentials survive PHP, server and combined switches; no copied datadir candidates.
+- [x] WordPress imported SQL with DB_HOST=localhost; mysqli/PDO localhost and 127.0.0.1; phpMyAdmin authentication.
+- [x] SQL streaming import/export; sanitized failures; success/failure 6-second DESIGN-compatible alerts.
+- [x] Extension intent/compatibility errors, OPcache, Redis/Memcached actual connectivity/config persistence, disabled daemon absence, cwebp and other Site settings.
+- [x] Keep/Remove GUI/CLI reset semantics and confirmations; external roots untouched; independent/all CLI status/start/stop/restart.
+- [x] Independent Services status/control; Resources separate DB/Web attribution, cached storage and visible-only work.
+- [x] Dynamic tray visibility; hidden in-window menubar; native/explicit Quit dialog, Cancel, keep/stop and preference-driven title Close.
+- [x] Local bounded Dashboard viewport previews, missing/stale triggers, explicit refresh, fallback, private cache and cleanup.
+- [x] Privacy audit; full-file manual Hosts regression; existing queue review; migration with independently running/stopped DB.
+- [x] Production build/unit/native UI/sequential live tests, resource measurements, visual DESIGN review, docs and exact cleanup.
+
+---
+
 # Vhostra completion checklist (internal)
 
 - [x] Verify real cwebp enablement in the active Vhostra runtime (installed `webp`; `cwebp 1.5.0` reported by CLI).

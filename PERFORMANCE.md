@@ -1,3 +1,17 @@
+# Persistent database/runtime architecture update (2026-09-29)
+
+Current architecture supersedes historical single-container claims below: one web/PHP runtime plus one purpose-built MariaDB image using the official matching-series base. Redis/Memcached remain optional processes in web/PHP; no extra cache containers. MariaDB data/config/logs are direct host bind mounts. Web/PHP candidates reuse the existing independent DB without stop/copy/duplicate-server work. Tiny socat listeners provide local TCP/socket compatibility; the DB-side socket gateway preserves localhost authentication semantics.
+
+MariaDB remains conservative (64 MiB buffer pool, 50 connections, 16 MiB temporary tables, performance_schema off). DB error logs rotate at 5 MiB with three copies; Docker logs are 5 MiB × three. Screenshot capture uses one transient local Chromium window at a time, 1280×720 viewport reduced to 960×540 JPEG quality75, ≤1 MiB per Site. No screenshot idle timer, remote screenshot API, unbounded retry loop or full-page capture. Six requests maximum queue, ten-minute automatic failure cooldown, 24-hour freshness and explicit Refresh. Each preview window is destroyed and ephemeral-session storage/connections cleared after each attempt; one in-memory session is reused to avoid partition accumulation.
+
+Resource polling remains visible-only; host/storage size scans remain cached five minutes and bounded, with DB data counted once. Current sequential sample (`/tmp/vhostra-persistent-controls.log`, Apache/PHP 8.4, intl/APCu, both cache services disabled, 15 seconds settling): Web/PHP 72.47 MiB / 0.04% CPU; MariaDB 126.4 MiB / 0.03% CPU, combined 198.87 MiB. No MariaDB/Redis/Memcached daemon was present in web/PHP; socat listeners were present. These are Docker idle samples, not peak-workload guarantees or a like-for-like improvement claim.
+
+Current web image logical size: 1,130,278,297 bytes; DB image: 380,188,307 bytes. The DB image uses its purpose-built matching-series official base and does not duplicate the web/PHP image. Image totals include shared layers and are not exclusive disk usage. The Resources sample included 10,060,817,161 logical image bytes across Vhostra profiles/caches and 149,672 current writable-layer bytes; it excludes unrelated projects. Final retention keeps six newest web builds and two newest DB builds, plus referenced/recovery/unknown-tag images, without global prune. Host fixture DB bytes: 162,019,001 counted once; logs 15,060; runtime config/context 7,618; local total 220,415,919 excluding external roots. Five-minute cached/on-demand bounded scans remain unchanged.
+
+Native preview fixture: 1280×720 capture → 960×540 JPEG (~11 KiB), not the 6,000px-long page; screenshot/protocol/privacy/fallback and cleanup verified in `/tmp/vhostra-persistent-ui7.log`. No idle capture timer or permanent screenshot window. Final expanded architecture has no newly claimed Electron idle RSS improvement; historical Electron measurements below are explicitly older evidence.
+
+---
+
 # Vhostra performance audit
 
 Audit date: 2026-09-27. Machine: 16 GiB Apple Silicon Mac; Docker Desktop VM reports 8,227,332,096 bytes (7.662 GiB). Heavy Docker suites run sequentially, with temporary profiles, database directories, networks and ports. The actual user profile, website/database content, stopped Vhostra container, and SpeedClarity resources are not modified by the audit tests.

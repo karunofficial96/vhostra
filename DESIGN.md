@@ -84,9 +84,12 @@ with a 30px maximum mark, preserving its aspect ratio. MariaDB uses the same
 transparent seal in both themes, with a light silhouette in dark mode.
 All fonts, service artwork, logos, and welcome-page assets ship locally. The Google Fonts references above describe the original reference design; Vhostra loads bundled Roboto and Roboto Mono without network requests.
 
-Services controls represent verified Supervisor process state. Individual
-controls remain disabled until the shared runtime runs. Progress and failure
+Services controls represent verified Supervisor process state for web/cache
+services and independent Docker/health state for MariaDB. Web/cache controls
+remain disabled until the shared runtime runs; MariaDB can be controlled alone. Progress and failure
 feedback use readable inline status text. Quit has two explicit actions for
 keeping or stopping services; window closing follows the saved policy.
 Configuration migration displays the verified destination or recovery error,
 and refreshes the displayed storage location after rollback.
+
+Database import success/error alerts use the existing flat rounded surface, semantic success/error palette, 16px padding and six-second display. Explicit Quit uses an 8px-radius dialog with 24px padding, 24px section spacing, 12px action gaps, 36px pill actions and safe-first Cancel focus. Dashboard previews use 16:9 viewport thumbnails.
