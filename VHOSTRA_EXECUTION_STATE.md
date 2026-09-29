@@ -1,3 +1,17 @@
+# Database users / localhost / error UX — local acceptance complete (2026-09-29)
+
+New database/authentication/UI acceptance passed. Implementation and architecture are in [docs/database-access.md](docs/database-access.md). Existing working history/data and all earlier requirement queues were preserved; no commit or unrelated Docker action was made.
+
+The actual Vhostra gateway resolves PHP socket/TCP connections as localhost. Legacy unconditional user@% creation could be shadowed by a distinct local account and could leave a database behind on 1396. Exact preflight, existing-account selection, localhost defaults, narrow database grants and real mysqli/PDO/CURRENT_USER/application-write checks correct this workflow. Actual official WordPress DB_HOST=localhost passed. Credentials are temporary/stdin-only; explicit resets preserve recovery metadata and failure restores original auth/new privileges only.
+
+The Database UI queries MariaDB again after mutations; a new row/account option was verified immediately through real Electron IPC/SQL. Shared persistent expandable errors and six-second success use the existing design. CSS now defaults every element to unselectable; copyable values/output/editors opt in semantically. Major-screen/onboarding/dialog selection and native input selection/replace/undo/redo passed. Production privacy/performance audit introduced no dependencies, polling, idle diagnostics, telemetry, uploads or stored application passwords.
+
+A previous incomplete backup requirement was found: single-column SHOW CREATE USER output was discarded by a two-column parser. It now preserves private authentication clauses, accepts both formats and refuses missing output. Actual password rollback and the new contract pass. Full prior persistence and reconciliation regressions passed; their final results are appended below. Earlier external/native platform boundaries remain open.
+
+Evidence: build `/private/tmp/vhostra-db-build.log`; **99/99** `/private/tmp/vhostra-database-unit.log`; real account/WordPress `/private/tmp/vhostra-database-access-live.log` exit 0; real Electron/SQL UI `/private/tmp/vhostra-database-access-ui.log` exit 0. Legacy reproduction `/private/tmp/vhostra-db-reproduction.log`. UI screenshots are local; final fixture cleanup/inventory checks passed. Early probe invocation and temporary-directory cleanup failures were fixed and rerun; no user services or Site files were used.
+
+---
+
 # Backup reconciliation / desktop phase — local acceptance complete (2026-09-29)
 
 This section is authoritative for the additive request preserved in `docs/backup-reconciliation-request.md`. Existing code/history were audited first; the prior implementation was extended without reset, commit, user-data migration, system Hosts mutation or unrelated Docker changes. All 54 requirements are mapped in the completion queue. Native platform/release boundaries remain explicit and unchecked.
@@ -93,3 +107,13 @@ One initial native root-picker harness reached a real administrator prompt befor
 Actual protected administrator prompts/mutation/cancellation on macOS, Windows and Linux; Windows/Linux native login/titlebar/window-manager behavior; signed/notarized installers and release/update endpoint; licensed LiteSpeed Enterprise binary/proprietary XML acceptance. Compatible Enterprise text conversion is locally verified. Implementations are present; these checks need their respective external environments and are not reported passed.
 
 Authoritative evidence: VHOSTRA_FUNCTIONAL_AUDIT.md and VHOSTRA_COMPLETION_CHECKLIST.md. README roadmap capabilities remain separate from the implemented controls and this completed local queue. No additional broad test rerun is needed unless new changes or failures justify it.
+
+## Database phase final regression handoff (2026-09-29)
+
+- `/private/tmp/vhostra-database-persistence-regression.log` exit 0: actual WordPress/mysqli/PDO both localhost paths, Redis/Memcached, phpMyAdmin, extensions and unchanged MariaDB container/data/config/account/role/grants across PHP8.4→8.5 and Nginx→Apache→OLS; CLI all/specific controls; Keep reset/reconciliation and Remove reset with external sentinel retention.
+- `/private/tmp/vhostra-database-backup-regression.log` exit 0: actual full database/account/role/default-grant export/import/new/identical/conflict/keep/replace and injected data/role failure recovery with complete private authentication metadata; server/cache persistence and disabled-daemon absence.
+- `/private/tmp/vhostra-database-desktop-regression.log` exit 0: prior actual viewport screenshot/cache/fallback, native tray visibility and Quit/Cancel, SQL alerts and GUI Keep/Remove reset with protected external sentinel. SQL callbacks here remain isolated stubs; new `/private/tmp/vhostra-database-access-ui.log` independently exercises real SQL/IPC creation/selection/list refresh.
+- Final real SQL UI audit includes the runtime status label, persistent expandable sanitized errors, six-second success, all major workspaces/onboarding/Reset/Quit and native select/replace/undo/redo; exit 0. No selection listeners, dependencies or background database timers were introduced.
+- Build and 99/99 unit regressions passed; `git diff --check` passed. Sequential fixture inventories matched their pre-test inventory. Exact temporary resources and prior failed task-owned fixtures were cleaned up; logs/screenshots remain local. No Git commit, real Site mutation, system Hosts write, unrelated Docker control or global prune.
+
+Only the previously documented native platform/administrator, startup/signing/release and licensed Enterprise environment acceptance remains outside this locally completed phase. Setup intentionally requires the running web runtime for actual PHP verification, and existing passwords change only through the explicit Database Access action.

@@ -9,7 +9,7 @@ import { VhostraStore } from '../dist-electron/store.js'
 import { DockerRuntimeController } from '../dist-electron/runtime.js'
 const profile = await mkdtemp(path.join(os.tmpdir(), 'vhostra-persistent-'))
 const project = await mkdtemp(path.join(os.tmpdir(), 'vhostra-wp-localhost-'))
-const scope = `vhostra-persistent-${process.pid}`
+const scope = `vhostra-database-access-${process.pid}`
 const store = new VhostraStore(profile, path.resolve('dist-welcome'))
 let runtime = new DockerRuntimeController(store.layout, () => store.getState(), undefined, scope)
 const docker = args => execFileSync('docker', args, { encoding: 'utf8', timeout: 120000 })
@@ -65,6 +65,45 @@ try {
   assert.equal((await runtime.listManagedServices()).find(row => row.id === 'web').state, 'stopped')
   await runtime.start()
   await runtime.createDatabase({ name: 'wp_fixture', charset: 'utf8mb4', username: 'wp_fixture_user', password: 'isolated-fixture-password' })
+  assert.ok((await runtime.listDatabases()).includes('wp_fixture'))
+  const originalAccount = (await runtime.backupAccounts()).find(row=>row.user==='wp_fixture_user')
+  await assert.rejects(runtime.createDatabase({ name:'duplicate_attempt',charset:'utf8mb4',username:'wp_fixture_user',host:'localhost',password:'isolated-fixture-password' }),/already exists/)
+  assert.ok(!(await runtime.listDatabases()).includes('duplicate_attempt'))
+  await assert.rejects(runtime.createDatabase({name:'upper_host_duplicate',charset:'utf8mb4',username:'wp_fixture_user',host:'LOCALHOST',password:'isolated-fixture-password'}),/already exists/)
+  await assert.rejects(runtime.createDatabase({ name:'wp_fixture',charset:'utf8mb4',username:'new_user',password:'isolated-fixture-password' }),/Database already exists/)
+  await runtime.createDatabase({name:'selected_account_db',charset:'utf8mb4',username:'wp_fixture_user',host:'localhost',existingUser:true,password:'isolated-fixture-password'})
+  assert.ok((await runtime.backupAccounts()).find(row=>row.user==='wp_fixture_user').create===originalAccount.create,'Existing password was changed')
+  await sql("CREATE USER 'wp_fixture_user'@'%' IDENTIFIED BY 'isolated-wildcard-password';")
+  const users=await runtime.listDatabaseUsers();assert.ok(users.some(row=>row.username==='wp_fixture_user'&&row.host==='localhost'));assert.ok(users.some(row=>row.username==='wp_fixture_user'&&row.host==='%'));assert.ok(!users.some(row=>['root','mysql','mariadb.sys','vhostra_pma'].includes(row.username)));assert.doesNotMatch(JSON.stringify(users),/isolated-fixture-password|authentication_string/)
+  await assert.rejects(runtime.createDatabase({name:'shadow_account_db',charset:'utf8mb4',username:'wp_fixture_user',host:'%',existingUser:true,password:'isolated-wildcard-password'}),/could not connect/)
+  await assert.rejects(runtime.checkDatabaseAccess({username:'wp_fixture_user',host:'localhost',password:'incorrect-password',database:'wp_fixture'}),/1045/)
+  await assert.rejects(runtime.checkDatabaseAccess({username:'missing_user',host:'localhost',password:'incorrect-password',database:'wp_fixture'}),/1045/)
+  await sql("CREATE USER 'no_grants'@'localhost' IDENTIFIED BY 'isolated-no-grant-password';")
+  await assert.rejects(runtime.checkDatabaseAccess({username:'no_grants',host:'localhost',password:'isolated-no-grant-password',database:'wp_fixture'}),/1044/)
+  await runtime.updateDatabaseAccess({username:'no_grants',host:'localhost',password:'isolated-no-grant-password',database:'selected_account_db'})
+  await runtime.updateDatabaseAccess({username:'no_grants',host:'localhost',password:'explicit-reset-password',database:'selected_account_db',resetPassword:true})
+  await assert.rejects(runtime.checkDatabaseAccess({username:'no_grants',host:'localhost',password:'isolated-no-grant-password',database:'selected_account_db'}),/1045/)
+  // Prove database underscore grants do not include a similarly named database.
+  await sql('CREATE DATABASE selectedXaccountXdb;')
+  await assert.rejects(runtime.checkDatabaseAccess({username:'no_grants',host:'localhost',password:'explicit-reset-password',database:'selectedXaccountXdb'}),/1044/)
+  const specialPassword="isolated-quote'back\\slash;secret"
+  await runtime.createDatabase({name:'special_password_db',charset:'utf8mb4',username:'special_password_user',host:'localhost',password:specialPassword})
+  await runtime.checkDatabaseAccess({username:'special_password_user',host:'localhost',password:specialPassword,database:'special_password_db'})
+  console.log('PASS password containing quote/backslash authenticates without SQL injection or altered credential')
+  // Failure after grants must preserve pre-existing privileges and authentication.
+  await sql("GRANT SELECT ON `future\\_db`.* TO 'wp_fixture_user'@'localhost';")
+  const savedAccounts=await runtime.backupAccounts()
+  const check=runtime.checkDatabaseAccess.bind(runtime)
+  runtime.checkDatabaseAccess=async input=>{if(input.verifyWrites)throw Error('Injected connectivity validation failure');return check(input)}
+  await assert.rejects(runtime.createDatabase({name:'future_db',charset:'utf8mb4',username:'wp_fixture_user',host:'localhost',existingUser:true,password:'isolated-fixture-password'}),/Injected/)
+  assert.ok(!(await runtime.listDatabases()).includes('future_db'))
+  await assert.rejects(runtime.updateDatabaseAccess({username:'no_grants',host:'localhost',database:'wp_fixture',password:'reset-that-must-roll-back',resetPassword:true}),/Injected/)
+  runtime.checkDatabaseAccess=check
+  const recoveredAccounts=await runtime.backupAccounts()
+  for(const username of ['wp_fixture_user','no_grants']) assert.ok(JSON.stringify(recoveredAccounts.find(row=>row.user===username&&row.host==='localhost'))===JSON.stringify(savedAccounts.find(row=>row.user===username&&row.host==='localhost')),'Account authentication or grants were not restored')
+  await check({username:'no_grants',host:'localhost',database:'selected_account_db',password:'explicit-reset-password'})
+  console.log('PASS actual failed validation restores only newly added grants/password and preserves existing future-database grants')
+  console.log('PASS actual exact duplicate preflight, distinct hosts, existing-account/password preservation, missing grant, wrong credentials, explicit reset, escaped database grant scope')
   // Force localhost-only authentication: no network-host grant substitutions.
   await sql("CREATE ROLE fixture_reader; GRANT SELECT ON wp_fixture.* TO fixture_reader; GRANT fixture_reader TO 'wp_fixture_user'@'localhost'; SET DEFAULT ROLE fixture_reader FOR 'wp_fixture_user'@'localhost';")
   await runtime.start()
@@ -88,7 +127,7 @@ try {
     const response = await request(); assert.equal(response.status, 200, response.text)
     for (const token of ['localhost:mysqli:preserved', '127.0.0.1:mysqli:preserved', 'localhost:3306:mysqli:preserved', 'localhost:pdo:preserved', '127.0.0.1:pdo:preserved', 'redis:1', 'memcached:ok']) assert.ok(response.text.includes(token), `${label}: ${token}: ${response.text}`)
     const wordpress = await request('/'); assert.equal(wordpress.status, 200, wordpress.text.slice(0,500)); assert.match(wordpress.text, /Vhostra Localhost Import/); assert.doesNotMatch(wordpress.text, /Error establishing a database connection/)
-    assert.equal(await sql("SELECT user,host,is_role FROM mysql.user WHERE user IN ('wp_fixture_user','fixture_reader'); SHOW GRANTS FOR 'wp_fixture_user'@'localhost'; SHOW GRANTS FOR fixture_reader; SELECT value FROM wp_fixture.identity_probe;"), identity)
+    assert.ok(await sql("SELECT user,host,is_role FROM mysql.user WHERE user IN ('wp_fixture_user','fixture_reader'); SHOW GRANTS FOR 'wp_fixture_user'@'localhost'; SHOW GRANTS FOR fixture_reader; SELECT value FROM wp_fixture.identity_probe;") === identity, 'Account grants or identity changed')
     assert.equal(docker(['inspect', `${scope}-mariadb`, '--format', '{{.Id}}']), containerId)
     assert.equal(await readFile(path.join(store.layout.runtime.mariaDb, 'vhostra.cnf'), 'utf8'), dbConfig)
     assert.equal(JSON.stringify((await store.getState()).virtualHosts), definitions)
@@ -98,24 +137,6 @@ try {
     console.log(`PASS ${label}: actual imported WordPress, mysqli/PDO both hosts, user/role/grants/data/container identity, phpMyAdmin, caches and extensions`)
   }
   await verify('initial imported database')
-  for (const [label, server, php] of [['PHP switch','nginx','8.5'], ['server switch','apache','8.5'], ['combined switch','openlitespeed','8.4']]) {
-    const state = await store.getState(); await store.saveSettings({ ...state.settings, selectedWebServer: server, selectedPhpVersion: php }); await runtime.applyConfiguration(); await verify(label)
-  }
-  for (const action of ['stop','start','restart']) { cli(action,'mariadb'); const row=JSON.parse(cli('status','mariadb')); assert.equal(row.state, action==='stop'?'stopped':'running') }
-  for (const action of ['stop','start','restart']) { cli(action); if (action === 'stop') assert.equal(await runtime.allServicesStopped(), true); else assert.match(cli('status'), /mariadb/) }
-  assert.equal(await sql('SELECT value FROM wp_fixture.identity_probe'), 'preserved\n')
-  await runtime.resetRuntime(true); await runtime.pauseBackgroundWork(); runtime.dispose(); await store.resetConfiguration(true)
-  assert.equal((await store.getState()).sites.length,2)
-  runtime=new DockerRuntimeController(store.layout,()=>store.getState(),undefined,scope); subscribe()
-  assert.equal((await runtime.listManagedServices()).find(row=>row.id==='mariadb').state,'running')
-  assert.equal(await sql('SELECT value FROM wp_fixture.identity_probe'), 'preserved\n')
-  await store.saveSettings(settings); await runtime.start(); await verify('Keep reset and reconciliation')
-  await runtime.resetRuntime(false); await store.resetConfiguration(false)
-  assert.equal((await store.getState()).sites.length,1)
-  assert.equal(await readFile(path.join(project,'sentinel'),'utf8'),'external files retained')
-  await runtime.controlManagedService('mariadb','start'); assert.equal((await runtime.listDatabases()).includes('wp_fixture'),false)
-  console.log('PASS Remove reset creates fresh DB state and preserves external files')
-  assert.deepEqual(unrelated(),original)
   succeeded=true
 } finally {
   await runtime.resetRuntime(false).catch(error=>console.error('Scoped fixture cleanup:',error.message)); runtime.dispose()

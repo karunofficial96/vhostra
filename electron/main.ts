@@ -1,3 +1,4 @@
+import { mapDiagnosticPaths } from './errors.js';
 import { exportFullBackup, previewFullBackup, restoreFullDatabase, proveDatabaseEquality, type FullBackupPlan } from './backup.js';
 import type { RestoreChoices } from './reconciliation.js';
 import {
@@ -336,13 +337,18 @@ function registerIpc() {
         "cancel-backup-preview", "export-full-backup", "compare-backup-database", "repair-site", "finish-onboarding", "reset-app", "edit-hosts", "restore-backup", "setup-onboarding", "save-onboarding", "apply-native-import", "save-settings", "add-site", "update-site", "remove-site", "sync-all-hosts", "sync-hosts",
         "set-vhost-rewrite", "import-configuration", "start-services", "stop-services", "restart-services",
         "reload-web-server", "set-optional-service", "control-managed-service", "manage-php-extension",
-        "configure-cwebp", "create-database", "import-database", "repair-database", "delete-database", "quit-application",
+        "configure-cwebp", "create-database", "update-database-access", "import-database", "repair-database", "delete-database", "quit-application",
     ]);
     const handle = (channel: string, listener: Parameters<typeof ipcMain.handle>[1]) => ipcMain.handle(channel, async (event, ...args) => {
         const mutating = migrationMutations.has(channel.replace("vhostra:", ""));
         if (mutating && (migrationProgress || desktopMutation)) throw new Error("A Vhostra configuration/runtime operation is in progress. Wait for it to complete before changing definitions or settings.");
         if (mutating) desktopMutation = true;
-        try { return await listener(event, ...args); } finally { if (mutating) desktopMutation = false; }
+        try { return await listener(event, ...args); } catch (error) {
+            const state = await store.getState().catch(()=>null);
+            const mappings: Array<[string,string]> = [['/etc/vhostra/nginx',store.layout.runtime.nginx],['/etc/vhostra/apache',store.layout.runtime.apache],['/etc/vhostra/php',store.layout.runtime.php],['/etc/vhostra/openlitespeed',store.layout.runtime.openLiteSpeed],['/usr/local/lsws/conf/vhostra-sites',store.layout.runtime.openLiteSpeed],['/var/log/vhostra',store.layout.logs],['/var/www/html',path.join(store.layout.sites,'localhost','public')], ...(state?.sites ?? []).filter(site=>!site.builtIn).map(site=>[`/var/www/vhostra/${site.vhostId}`,site.documentRoot] as [string,string])];
+            const suppliedSecrets = args.flatMap(value => value && typeof value === 'object' ? Object.entries(value).filter(([key,item])=> /password|secret|token|credential/i.test(key) && typeof item === 'string').map(([,item])=>item as string) : []);
+            throw new Error(mapDiagnosticPaths(redactProgress(await services.redactLocalLog(error instanceof Error ? error.message : String(error)),suppliedSecrets),mappings));
+        } finally { if (mutating) desktopMutation = false; }
     });
     handle("vhostra:cancel-backup-preview", () => { pendingBackup = null; backupProgress(""); });
     handle("vhostra:compare-backup-database", async (_event, key: string) => {
@@ -814,6 +820,9 @@ function registerIpc() {
         ) => services.controlManagedService(id, action),
     );
     handle("vhostra:list-databases", () => services.listDatabases());
+    handle("vhostra:list-database-users", () => services.listDatabaseUsers());
+    handle("vhostra:check-database-access", (_event, input) => services.checkDatabaseAccess(input));
+    handle("vhostra:update-database-access", (_event, input) => services.updateDatabaseAccess(input));
     handle("vhostra:list-php-extensions", () =>
         services.listPhpExtensions(),
     );

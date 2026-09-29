@@ -19,7 +19,7 @@ app.whenReady().then(async()=>{
   external=await mkdtemp(path.join(os.tmpdir(),'vhostra-preview-ui-site-'));await writeFile(path.join(external,'sentinel'),'untouched')
   const site=(await store.addSite({name:'Preview fixture',url:`http://preview.test:${port}/`,documentRoot:external})).sites.find(site=>!site.builtIn)
   const {applicationSession}=await import('../dist-electron/main.js');await pause(700);const native=applicationSession();window=native.window;runtime=native.runtime;runtime.scope=`vhostra-ui-${process.pid}`
-  runtime.refresh=async()=>runtime.set({state:'running',services:['runtime'],message:'Native UI fixture'});runtime.listManagedServices=async()=>[{id:'web',label:'OpenLiteSpeed',enabled:true,state:'running'},{id:'mariadb',label:'MariaDB',enabled:true,state:'running'}];runtime.listDatabases=async()=>['fixture_db']
+  runtime.refresh=async()=>runtime.set({state:'running',services:['runtime'],message:'Native UI fixture'});runtime.listManagedServices=async()=>[{id:'web',label:'OpenLiteSpeed',enabled:true,state:'running'},{id:'mariadb',label:'MariaDB',enabled:true,state:'running'}];runtime.listDatabases=async()=>['fixture_db'];runtime.listDatabaseUsers=async()=>[]
   // This unattended acceptance window can be occluded by the test runner.
   // Keep its renderer timers active solely for the six-second alert check.
   window.webContents.setBackgroundThrottling(false)
@@ -61,6 +61,6 @@ app.whenReady().then(async()=>{
   await store.saveOnboarding({...await store.getOnboarding(),completed:true});window.reload();await waitFor('document.body.textContent.includes("Dashboard")')
   await configureResetFixture();await click('Settings');await click('Reset Vhostra…');await click('Remove configurations');await click('Yes, Reset Vhostra');await waitFor('document.body.textContent.includes("Set up as new")')
   await assert.rejects(stat(databaseMarker),/ENOENT/);assert.equal((await store.getState()).sites.length,1);assert.equal(await readFile(path.join(external,'sentinel'),'utf8'),'untouched')
-  console.log('PASS native renderer/IPC: local viewport/cached screenshot, unavailable fallback, tray visibility, native Quit/Cancel, SQL success/error alerts with 6s expiry, reset copy, external root retention')
+  console.log('PASS native renderer/IPC: local viewport/cached screenshot, unavailable fallback, tray visibility, native Quit/Cancel, six-second SQL success and expandable error alerts, reset copy, external root retention')
  }catch(error){failed=true;console.error(error); if(window)console.error(await window.webContents.executeJavaScript("document.body.textContent"))}finally{clearTimeout(timeout);await runtime?.pauseBackgroundWork();runtime?.dispose();window?.destroy();if(server)await new Promise(resolve=>server.close(resolve));await (await import('../dist-electron/logs.js')).drainApplicationLogs();await writeFile('/private/tmp/vhostra-persistent-ui-proof.json',JSON.stringify({profile,external,failed}));app.exit(failed?1:0)}
 })

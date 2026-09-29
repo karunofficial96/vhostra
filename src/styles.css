@@ -48,8 +48,8 @@ html[data-theme="dark"] .runtime-line-success { color: #65cb77; }
 html[data-theme="dark"] .runtime-line-error { color: #ff7373; }
 .runtime-expand:focus-visible, .runtime-terminal:focus-visible { outline: 2px solid #065FD4; outline-offset: 2px; }
 
-/* Selection follows copyable content semantics; no global JS listeners. */
-body { -webkit-user-select: none; user-select: none; }
-input, textarea, pre, code, .font-mono, .selectable, [role="alert"], [role="status"], .runtime-terminal { -webkit-user-select: text; user-select: text; }
-
-button, nav, label, select { -webkit-user-select: none; user-select: none; }
+/* Text is copyable by content semantics, never typography or ARIA role. */
+* { -webkit-user-select: none; user-select: none; }
+input, textarea, [contenteditable="true"], [contenteditable="true"] *, .selectable, .selectable *, .runtime-terminal, .runtime-terminal * { -webkit-user-select: text; user-select: text; }
+/* Labels inside a copyable diagnostic/document remain UI chrome. */
+h1, h2, h3, h4, h5, h6, summary, dt, button, nav, label, select, .ui-label { -webkit-user-select: none; user-select: none; }

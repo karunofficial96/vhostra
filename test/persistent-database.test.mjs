@@ -55,3 +55,12 @@ test('persistent log reads redact backend credentials without initializing runti
  assert.match(result,/\*{8}/);
  await assert.rejects(stat(runtime.composeFile),/ENOENT/);
 }))
+test('backup account export preserves single-column and historical two-column SHOW CREATE USER authentication',()=>fixture(async({runtime})=>{
+ const statement="CREATE USER 'fixture_user'@'localhost' IDENTIFIED VIA unix_socket OR mysql_native_password USING '*fixture-authentication'";
+ for(const output of [statement,`fixture_user@localhost\t${statement}`]){
+  runtime.databaseCompose=async args=>{const sql=args.at(-1);if(sql.includes('SELECT HEX(User)'))return `${Buffer.from('fixture_user').toString('hex')}\t${Buffer.from('localhost').toString('hex')}\tN\n`;if(sql.startsWith('SHOW CREATE USER'))return output+'\n';if(sql.startsWith('SHOW GRANTS'))return "GRANT SELECT ON app.* TO 'fixture_user'@'localhost'\n";throw Error('Unexpected backup query')}
+  const accounts=await runtime.backupAccounts();assert.ok(accounts[0].create===statement,'Authentication plugin or clause was omitted')
+ }
+ runtime.databaseCompose=async args=>args.at(-1).includes('SELECT HEX(User)')?`${Buffer.from('fixture_user').toString('hex')}\t${Buffer.from('localhost').toString('hex')}\tN\n`:''
+ await assert.rejects(runtime.backupAccounts(),/authentication configuration/)
+}))

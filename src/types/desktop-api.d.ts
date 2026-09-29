@@ -63,12 +63,15 @@ export interface VhostraDesktopApi {
   setOptionalService(id: 'redis' | 'memcached', enabled: boolean): Promise<Array<{ id: 'web' | 'mariadb' | 'redis' | 'memcached'; label: string; enabled: boolean; state: string }>>
   listManagedServices(): Promise<Array<{ id: 'web' | 'mariadb' | 'redis' | 'memcached'; label: string; enabled: boolean; state: 'running' | 'stopped' | 'starting' | 'failed' | 'unhealthy' | 'disabled' | 'unavailable' }>>
   controlManagedService(id: 'web' | 'mariadb' | 'redis' | 'memcached', action: 'start' | 'stop' | 'restart'): Promise<Array<{ id: 'web' | 'mariadb' | 'redis' | 'memcached'; label: string; enabled: boolean; state: string }>>
+  listDatabaseUsers(): Promise<Array<{ username: string; host: string; globalPrivileges: string[]; roles: string[]; access: Array<{ database: string; privilege: string }> }>>
+  checkDatabaseAccess(input: { username: string; host: string; password: string; database?: string }): Promise<{message: string; identity: string}>
+  updateDatabaseAccess(input: { database: string; username: string; host: string; password: string; resetPassword?: boolean }): Promise<{message: string}>
   listDatabases(): Promise<string[]>
   listPhpExtensions(): Promise<Array<{ id: string; label: string; required: boolean; enabled: boolean; installed: boolean; category: string; status: string }>>
   managePhpExtension(id: string, action: 'install' | 'enable' | 'disable' | 'remove'): Promise<Array<{ id: string; label: string; required: boolean; enabled: boolean; installed: boolean; category: string; status: string }>>
   getCwebpStatus(): Promise<{ enabled: boolean; installed: boolean; version?: string }>
   configureCwebp(enabled: boolean): Promise<{ enabled: boolean; installed: boolean; version?: string }>
-  createDatabase(input: { name: string; charset: string; username: string; password: string }): Promise<{ name: string; username: string; host: string; port: number; charset: string }>
+  createDatabase(input: { name: string; charset: string; username: string; password: string; host?: string; existingUser?: boolean }): Promise<{ name: string; username: string; host: string; port: number; charset: string }>
   openPhpMyAdmin(database?: string): Promise<void>
   importDatabase(database: string): Promise<{ database: string; message: string } | null>
   exportDatabase(database: string): Promise<{ database: string; message: string } | null>

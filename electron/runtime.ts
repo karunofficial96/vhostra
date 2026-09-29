@@ -1,5 +1,6 @@
 import { runtimeDocumentRoot } from "./store.js";
 import { generatedMarker, cleanObsoleteGenerated, cleanObsoleteRuntime, restoreGenerated } from "./generated-config.js";
+import { mapDiagnosticPaths } from './errors.js';
 import { redactProgress } from "./progress.js";
 import { createHash, randomBytes } from "node:crypto";
 import {
@@ -1085,41 +1086,147 @@ export class DockerRuntimeController {
             },
         );
     }
-    async createDatabase(input: {
-        name: string;
-        charset: string;
-        username: string;
-        password: string;
-    }) {
-        const name = sqlIdentifier(input.name, "database name");
-        const username = sqlIdentifier(input.username, "username");
-        if (!["utf8mb4", "utf8", "latin1"].includes(input.charset))
-            throw new Error("Unsupported MariaDB character set.");
-        if (input.password.length < 12)
-            throw new Error(
-                "Database passwords must contain at least 12 characters.",
-            );
-        this.secrets.add(input.password);
-        const password = sqlLiteral(input.password);
-        const sql = `CREATE DATABASE \`${name}\` CHARACTER SET ${input.charset}; CREATE USER '${username}'@'%' IDENTIFIED BY ${password}; GRANT ALL PRIVILEGES ON \`${name}\`.* TO '${username}'@'%'; FLUSH PRIVILEGES;`;
-        await this.databaseCompose([
-            "exec",
-            "-T",
-            "mariadb",
-            "mariadb",
-            "-uroot",
-            "-e",
-            sql,
-        ]);
-        const state = await this.getState();
-        return {
-            name,
-            username,
-            host: "127.0.0.1",
-            port: state.settings.ports.mariadb,
-            charset: input.charset,
-        };
+    private async accountSql(statement: string) {
+        return this.databaseCompose(['exec', '-T', 'mariadb', 'mariadb', '-uroot', '-N', '--raw', '-e', `SET SESSION sql_mode=REPLACE(@@sql_mode,'NO_BACKSLASH_ESCAPES',''); ${statement}`]);
     }
+    async listDatabaseUsers() {
+        // Never read authentication hashes for renderer account inventory.
+        const rows = await this.accountSql("SELECT HEX(User), HEX(Host) FROM mysql.user WHERE is_role='N' AND User NOT IN ('','root','mysql','mariadb.sys','mysql.sys','mysql.session','mysql.infoschema','vhostra_pma','vhostra_phpmyadmin') ORDER BY User,Host");
+        const grants = await this.accountSql("SELECT HEX(GRANTEE), HEX(TABLE_SCHEMA), PRIVILEGE_TYPE FROM information_schema.SCHEMA_PRIVILEGES ORDER BY GRANTEE,TABLE_SCHEMA,PRIVILEGE_TYPE");
+        const globals = await this.accountSql("SELECT HEX(GRANTEE), PRIVILEGE_TYPE FROM information_schema.USER_PRIVILEGES WHERE PRIVILEGE_TYPE <> 'USAGE' ORDER BY GRANTEE,PRIVILEGE_TYPE");
+        const roles = await this.accountSql("SELECT HEX(User), HEX(Host), HEX(Role) FROM mysql.roles_mapping ORDER BY User,Host,Role");
+        const access = new Map<string, Array<{ database: string; privilege: string }>>();
+        const globalPrivileges = new Map<string, string[]>();
+        const assignedRoles = new Map<string, string[]>();
+        for (const line of grants.trim().split('\n').filter(Boolean)) {
+            const [who, database, privilege] = line.split('\t'); const identity = Buffer.from(who,'hex').toString();
+            const entries = access.get(identity) ?? []; entries.push({database:Buffer.from(database,'hex').toString().replace(/\\([_%])/g,'$1'),privilege}); access.set(identity,entries);
+        }
+        for (const line of globals.trim().split('\n').filter(Boolean)) {
+            const [who, privilege] = line.split('\t'); const identity = Buffer.from(who,'hex').toString();
+            const entries = globalPrivileges.get(identity) ?? []; entries.push(privilege); globalPrivileges.set(identity,entries);
+        }
+        for (const line of roles.trim().split('\n').filter(Boolean)) {
+            const [username,host,role] = line.split('\t').map(value=>Buffer.from(value,'hex').toString()); const identity = `'${username}'@'${host}'`;
+            const entries = assignedRoles.get(identity) ?? []; entries.push(role); assignedRoles.set(identity,entries);
+        }
+        return rows.trim().split('\n').filter(Boolean).map(line => {
+            const [username, host] = line.split('\t').map(value=>Buffer.from(value,'hex').toString()); const identity = `'${username}'@'${host}'`;
+            return { username, host, access: access.get(identity) ?? [], globalPrivileges: globalPrivileges.get(identity) ?? [], roles: assignedRoles.get(identity) ?? [] };
+        });
+    }
+
+    private databaseAccount(username: string, host = 'localhost') {
+        if (typeof username !== 'string' || !/^[A-Za-z0-9_.-]{1,80}$/.test(username)) throw new Error('Enter a valid database username using letters, digits, dots, hyphens, or underscores.');
+        if (['root','mysql','mariadb.sys','mysql.sys','mysql.session','mysql.infoschema','vhostra_pma','vhostra_phpmyadmin'].includes(username)) throw new Error('This database account is reserved for an internal service.');
+        if (!validDatabaseHost(host)) throw new Error('Enter a valid database user host.');
+        return `${sqlLiteral(username)}@${sqlLiteral(host)}`;
+    }
+    private async databaseAccountExists(username: string, host: string) {
+        return (await this.accountSql(`SELECT COUNT(*) FROM mysql.user WHERE BINARY User=${sqlLiteral(username)} AND BINARY Host=${sqlLiteral(host)} AND is_role='N'`)).trim() === '1';
+    }
+    /** Credentials travel only over stdin; no files, argv, environment or stored plaintext. */
+    async checkDatabaseAccess(input: { username: string; host: string; password: string; database?: string; verifyWrites?: boolean }) {
+        input = { ...input, host: typeof input.host === 'string' ? input.host.toLowerCase() : input.host };
+        this.databaseAccount(input.username, input.host);
+        if (typeof input.password !== 'string') throw new Error('Enter the database password to verify access.');
+        if (input.database) sqlIdentifier(input.database, 'database name');
+        if ((await this.refresh()).state !== 'running') throw new Error('Start the web runtime to check database access through PHP localhost.');
+        const state = await this.getState();
+        const php = state.settings.selectedPhpVersion.replace('.', '');
+        const payload = Buffer.from(JSON.stringify(input)).toString('base64');
+        const script = `<?php
+$c=json_decode(base64_decode('${payload}'),true);
+try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
+ foreach (['mysqli','pdo'] as $driver) { foreach (['localhost','127.0.0.1'] as $host) {
+  if ($driver==='mysqli') { $db=new mysqli($host,$c['username'],$c['password'],$c['database']??'',3306); $query=fn($s)=>$db->query($s); $identity=$query('SELECT CURRENT_USER()')->fetch_row()[0]; }
+  else { $db=new PDO('mysql:host='.$host.';port=3306'.(empty($c['database'])?'':';dbname='.$c['database']),$c['username'],$c['password'],[PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION]); $query=fn($s)=>$db->query($s); $identity=$query('SELECT CURRENT_USER()')->fetchColumn(); }
+  if ($identity!==$c['username'].'@'.$c['host']) { echo json_encode(['error'=>'Account mismatch','identity'=>$identity]); exit; }
+  if (!empty($c['verifyWrites'])) { $table='vhostra_access_'.bin2hex(random_bytes(8));
+   $query('CREATE TEMPORARY TABLE '.$table.' (id INT PRIMARY KEY, value INT)'); $query('INSERT INTO '.$table.' VALUES (1,1)'); $query('UPDATE '.$table.' SET value=2'); $query('SELECT * FROM '.$table); $query('ALTER TABLE '.$table.' ADD COLUMN extra INT'); $query('CREATE INDEX probe_index ON '.$table.'(value)'); $query('DELETE FROM '.$table); $query('DROP TEMPORARY TABLE '.$table);
+  }
+ }} echo json_encode(['ok'=>true,'identity'=>$identity]);
+} catch (Throwable $e) { echo json_encode(['error'=>'Database connection rejected','code'=>$e instanceof PDOException ? ($e->errorInfo[1]??$e->getCode()) : $e->getCode(),'message'=>$e->getMessage()]); }
+`;
+        const output = await executePrivateInput(this.composeArguments(['exec','-T','runtime',`/usr/local/lsws/lsphp${php}/bin/lsphp`, '-q', '/dev/stdin']), script);
+        let result: { ok?: boolean; error?: string; code?: number | string; message?: string; identity?: string };
+        try { result = JSON.parse(output.trim()); } catch { throw new Error('PHP could not complete the database access check. Check that mysqli and PDO MySQL are enabled.'); }
+        const technical = result.message ? ` Technical message: ${redactProgress(result.message, [input.password])}` : '';
+        if (!result.ok && result.error !== 'Account mismatch' && Number(result.code) === 0) throw new Error(`PHP could not complete the database access check.${technical}`);
+        if (!result.ok) throw new Error(`Vhostra could not connect to the database. ${result.error === 'Account mismatch' ? `The localhost connection matched ${result.identity}, rather than the selected ${input.username}@${input.host}.` : `MariaDB rejected the username, password, host, or permissions (error ${result.code ?? 'unknown'}).`} Database user: ${input.username}; Requested host: ${input.host}${input.database ? `; Database: ${input.database}` : ''}.${technical}`);
+        return { message: 'Database access verified successfully.', identity: result.identity! };
+    }
+    async createDatabase(input: { name: string; charset: string; username: string; password: string; host?: string; existingUser?: boolean }) {
+        if (input.host !== undefined && typeof input.host !== 'string') throw new Error('Enter a valid database user host.');
+        const name = sqlIdentifier(input.name, 'database name'); const host = typeof input.host === 'string' ? input.host.toLowerCase() : 'localhost';
+        const identity = this.databaseAccount(input.username, host);
+        if (!['utf8mb4','utf8','latin1'].includes(input.charset)) throw new Error('Unsupported MariaDB character set.');
+        if ((await this.listDatabases()).includes(name)) throw new Error(`Database already exists. Database: ${name}.`);
+        const exists = await this.databaseAccountExists(input.username, host);
+        if (input.existingUser && !exists) throw new Error('This database user no longer exists. Refresh the database users and select again.');
+        if (!input.existingUser && exists) throw new Error(`This database user already exists. Select the existing account to use it without changing its password. Database user: ${input.username}; Requested host: ${host}.`);
+        if (typeof input.password !== 'string' || (!input.existingUser && input.password.length < 12)) throw new Error('Database passwords must contain at least 12 characters.');
+        // Before any mutation, require the real application path. Existing credentials
+        // are verified without resetting the selected account or touching its grants.
+        if ((await this.refresh()).state !== 'running') throw new Error('Start the web runtime to verify database setup through PHP localhost.');
+        const priorPrivileges = exists ? await this.directDatabasePrivileges(name, identity) : [];
+        const addedPrivileges = applicationPrivileges.split(', ').filter(privilege=>!priorPrivileges.includes(privilege));
+        let createdUser = false; let createdDatabase = false;
+        try {
+            if (exists) await this.checkDatabaseAccess({ username: input.username, host, password: input.password });
+            if (!exists) { await this.accountSql(`CREATE USER ${identity} IDENTIFIED BY ${sqlLiteral(input.password)}`); createdUser = true; }
+            await this.checkDatabaseAccess({ username: input.username, host, password: input.password });
+            await this.accountSql(`CREATE DATABASE \`${name}\` CHARACTER SET ${input.charset}`); createdDatabase = true;
+            await this.grantDatabaseAccess(name, identity);
+            await this.checkDatabaseAccess({ username: input.username, host, password: input.password, database: name, verifyWrites: true });
+            return { name, username: input.username, host: 'localhost', accountHost: host, port: 3306, charset: input.charset, message: 'Database created successfully.' };
+        } catch (error) {
+            const recovery: string[] = [];
+            // Only resources created by this attempt may be removed. Existing account
+            // grants on other databases and its password are never reset.
+            if (createdDatabase) {
+                if (exists && addedPrivileges.length) await this.accountSql(`REVOKE ${addedPrivileges.join(', ')} ON ${grantDatabaseName(name)}.* FROM ${identity}`).catch(() => recovery.push('New database access needs review.'));
+                await this.accountSql(`DROP DATABASE \`${name}\``).catch(() => recovery.push(`New database ${name} needs review.`));
+            }
+            if (createdUser) await this.accountSql(`DROP USER ${identity}`).catch(() => recovery.push(`New account ${input.username}@${host} needs review.`));
+            throw new Error(redactProgress(`${error instanceof Error ? error.message : String(error)} Database: ${name}. ${recovery.join(' ')}`, [input.password]));
+        }
+    }
+    private async grantDatabaseAccess(database: string, identity: string) {
+        await this.accountSql(`GRANT ${applicationPrivileges} ON ${grantDatabaseName(database)}.* TO ${identity}`);
+    }
+    async updateDatabaseAccess(input: { database: string; username: string; host: string; password: string; resetPassword?: boolean }) {
+        input = { ...input, host: typeof input.host === 'string' ? input.host.toLowerCase() : input.host };
+        const name = sqlIdentifier(input.database, 'database name'); const identity = this.databaseAccount(input.username, input.host);
+        if (!(await this.listDatabases()).includes(name)) throw new Error(`Database does not exist. Database: ${name}.`);
+        if (!await this.databaseAccountExists(input.username, input.host)) throw new Error('This database user no longer exists.');
+        if (typeof input.password !== 'string') throw new Error('Enter the database password to verify access.');
+        if (input.resetPassword && input.password.length < 12) throw new Error('Database passwords must contain at least 12 characters.');
+        if ((await this.refresh()).state !== 'running') throw new Error('Start the web runtime to verify database access through PHP localhost.');
+        const priorPrivileges = await this.directDatabasePrivileges(name, identity);
+        const addedPrivileges = applicationPrivileges.split(', ').filter(privilege=>!priorPrivileges.includes(privilege));
+        // Only an explicit reset reads the private authentication metadata, which
+        // stays backend-only and allows restoring it if connectivity fails.
+        const originalAuthentication = input.resetPassword ? accountCreationStatement(await this.accountSql(`SHOW CREATE USER ${identity}`)).replace(/^CREATE USER /i,'ALTER USER ') : '';
+        let passwordChanged = false; let granted = false;
+        try {
+            if (input.resetPassword) { await this.accountSql(`ALTER USER ${identity} IDENTIFIED BY ${sqlLiteral(input.password)}`); passwordChanged = true; }
+            await this.checkDatabaseAccess({ ...input, database: undefined });
+            await this.grantDatabaseAccess(name, identity); granted = true;
+            await this.checkDatabaseAccess({ ...input, database: name, verifyWrites: true });
+            return { message: 'Database access updated successfully.' };
+        } catch (error) {
+            const recovery: string[] = [];
+            if (granted && addedPrivileges.length) await this.accountSql(`REVOKE ${addedPrivileges.join(', ')} ON ${grantDatabaseName(name)}.* FROM ${identity}`).catch(()=>recovery.push('Database grants need review.'));
+            if (passwordChanged) await this.accountSql(originalAuthentication).catch(()=>recovery.push('The password changed and could not be restored; check this account.'));
+            throw new Error(redactProgress(`${error instanceof Error ? error.message : String(error)} Database: ${name}. ${recovery.join(' ')}`, [input.password]));
+        }
+    }
+    private async directDatabasePrivileges(name: string, identity: string) {
+        const grantName = name.replace(/[_%]/g, value => '\\' + value);
+        return (await this.accountSql(`SELECT PRIVILEGE_TYPE FROM information_schema.SCHEMA_PRIVILEGES WHERE GRANTEE=${sqlLiteral(identity)} AND TABLE_SCHEMA=${sqlLiteral(grantName)}`)).trim().split('\n').filter(Boolean);
+    }
+
     /** Backend-only backup primitives. Account authentication never crosses IPC. */
     async backupCacheState() {
         const result: Record<'redis' | 'memcached', string | null> = { redis: null, memcached: null };
@@ -1153,7 +1260,7 @@ export class DockerRuntimeController {
             if (["root", "mysql", "mariadb.sys", "vhostra_phpmyadmin", "vhostra_pma"].includes(user) || !user) continue;
             const role = isRole === "Y";
             const identity = role ? sqlLiteral(user) : `${sqlLiteral(user)}@${sqlLiteral(host)}`;
-            const create = role ? `CREATE ROLE ${sqlLiteral(user)}` : (await this.databaseCompose(["exec", "-T", "mariadb", "mariadb", "-uroot", "-N", "--raw", "-e", `SHOW CREATE USER ${identity}`])).trim().split("\t").slice(1).join("\t");
+            const create = role ? `CREATE ROLE ${sqlLiteral(user)}` : accountCreationStatement(await this.databaseCompose(["exec", "-T", "mariadb", "mariadb", "-uroot", "-N", "--raw", "-e", `SHOW CREATE USER ${identity}`]));
             const grants = (await this.databaseCompose(["exec", "-T", "mariadb", "mariadb", "-uroot", "-N", "--raw", "-e", `SHOW GRANTS FOR ${identity}`])).trim().split("\n").filter(Boolean).sort();
             accounts.push({ user, host, role, create, grants });
         }
@@ -1399,13 +1506,16 @@ export class DockerRuntimeController {
                 }
             } catch { /* first start has no credentials yet */ }
             return task();
-        }).catch((error) => {
+        }).catch(async (error) => {
+            const current = await this.getState().catch(()=>null);
+            const mappings: Array<[string,string]> = [['/etc/vhostra/nginx',this.layout.runtime.nginx],['/etc/vhostra/apache',this.layout.runtime.apache],['/etc/vhostra/php',this.layout.runtime.php],['/etc/vhostra/openlitespeed',this.layout.runtime.openLiteSpeed],['/usr/local/lsws/conf/vhostra-sites',this.layout.runtime.openLiteSpeed], ...(current?.sites ?? []).filter(site=>!site.builtIn).map(site=>[`/var/www/vhostra/${site.vhostId}`,site.documentRoot] as [string,string])];
+            const message = mapDiagnosticPaths(redactProgress(error instanceof Error ? error.message : String(error), this.secrets),mappings);
             this.set({
                 state: "error",
-                message: error instanceof Error ? error.message : String(error),
+                message,
                 services: [],
             });
-            throw new Error(redactProgress(error instanceof Error ? error.message : String(error), this.secrets));
+            throw new Error(message);
         });
         this.operation = result
             .then(
@@ -2494,7 +2604,7 @@ const sqlIdentifier = (value: string, label: string) => {
         );
     return normalized;
 };
-const sqlLiteral = (value: string) => `'${value.replace(/'/g, "''")}'`;
+const sqlLiteral = (value: string) => `'${value.replace(/\\/g, '\\\\').replace(/\0/g, '\\0').replace(/'/g, "''")}'`;
 /**
  * macOS denies an unprivileged Node process a test bind below 1024 with EACCES.
  * That is not evidence of a listener: verify the actual TCP endpoint before
@@ -2736,4 +2846,39 @@ function databaseErrorMessage(stderr: string) {
     return (errors.length ? errors.join("\n") : stderr.replace(/--------------[\s\S]*?--------------/g, "[SQL statement omitted]"))
         .replace(/near\s+[\s\S]*$/i, "near [SQL fragment omitted]")
         .replace(/'[^']*'|"[^"]*"/g, "[SQL value omitted]").slice(-2000);
+}
+
+const applicationPrivileges = 'SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, CREATE TEMPORARY TABLES, LOCK TABLES';
+// GRANT treats underscores/percent in database names as patterns even in backticks.
+function grantDatabaseName(name: string) { return '`' + name.replace(/[_%]/g, value => '\\' + value) + '`'; }
+async function executePrivateInput(args: string[], input: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const child = spawn('docker', args, { stdio: ['pipe','pipe','pipe'] });
+        let output = ''; child.stdout.on('data', data => { output = (output + data).slice(-16384); });
+        // Never echo PHP source, credentials, or runtime stderr from this probe.
+        child.stderr.resume(); child.stdin.on('error', () => {});
+        const timer = setTimeout(() => child.kill('SIGTERM'), 30000);
+        child.once('error', () => { clearTimeout(timer); reject(new Error('The PHP database access check could not start.')); });
+        child.once('close', code => { clearTimeout(timer); code === 0 ? resolve(output) : reject(new Error('The PHP database access check could not complete.')); });
+        child.stdin.end(input);
+    });
+}
+
+function validDatabaseHost(host: string) {
+    if (typeof host !== 'string' || !host.length || host.length > 255 || host.includes('..')) return false;
+    if (net.isIP(host)) return true;
+    if (host.includes('/')) {
+        const parts = host.split('/'); if (parts.length !== 2 || parts.some(part=>net.isIP(part)!==4)) return false;
+        const bits = parts[1].split('.').map(part=>Number(part).toString(2).padStart(8,'0')).join('');
+        return /^1*0*$/.test(bits);
+    }
+    return host.split('.').every(label=>label.length <= 63 && /^[a-zA-Z0-9_%](?:[a-zA-Z0-9_%\-]*[a-zA-Z0-9_%])?$/.test(label));
+}
+
+function accountCreationStatement(output: string) {
+    // MariaDB SHOW CREATE USER has a single SQL column on supported servers;
+    // accept historical two-column client output too. Never accept empty auth.
+    const match = output.trim().match(/^(?:[^\r\n]*?\t)?(CREATE USER[\s\S]*)$/i);
+    if (!match) throw new Error('MariaDB did not return this account’s authentication configuration.');
+    return match[1];
 }

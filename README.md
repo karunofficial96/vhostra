@@ -428,3 +428,7 @@ Host persistence is separate from backup. Database Export streams a logical SQL 
 Service controls and CLI `start|stop|restart mariadb` operate the actual independent container. All-service commands include it; web/PHP configuration replacement leaves it alone. Resource metrics show Web/PHP and MariaDB separately, count host data once, and retain visible-only polling and cached storage scans. MariaDB's bounded Docker health check is independent of Electron; no application idle health timer is introduced.
 
 Managed image cleanup retains six recent web/PHP builds and two recent MariaDB builds, preserving all referenced images, recovery leases and unknown tags. Explicit native Quit also works during first-time setup; it always offers keep services, stop services, or Cancel.
+
+### Database account selection and access checks
+
+Database creation now offers existing `User @ Host` accounts or Custom with a real Host field defaulting to localhost. Existing passwords/grants are preserved. Enter a known password for validation, or use Database Access for an explicit password change or grant update. Setup requires the web runtime so Vhostra can verify actual PHP localhost access before success. Database/account inventories refresh immediately after mutations; no database polling runs. Errors have concise messages with expandable sanitized diagnostics. See [database authentication architecture and acceptance](docs/database-access.md).
