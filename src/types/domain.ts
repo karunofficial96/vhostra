@@ -45,6 +45,8 @@ export interface VirtualHost {
 
 /** A cache reference only: screenshot bytes stay in Vhostra's host-side cache. */
 export interface SiteScreenshot {
+  url?: string
+  identity?: string
   cacheFile: string
   capturedAt: string
   source: 'automatic' | 'manual'

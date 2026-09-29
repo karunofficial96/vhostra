@@ -228,3 +228,16 @@ This additive phase continues the existing repository and preserves the earlier 
 - [x] D11 / request 43, 47–48: architecture documented and all four completion/performance records updated. Earlier platform/release/licensed-runtime boundaries remain open. The old SHOW CREATE USER single-column export gap was reopened, corrected, unit-tested and validated through actual password rollback; actual backup reconciliation and persistence regressions passed.
 
 New acceptance: production build `/private/tmp/vhostra-db-build.log`; **99/99** regression tests `/private/tmp/vhostra-database-unit.log`; live account/WordPress `/private/tmp/vhostra-database-access-live.log` (exit 0); native real SQL UI `/private/tmp/vhostra-database-access-ui.log` (exit 0). Initial failure repro is `/private/tmp/vhostra-db-reproduction.log`. Final native fixture cleanup/inventory verification passed. Prior persistence, full backup reconciliation and desktop regressions also passed; final logs and preserved environment boundaries are recorded in the execution state.
+
+## Named Site preview phase (2026-09-29)
+
+- [x] P01 (1–7, 21, 40–42): traced/reproduced legacy bare-loopback navigation; central canonical/alias resolver, exact live vhost marker, named Host/SNI/browser navigation and default-vhost separation. Literal reported ERR_INVALID_ARGUMENT did not reproduce; no invented cause is claimed.
+- [x] P02 (8–10, 44–45): read-only Hosts checks, configured protocol/ports, canonical-first valid alias fallback, local SAN-valid certificate handling without global TLS bypass; existing scoped Repair Site action.
+- [x] P03 (11–20, 43, 46): private/local hidden first-viewport capture, both scrollbars suppressed only in capture CSS, bounded DOM/render/navigation deadlines, stopped fallback and resource cancellation/cleanup.
+- [x] P04 (22–27, 30, 32–35): bounded atomic host JPEG cache; per-Site refresh/deduplication; one sequential capture window; visibility gating; routing/used-alias invalidation; PHP/server/unused-alias preservation; previous image retained on failure.
+- [x] P05 (28–31, 49–50): DESIGN-compatible simple fallback and Repair action; collapsed sanitized technical details; actual selectable Preview URL value and unselectable labels/controls.
+- [x] P06 (36–39, 47–48): no upload/telemetry/new dependencies or idle polling; local repeated-capture CPU/RAM/process evidence; no retained screenshot renderer or accumulation of capture windows.
+- [x] P07 (51–52): build/full contracts/native UI/actual all-server preview acceptance; persistent documents updated; previous acceptance queue audited and retained. No new Git commit.
+- [ ] Inherited native Windows/Linux, protected administrative prompts, signed/login/release and licensed Enterprise acceptance still require their recorded environments. This phase does not mark those boundaries complete.
+
+Detailed evidence and diagnosis: `docs/site-previews.md`. Original database/runtime/privacy/selection work remains in the repository.

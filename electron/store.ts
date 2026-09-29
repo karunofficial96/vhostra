@@ -1,3 +1,4 @@
+import { previewMatches } from './site-url.js'
 import { fingerprint, siteDefinition, differences, type RestoreChoices } from './reconciliation.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream, existsSync, promises as fs, readFileSync } from 'node:fs'
@@ -13,7 +14,7 @@ export interface ServicePorts { http: number; https: number; mariadb: number; re
 export type CloseBehavior = 'keep-services' | 'stop-services' | 'minimize-to-tray'
 export interface Settings { schemaVersion: 1; selectedWebServer: WebServer; selectedPhpVersion: PhpVersion; optionalServices: { redis: boolean; memcached: boolean }; php: { extensions: string[]; disabledExtensions: string[]; opcacheEnabled: boolean; cwebpEnabled: boolean }; startup: { launchAtLogin: boolean; startServicesOnLaunch: boolean; closeBehavior: CloseBehavior }; ports: ServicePorts }
 export interface OnboardingState { themeSaved?: boolean; restoredServices?: { redis: boolean; memcached: boolean }; ready?: boolean; completed: boolean; theme: 'light' | 'dark' | 'system'; server: WebServer; php: PhpVersion; cache: 'none' | 'redis' | 'memcached' }
-export interface Screenshot { cacheFile: string; capturedAt: string; source: 'automatic' | 'manual' }
+export interface Screenshot { url?: string; identity?: string; cacheFile: string; capturedAt: string; source: 'automatic' | 'manual' }
 export const runtimeDocumentRoot = (host: Pick<VirtualHost, 'id' | 'builtIn'>) => host.builtIn === 'localhost' ? '/var/www/html' : `/var/www/vhostra/${host.id}`
 export const siteLogPaths = (layout: StoreLayout, id: string) => ({ access: path.join(layout.logs, 'sites', id, 'access.log'), error: path.join(layout.logs, 'sites', id, 'error.log') })
 export interface Site { id: string; name: string; documentRoot: string; url: string; vhostId: string; framework?: string; screenshot?: Screenshot; builtIn?: 'localhost'; createdAt: string; updatedAt: string }
@@ -144,7 +145,7 @@ export class VhostraStore {
     await this.saveSettings(original.settings); await this.saveOnboarding(preferences)
   }) }
   async getLocalhostUrl() { return localUrl((await this.readSettings()).ports.http) }
-  async saveSettings(settings: Settings) { const normalized = this.normalizeSettings(settings); this.validateSettings(normalized); await this.initialize(); await this.writeJson(this.layout.settings, normalized); await this.updateDefaultSiteUrls(normalized.ports.http); await this.writeLocalhostWelcome(); return normalized }
+  async saveSettings(settings: Settings) { const normalized = this.normalizeSettings(settings); this.validateSettings(normalized); await this.initialize(); await this.writeJson(this.layout.settings, normalized); await this.updateDefaultSiteUrls(normalized.ports.http); await this.invalidatePreviews(); await this.writeLocalhostWelcome(); return normalized }
   addSite(input: Pick<Site, 'name' | 'documentRoot' | 'url' | 'framework'> & { aliases?: string[]; vhostId?: string }) { return this.serialize(() => this.addSiteRecord(input)) }
   private async addSiteRecord(input: Pick<Site, 'name' | 'documentRoot' | 'url' | 'framework'> & { aliases?: string[]; vhostId?: string }) {
     this.validateSiteInput(input); await this.assertExternalRoot(input.documentRoot); await this.initialize()
@@ -165,6 +166,8 @@ export class VhostraStore {
     const updated: Site = { ...current, name: input.name.trim(), documentRoot: input.documentRoot, url: input.url, ...(input.framework?.trim() ? { framework: input.framework.trim() } : { framework: undefined }), updatedAt: new Date().toISOString(), ...(input.url !== current.url || input.documentRoot !== current.documentRoot ? { screenshot: undefined } : {}) }
     const vhost = state.virtualHosts.find(host => host.id === current.vhostId); if (!vhost) throw new Error('Related virtual-host definition not found.')
     await Promise.all([this.writeJson(this.recordPath(this.layout.sites, current.id), updated), this.writeJson(this.recordPath(this.layout.virtualHosts, vhost.id), { ...vhost, hostname: new URL(input.url).hostname, aliases: input.aliases === undefined ? vhost.aliases : this.validateAliases(input.aliases), documentRoot: input.documentRoot, https: { enabled: new URL(input.url).protocol === 'https:' } })])
+    await this.invalidatePreviews();
+    if (!updated.screenshot) await fs.rm(path.join(this.layout.screenshots, `${current.id}.jpg`), { force: true })
     await this.writeLocalhostWelcome(); return this.getState()
   }
   restoreSiteDefinition(site: Site, host: VirtualHost) { return this.serialize(async () => {
@@ -221,6 +224,13 @@ export class VhostraStore {
       throw error
     }
   }) }
+  private async invalidatePreviews() {
+    const state = await this.getState()
+    for (const site of state.sites) if (site.screenshot && !previewMatches(state, site)) {
+      await this.writeJson(this.recordPath(this.layout.sites, site.id), { ...site, screenshot: undefined })
+      await fs.rm(path.join(this.layout.screenshots, `${site.id}.jpg`), { force: true })
+    }
+  }
   /** Static previews are capped and read only for the browser image request—never retained in app state. */
   async readScreenshot(siteId: string) {
     if (siteId !== localhostSiteId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(siteId)) return null
@@ -237,10 +247,10 @@ export class VhostraStore {
       return { data: await fs.readFile(file), mime }
     } catch { return null }
   }
-  saveScreenshot(id: string, expectedUrl: string, bytes: Buffer, source: Screenshot['source'], expected?: Pick<Site, 'documentRoot' | 'updatedAt'>) { return this.serialize(async () => {
+  saveScreenshot(id: string, expectedUrl: string, bytes: Buffer, source: Screenshot['source'], expected?: Pick<Site, 'documentRoot' | 'updatedAt'>, resolved?: { url: string; identity: string }) { return this.serialize(async () => {
     await this.initialize()
-    const site = (await this.getState()).sites.find(site => site.id === id)
-    if (!site || site.url !== expectedUrl || expected && (site.documentRoot !== expected.documentRoot || site.updatedAt !== expected.updatedAt)) throw new Error('Site changed during capture; preview discarded.')
+    const current = await this.getState(); const site = current.sites.find(site => site.id === id)
+    if (!site || resolved && !previewMatches(current, { ...site, screenshot: { cacheFile: `${id}.jpg`, capturedAt: '', source, ...resolved } }) || site.url !== expectedUrl || expected && (site.documentRoot !== expected.documentRoot || site.updatedAt !== expected.updatedAt)) throw new Error('Site changed during capture; preview discarded.')
     if (!bytes.length || bytes.length > 1024 * 1024) throw new Error('Preview exceeds the local cache limit.')
     const cacheFile = `${id}.jpg`
     await fs.mkdir(this.layout.screenshots, { recursive: true })
@@ -249,7 +259,7 @@ export class VhostraStore {
     const temporary = path.join(cacheRoot, `${id}.${randomUUID()}.tmp`)
     try { await fs.writeFile(temporary, bytes, { mode: 0o600, flag: 'wx' }); await fs.rename(temporary, path.join(cacheRoot, cacheFile)) }
     finally { await fs.rm(temporary, { force: true }) }
-    await this.writeJson(this.recordPath(this.layout.sites, id), { ...site, screenshot: { cacheFile, capturedAt: new Date().toISOString(), source } })
+    await this.writeJson(this.recordPath(this.layout.sites, id), { ...site, screenshot: { cacheFile, capturedAt: new Date().toISOString(), source, ...resolved } })
     // Only exact Vhostra UUID preview files lacking a live Site are obsolete.
     const ids = new Set((await this.getState()).sites.map(site => `${site.id}.jpg`))
     for (const file of await fs.readdir(this.layout.screenshots)) if ((/^[a-f0-9-]{36}\.jpg$/i.test(file) || file === `${localhostSiteId}.jpg`) && !ids.has(file)) await fs.rm(path.join(this.layout.screenshots, file), { force: true })

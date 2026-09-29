@@ -432,3 +432,5 @@ Managed image cleanup retains six recent web/PHP builds and two recent MariaDB b
 ### Database account selection and access checks
 
 Database creation now offers existing `User @ Host` accounts or Custom with a real Host field defaulting to localhost. Existing passwords/grants are preserved. Enter a known password for validation, or use Database Access for an explicit password change or grant update. Setup requires the web runtime so Vhostra can verify actual PHP localhost access before success. Database/account inventories refresh immediately after mutations; no database polling runs. Errors have concise messages with expandable sanitized diagnostics. See [database authentication architecture and acceptance](docs/database-access.md).
+
+Site previews use verified named local vhost URLs with a private host-side viewport cache. Missing Hosts mappings show an explicit repair state; previews never write system mappings automatically. See [local Site previews](docs/site-previews.md) for routing, TLS, privacy and acceptance details.

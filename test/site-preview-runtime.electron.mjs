@@ -1,0 +1,37 @@
+import { mkdtempSync } from 'node:fs'
+// Sequential real Vhostra servers, isolated Docker ownership, TEMP Hosts and external Site root.
+import {app,BrowserWindow,nativeImage} from 'electron'
+import assert from 'node:assert/strict'
+import {execFileSync} from 'node:child_process'
+import {mkdtemp,writeFile,readFile,rm,chmod} from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import http from 'node:http'
+const browserProfile=mkdtempSync(path.join(os.tmpdir(),'vhostra-preview-browser-'));app.setPath('userData',browserProfile)
+app.commandLine.appendSwitch('host-resolver-rules','MAP *.test 127.0.0.1, EXCLUDE localhost')
+app.on('window-all-closed',()=>{})
+const deadline=setTimeout(()=>{console.error('Live preview acceptance deadline');app.exit(1)},600000)
+app.whenReady().then(async()=>{
+ const {VhostraStore}=await import('../dist-electron/store.js');const {DockerRuntimeController}=await import('../dist-electron/runtime.js');const {HostsFileManager}=await import('../dist-electron/hosts.js');const {SiteUrlResolver}=await import('../dist-electron/site-url.js');const {SitePreviews}=await import('../dist-electron/previews.js')
+ const profile=await mkdtemp(path.join(os.tmpdir(),'vhostra-preview-live-'));const external=await mkdtemp(path.join(os.tmpdir(),'vhostra-preview-live-site-'));const scope=`vhostra-preview-live-${process.pid}`;const store=new VhostraStore(profile,path.resolve('dist-welcome'));const runtime=new DockerRuntimeController(store.layout,()=>store.getState(),undefined,scope);const docker=args=>execFileSync('docker',args,{encoding:'utf8',timeout:120000});const inventory=()=>docker(['ps','-a','--format','{{.ID}} {{.Names}} {{.State}}']).trim().split('\n').sort();const original=inventory();let failed=false;let last='';runtime.subscribe(()=>{const message=runtime.current().message;if(message!==last){last=message;console.log(message)}})
+ const get=(port,hostname)=>new Promise((resolve,reject)=>http.get({host:'127.0.0.1',port,headers:{Host:hostname},timeout:3000},response=>{let body='';response.on('data',chunk=>body+=chunk);response.on('end',()=>resolve({body,headers:response.headers,status:response.statusCode}))}).on('error',reject))
+ try{
+  console.log('Fixture',profile,scope);const state=await store.getState();const ports={};for(const [i,key]of ['http','https','phpMyAdmin','mariadb','redis','memcached'].entries())ports[key]=await runtime.findAvailablePort(34180+i*100);await store.saveSettings({...state.settings,selectedWebServer:'nginx',selectedPhpVersion:'8.4',ports});await chmod(external,0o755)
+  const html='<!doctype html><style>body{margin:0;background:rgb(20,80,190);font:32px sans-serif;color:white}section{height:720px;width:1800px;padding:32px;box-sizing:border-box}footer{height:6000px;background:lime}*::-webkit-scrollbar{width:30px;height:30px;background:magenta}</style><section>REAL NAMED VHOST example.test</section><footer>NOT FIRST VIEWPORT</footer>';await writeFile(path.join(external,'index.html'),html);await writeFile(path.join(external,'index.php'),`<?php echo '${html}'; ?>`)
+  const site=(await store.addSite({name:'Live preview',documentRoot:external,url:`https://example.test:${ports.https}/`,aliases:['www.example.test']})).sites.find(x=>!x.builtIn);const hosts=new HostsFileManager(path.join(profile,'temporary'));Object.defineProperty(hosts,'hostsPath',{value:path.join(profile,'hosts')});await writeFile(hosts.hostsPath,'127.0.0.1 example.test www.example.test\n');const resolver=new SiteUrlResolver(store,()=>hosts,()=>runtime.siteUrlAvailability());const previews=new SitePreviews(store,resolver)
+  await runtime.start()
+  for(const server of ['nginx','apache','openlitespeed']){
+    if(server!=='nginx'){const next=await store.getState();await store.saveSettings({...next.settings,selectedWebServer:server});await runtime.restart()}
+    const named=await get(ports.http,'example.test');const bare=await get(ports.http,'127.0.0.1');assert.equal(named.status,200, named.body);assert.equal(named.headers['x-vhostra-site'],site.vhostId);assert.match(named.body,/REAL NAMED VHOST/);assert.notEqual(bare.headers['x-vhostra-site'],site.vhostId);assert.doesNotMatch(bare.body,/REAL NAMED VHOST/)
+    let result=await previews.capture(site.id,true);console.log(server,'capture',result);assert.equal(result.captured,true);assert.equal(result.screenshot.url,`https://example.test:${ports.https}/`);const image=await store.readScreenshot(site.id);assert.deepEqual(nativeImage.createFromBuffer(image.data).getSize(),{width:960,height:540});await writeFile(`/private/tmp/vhostra-preview-${server}.jpg`,image.data);assert.equal(BrowserWindow.getAllWindows().length,0)
+    await writeFile(hosts.hostsPath,'127.0.0.1 www.example.test\n');result=await previews.capture(site.id,true);assert.equal(result.captured,true);assert.equal(result.screenshot.url,`https://www.example.test:${ports.https}/`);await writeFile(hosts.hostsPath,'127.0.0.1 example.test www.example.test\n')
+    const current=await store.getState();const record=current.sites.find(x=>x.id===site.id);await store.updateSite({...record,url:`http://example.test:${ports.http}/`});result=await previews.capture(site.id,true);assert.equal(result.captured,true);assert.equal(result.screenshot.url,`http://example.test:${ports.http}/`);await store.updateSite({...record,url:`https://example.test:${ports.https}/`});assert.equal(await readFile(path.join(external,'index.html'),'utf8'),html)
+    await rm(path.join(external,'index.php'));const staticResponse=await get(ports.http,'example.test');assert.equal(staticResponse.status,200,staticResponse.body);assert.match(staticResponse.body,/REAL NAMED VHOST/);result=await previews.capture(site.id,true);assert.equal(result.captured,true);await writeFile(path.join(external,'index.php'),`<?php echo '${html}'; ?>`);
+    console.log('PASS',server,'actual vhost/default separation, canonical HTTPS, alias HTTPS, named HTTP/custom ports, viewport/cache, external files untouched')
+  }
+  await runtime.stop();const result=await previews.capture(site.id,true);assert.equal(result.captured,false);assert.match(result.message,/stopped/);assert.equal(BrowserWindow.getAllWindows().length,0)
+ }catch(error){failed=true;console.error(error)}finally{
+  clearTimeout(deadline);for(const window of BrowserWindow.getAllWindows())window.destroy();await runtime.resetRuntime(false).catch(error=>{failed=true;console.error('Exact fixture cleanup',error)});runtime.dispose();try{assert.deepEqual(inventory(),original)}catch(error){failed=true;console.error(error)}
+  await writeFile('/private/tmp/vhostra-preview-live-proof.json',JSON.stringify({profile,external,scope,browserProfile,failed}));if(!failed){await rm(profile,{recursive:true,force:true,maxRetries:10,retryDelay:100});await rm(external,{recursive:true,force:true})}app.exit(failed?1:0)
+ }
+})

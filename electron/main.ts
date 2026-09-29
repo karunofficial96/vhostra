@@ -18,6 +18,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { SiteUrlResolver, previewMatches, publicSiteUrl } from "./site-url.js";
 import { SitePreviews } from "./previews.js";
 import { updateManagedSite } from "./site-workflow.js";
 import { VhostraStore, type AppState, type WebServer } from "./store.js";
@@ -40,6 +41,8 @@ if (!app.isPackaged && process.env.NODE_ENV === "development" && process.env.VHO
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 let store: VhostraStore;
+let cancelPreviewCapture: (() => void) | undefined;
+let clearPreviewFailures: (() => void) | undefined;
 let pendingBackup: { source: string; checksum: string; plans: Record<string, string>; full?: FullBackupPlan } | null = null;
 let pendingNativePlans: Record<string, string> = {};
 let pendingNativeImport: NativeImportPreview | null = null;
@@ -113,9 +116,13 @@ function createRuntimeController() {
     );
     hosts = new HostsFileManager(path.join(store.layout.root, "temporary"), path.join(store.layout.backups, "hosts"));
     const controller = services;
+    let previewRuntimeReady = false;
     services.subscribe(() => {
         if (controller !== services && !migrationProgress) return;
         const snapshot = controller.current();
+        const ready = snapshot.state === "running" && !snapshot.progress;
+        if (ready && !previewRuntimeReady) clearPreviewFailures?.();
+        previewRuntimeReady = ready;
         if (migrationProgress && snapshot.progress) {
             const seen = migrationSeen.get(controller);
             const count = seen?.id === snapshot.progress.id ? seen.total : 0;
@@ -207,8 +214,8 @@ const createWindow = () => {
     window.on("show", () => { windowVisible = true; refreshVisibleRuntime(); updateTrayMenu(); });
     window.on("restore", () => { windowMinimized = false; windowVisible = true; publishRuntimeStatus(); updateTrayMenu(); });
     const retainTray = () => { if (!tray || tray.isDestroyed()) createTray(); else if (trayImage) tray.setImage(trayImage); updateTrayMenu(); };
-    window.on("hide", () => { windowVisible = false; retainTray(); });
-    window.on("minimize", () => { windowMinimized = true; retainTray(); });
+    window.on("hide", () => { windowVisible = false; cancelPreviewCapture?.(); retainTray(); });
+    window.on("minimize", () => { windowMinimized = true; cancelPreviewCapture?.(); retainTray(); });
     window.on("closed", () => {
         primaryWindow = null; windowVisible = false; windowMinimized = false;
         if (!isQuitting) updateTrayMenu();
@@ -320,7 +327,7 @@ app.on("before-quit", (event) => {
 /** Raw source stays private on disk; ordinary state IPC does not duplicate it
  * into the renderer. Review uses explicit parser findings/directives instead. */
 function desktopState(state: AppState) {
-    return { ...state, virtualHosts: state.virtualHosts.map(host => host.source ? { ...host, source: { ...host.source, raw: undefined } } : host) };
+    return { ...state, sites: state.sites.map(site => previewMatches(state, site) ? site : { ...site, screenshot: undefined }), virtualHosts: state.virtualHosts.map(host => host.source ? { ...host, source: { ...host.source, raw: undefined } } : host) };
 }
 
 const backupProgress = (message: string) => { if (primaryWindow?.isVisible() && !primaryWindow.isMinimized()) primaryWindow.webContents.send("vhostra:backup-progress", message.slice(0, 2000)); };
@@ -675,8 +682,19 @@ function registerIpc() {
             }
         },
     );
+    const siteUrls = new SiteUrlResolver(store, () => hosts, () => services.siteUrlAvailability());
+    handle("vhostra:resolve-site-url", async (_event, id: string) => {
+        const result = await siteUrls.resolve(id);
+        return { available: result.available, url: result.url ? publicSiteUrl(result.url) : undefined, message: result.message, details: result.details, repair: result.repair };
+    });
     handle("vhostra:open-site", async (_event, value: string) => {
-        await openExternal(value);
+        const state = await store.getState();
+        const site = state.sites.find(site => site.url === value || site.screenshot?.url === value);
+        if (site) {
+            const result = await siteUrls.resolve(site.id);
+            if (!result.available || !result.url) throw new Error(result.message + (result.details ? `\n${result.details}` : ""));
+            await openExternal(result.url);
+        } else await openExternal(value);
     });
     handle("vhostra:get-storage-layout", () => {
         const layout = store.layout;
@@ -770,10 +788,15 @@ function registerIpc() {
         catch (error) { mapping.message += ` Imported definitions were saved, but runtime configuration requires retry: ${error instanceof Error ? error.message : String(error)}`; }
         return { ...imported, mapping };
     });
-    let previews = new SitePreviews(store);
+    let dashboardVisible = false;
+    const previewVisible = () => dashboardVisible && Boolean(primaryWindow?.isVisible()) && !primaryWindow?.isMinimized();
+    const previews = new SitePreviews(store, siteUrls, previewVisible);
+    cancelPreviewCapture = () => previews.cancel();
+    clearPreviewFailures = () => previews.clearFailures();
+    handle("vhostra:preview-activity", (_event, visible: boolean) => { dashboardVisible = visible === true; if (!dashboardVisible) previews.cancel(); });
     handle("vhostra:capture-preview", async (_event, id: string, force = false) => {
         if (typeof id !== "string" || typeof force !== "boolean") throw new Error("Invalid preview request.");
-        if (!primaryWindow?.isVisible() || primaryWindow.isMinimized()) return { captured: false, message: "Open Dashboard to refresh previews." };
+        if (!previewVisible()) return { captured: false, message: "Open Dashboard to refresh previews." };
         return previews.capture(id, force);
     });
     handle("vhostra:get-runtime-status", desktopRuntimeSnapshot);

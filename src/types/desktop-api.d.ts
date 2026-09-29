@@ -84,7 +84,9 @@ export interface VhostraDesktopApi {
   getAppInfo(): Promise<{ name: string; version: string }>
   checkForUpdates(): Promise<{ state: 'unconfigured' | 'up-to-date' | 'available' | 'error'; currentVersion: string; availableVersion?: string; notes?: string; url?: string; message: string }>
   onExplicitQuit(listener: () => void): () => void
-  capturePreview(siteId: string, force?: boolean): Promise<{ captured: boolean; message: string }>
+  setPreviewActivity(visible: boolean): Promise<void>
+  resolveSiteUrl(siteId: string): Promise<{ available: boolean; url?: string; message: string; details?: string; repair?: boolean }>
+  capturePreview(siteId: string, force?: boolean): Promise<{ captured: boolean; message: string; details?: string; repair?: boolean; screenshot?: Site['screenshot'] }>
   onRuntimeStatus(listener: (status: RuntimeSnapshot) => void): () => void
 }
 
