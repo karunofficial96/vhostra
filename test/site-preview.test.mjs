@@ -9,7 +9,7 @@ import { HostsFileManager } from '../dist-electron/hosts.js'
 import { SiteUrlResolver, siteUrlCandidates, previewMatches, previewIdentity, publicSiteUrl, previewErrorText } from '../dist-electron/site-url.js'
 const fixture = async run => {
  const root=await mkdtemp(path.join(os.tmpdir(),'vhostra-preview-contract-'));const external=await mkdtemp(path.join(os.tmpdir(),'vhostra-preview-external-'));const store=new VhostraStore(root,path.resolve('dist-welcome'));const state=await store.getState();const hosts=new HostsFileManager(path.join(root,'temporary'));Object.defineProperty(hosts,'hostsPath',{value:path.join(root,'test-hosts')});await writeFile(hosts.hostsPath,'127.0.0.1 example.test www.example.test\n');let mode='named';let requests=[];let id
- const server=http.createServer((req,res)=>{requests.push(req.headers.host);const name=req.headers.host.split(':')[0];res.setHeader('X-Vhostra-Site', mode==='wrong'||name==='example.test'&&mode==='alias'?'default':id);if(mode==='external'){res.writeHead(302,{Location:'https://external.invalid/private-site'});res.end()}else res.end(name)})
+ const server=http.createServer((req,res)=>{requests.push(req.headers.host);const name=req.headers.host.split(':')[0];if(mode!=='legacy')res.setHeader('X-Vhostra-Site', mode==='wrong'||name==='example.test'&&mode==='alias'?'default':id);if(mode==='external'){res.writeHead(302,{Location:'https://external.invalid/private-site'});res.end()}else res.end(name)})
  try {await new Promise(r=>server.listen(0,'127.0.0.1',r));const port=server.address().port;await store.saveSettings({...state.settings,ports:{...state.settings.ports,http:port}});const site=(await store.addSite({name:'Example',url:`http://example.test:${port}/`,documentRoot:external,aliases:['www.example.test']})).sites.find(x=>!x.builtIn);id=site.vhostId;const resolver=new SiteUrlResolver(store,()=>hosts,()=>({running:mode!=='offline',https:false}));await run({store,site,resolver,hosts,port,requests,setMode:value=>{mode=value}})}finally{server.closeAllConnections();await new Promise(r=>server.close(r));await rm(root,{recursive:true,force:true});await rm(external,{recursive:true,force:true})}
 }
 test('canonical named routing, alias fallback and default-vhost rejection use real responses',()=>fixture(async({resolver,site,port,setMode,requests})=>{
@@ -40,3 +40,10 @@ test('configured homepage path/query are honored privately and omitted from rout
 }))
 
 test('capture errors remove encoded credential query/fragment state from attempted URLs',()=>assert.equal(previewErrorText('ERR_FAILED opening https://example.test/?%74oken=private#secret-state'),'ERR_FAILED opening https://example.test/'))
+
+test('missing identity needs independent server proof; a mismatching identity never uses fallback',()=>fixture(async({resolver,store,site,hosts,setMode})=>{
+ setMode('legacy');assert.equal((await resolver.resolve(site.id)).available,false)
+ let proofs=0;const proven=new SiteUrlResolver(store,()=>hosts,()=>({running:true,https:false}),async()=>{proofs++;return true})
+ assert.equal((await proven.resolve(site.id)).available,true);assert.equal(proofs,1)
+ setMode('wrong');assert.equal((await proven.resolve(site.id)).available,false);assert.equal(proofs,1)
+}))

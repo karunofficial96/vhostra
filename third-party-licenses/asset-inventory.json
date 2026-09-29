@@ -1,0 +1,172 @@
+[
+  {
+    "file": "src/assets/app-icon-light.png",
+    "sha256": "45f94796643909d7c284abd6c5135719b256f3302218e44e0ff1f77c90845e58",
+    "bytes": 50900
+  },
+  {
+    "file": "src/assets/favicon-16.png",
+    "sha256": "1ddba4281572ed1205f1d95a57079c7a0fe10f8d9b09be1599668bf469afe87a",
+    "bytes": 1866
+  },
+  {
+    "file": "src/assets/app-icon-dark.png",
+    "sha256": "931f81cc3d59040de4f62af7ef83a8b6d6f612c8afd285d82c94b430fefffa77",
+    "bytes": 56159
+  },
+  {
+    "file": "src/assets/vhostra-logo-light.png",
+    "sha256": "58542474054f915cc8b9aa852d93d3393bbc8c6cfdbd39dbf083db67b85ddfa3",
+    "bytes": 115523
+  },
+  {
+    "file": "src/assets/favicon-32.png",
+    "sha256": "f46233eaabfc5e8fc880e30b949de48a47335438e8550d0b7d798e19e93ca61e",
+    "bytes": 3372
+  },
+  {
+    "file": "src/assets/brand-source.png",
+    "sha256": "1286d7fd8d61e61ca95686fcd54f97dc860907cd802dc02c8b9818b35861c205",
+    "bytes": 1033837
+  },
+  {
+    "file": "src/assets/vhostra-logo-dark.png",
+    "sha256": "2a860ddb6401f136e1332d3a6bd90f987a3719cffc81342620733f29e8fe678f",
+    "bytes": 143918
+  },
+  {
+    "file": "src/assets/fonts/roboto-mono-400.ttf",
+    "sha256": "329949c551e04130eeb43580e149a2d548090e71359d05d925329ae123fac5c9",
+    "bytes": 78948
+  },
+  {
+    "file": "src/assets/fonts/roboto-400.ttf",
+    "sha256": "dece7c71bbe61710787f0839c722c65e87355dd2eb4a823e6b5488121ff81e4b",
+    "bytes": 123720
+  },
+  {
+    "file": "src/assets/fonts/roboto-700.ttf",
+    "sha256": "35757eaa996b3359022f47f164a67ee9eac04971af24c5b8fbd4b89e844ff190",
+    "bytes": 124292
+  },
+  {
+    "file": "src/assets/fonts/roboto-500.ttf",
+    "sha256": "4d984240cefb093a74300bcae4b5dbd49f700e0af501eaaa079c56aa64142d2f",
+    "bytes": 123904
+  },
+  {
+    "file": "src/assets/services/phpmyadmin.ico",
+    "sha256": "e2905705920b2636309d785c2df3f155d6379b0aa9a44dc7831524505fa2defd",
+    "bytes": 22486
+  },
+  {
+    "file": "src/assets/services/nginx.ico",
+    "sha256": "47aaa89c6703eb0dff563584ba86264bfa52c95129aba509d60c44bd200b8d85",
+    "bytes": 15406
+  },
+  {
+    "file": "src/assets/services/ATTRIBUTION.md",
+    "sha256": "5cef3f0ca29eb8c2511ba42582b30b64fa877df186d916023ab5914da3ba6056",
+    "bytes": 1367
+  },
+  {
+    "file": "src/assets/services/memcached-icon.svg",
+    "sha256": "4b8dbfce52441072e0f13f9691971c351333638f71c5e878e7acf78440fb44ff",
+    "bytes": 3748
+  },
+  {
+    "file": "src/assets/services/redis-icon.svg",
+    "sha256": "4707378b190878f36f7e6e1c01fa3ee7e7884c76101809d191dddd943a2e6bdb",
+    "bytes": 1728
+  },
+  {
+    "file": "src/assets/services/php.svg",
+    "sha256": "2132ce6951ad588f001d6e17d7b8d6389de2f64d659c5eeb2615551ade79a9aa",
+    "bytes": 10316
+  },
+  {
+    "file": "src/assets/services/mariadb-icon.svg",
+    "sha256": "90f14c26b478447171ad800791535f5f5ab0f9abf80387edefb410b6fc85cbdc",
+    "bytes": 1831
+  },
+  {
+    "file": "src/assets/services/apache_feather_bullet.gif",
+    "sha256": "d2b067c6fee6c6bb237e4a07ec790a77bc0348a58864ee18bd4b9131881196c0",
+    "bytes": 719
+  },
+  {
+    "file": "src/assets/services/openlitespeed.png",
+    "sha256": "9f641fda87b46ac0120f68beb0e9d837bf1dfedc4fcb803f1a5804db675726cc",
+    "bytes": 5183
+  },
+  {
+    "file": "build/icon-master.png",
+    "sha256": "65c6426b3b64dcbb08e5fe2b1ea4b26d705363102fbd665946df0979c161c0b9",
+    "bytes": 989057
+  },
+  {
+    "file": "build/icon.png",
+    "sha256": "8fa57a2d0c7f77e8cf6a0074bccce9917ae5c53bdbaf1e63a7f7e066507e1e5a",
+    "bytes": 153264
+  },
+  {
+    "file": "build/icon.icns",
+    "sha256": "365fbc9c3bffbd7a68590a6ade659e627b97355ac22269197a1918366e8eedf4",
+    "bytes": 1249880
+  },
+  {
+    "file": "build/icon.ico",
+    "sha256": "586a43ff731bd8193be849420a5cb5ce137b07138cdafa7d7d9bb5ce91446435",
+    "bytes": 113528
+  },
+  {
+    "file": "build/trayIcon@2x.png",
+    "sha256": "026d637f2ae0f1b435c446c4c30c7b00c083f69ae399d7c7c35d99f178af86ae",
+    "bytes": 2966
+  },
+  {
+    "file": "build/trayIcon.png",
+    "sha256": "483ea4aaca7ab747f176906d3f79eafe82c38d6b9c347b10ad7a08552b45d9d1",
+    "bytes": 1018
+  },
+  {
+    "file": "build/icons/16x16.png",
+    "sha256": "1ddba4281572ed1205f1d95a57079c7a0fe10f8d9b09be1599668bf469afe87a",
+    "bytes": 1866
+  },
+  {
+    "file": "build/icons/1024x1024.png",
+    "sha256": "65c6426b3b64dcbb08e5fe2b1ea4b26d705363102fbd665946df0979c161c0b9",
+    "bytes": 989057
+  },
+  {
+    "file": "build/icons/256x256.png",
+    "sha256": "190186758d20569c2b0c50a82857f73a629a09e11eb42ebacbc664d36b9f0925",
+    "bytes": 70465
+  },
+  {
+    "file": "build/icons/128x128.png",
+    "sha256": "739128978450fcd0aabd06e2ff408133ecbebc0c33f7beed48f92d57991579be",
+    "bytes": 23805
+  },
+  {
+    "file": "build/icons/48x48.png",
+    "sha256": "16cc7d10ddeaf9abde650982532135cea48f68f9e5c1e55c944ee31b6f90cacd",
+    "bytes": 5601
+  },
+  {
+    "file": "build/icons/32x32.png",
+    "sha256": "f46233eaabfc5e8fc880e30b949de48a47335438e8550d0b7d798e19e93ca61e",
+    "bytes": 3372
+  },
+  {
+    "file": "build/icons/512x512.png",
+    "sha256": "70137266a3cf122d224f95da49baa540539079b39693319ecde6f46b03bef7ad",
+    "bytes": 152934
+  },
+  {
+    "file": "build/icons/64x64.png",
+    "sha256": "2f571edbb8a9207c9efe29cf5d9fc54ccc415f94610dd74853f0a838b3f9e792",
+    "bytes": 8317
+  }
+]

@@ -18,6 +18,7 @@ export function DatabaseWorkspace({ running, applicationRunning, port }: { runni
   const [success, setSuccess] = useState<string | null>(null)
   const key = (user: Account) => JSON.stringify([user.username, user.host])
   const account = users.find(user => key(user) === selected)
+  const duplicate = !account && /database user already exists/i.test(String(error)) ? users.find(user => user.username === username && user.host === host.toLowerCase()) : undefined
   const refresh = async () => {
     const [databaseRows, accountRows] = await Promise.all([window.vhostra!.listDatabases(), window.vhostra!.listDatabaseUsers()])
     setDatabases(databaseRows); setUsers(accountRows)
@@ -45,6 +46,7 @@ export function DatabaseWorkspace({ running, applicationRunning, port }: { runni
     <ServiceBrand name="MariaDB"/><h1 className="mt-4 text-2xl font-bold">MariaDB</h1>
     <p className="mt-2 text-sm leading-5 text-[#606060]">PHP applications connect using <span className="selectable font-mono">localhost:3306</span>. Host database tools connect using <span className="selectable font-mono">127.0.0.1:{port}</span>.</p>
     {error != null && <ErrorNotice error={error} onDismiss={() => setError(null)}/>}
+    {duplicate && <button type="button" disabled={busy} onClick={() => { setSelected(key(duplicate)); setPassword(''); setError(null) }} className={actionClass}>Select Existing User</button>}
     {success && <div role="status" className="mt-4 flex items-start justify-between gap-4 rounded-lg bg-[#F2F2F2] p-4 text-sm"><p className="selectable text-[#2BA640]">{success}</p><button onClick={() => setSuccess(null)} className="text-[#065FD4]">Dismiss</button></div>}
     {running ? <>
       {!applicationRunning && <p className="mt-4 text-sm text-[#606060]">Start the web runtime to create databases and verify access through PHP localhost.</p>}

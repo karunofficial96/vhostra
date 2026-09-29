@@ -1,3 +1,20 @@
+# Current additive queue — routing / selection / duplicates / notices (2026-09-29)
+
+- [x] Reproduce localhost and named preview failures against the existing runtime; trace config, Hosts, protocol/ports, response and Electron separately.
+- [x] Verify server-owned routing without requiring Site content; accept older owned native config safely. Test HTTP/TLS/custom ports, aliases, wrong default, viewport/scrollbars, refresh, cleanup and local-only requests.
+- [x] Strict CSS default; explicit selectable status/name/alias/path/message/diagnostic/editable content across all screens. Service names must remain unselectable.
+- [x] Exact Custom User@Host preflight before mutations, localhost default, preserved Database Name, existing-account recovery, grants/connectivity/rollback and immediate SQL list refresh.
+- [x] Simple primary errors/success and sanitized expandable details.
+- [x] Create THIRD_PARTY_NOTICES.md, verified license materials and full dependency/asset/server inventory; record uncertain provenance/terms and distribution actions. No Vhostra LICENSE.
+- [x] Renew privacy/performance audit and persistent evidence; preserve external acceptance boundaries and all prior functionality. No commit.
+
+All 56 additive requirements are covered by these grouped acceptance gates and the supplied request preserved in docs/routing-selection-notices-request.md. Historical completion claims below are reopened where contradicted by current runtime/UI evidence.
+
+- [ ] Public distribution verification: original Red Broadcast MIT notice, exact artwork/font/branding rights, frozen image/platform/source/Redis obligations and final package notice inclusion. See THIRD_PARTY_NOTICES.md; verified audit creation does not clear these requirements.
+- [x] Supplementary isolated database rollback/WordPress regression passed with exact scope cleanup and unchanged unrelated inventory: /private/tmp/vhostra-additive-db-live.log.
+
+---
+
 # Backup reconciliation / desktop completion — local acceptance complete 2026-09-29
 
 This section supersedes older backup/tray/cache descriptions. Full request is preserved in `docs/backup-reconciliation-request.md`; implementation, test evidence, limitations and the next action are recorded at the top of `VHOSTRA_EXECUTION_STATE.md`. Checkmarks below mean implemented and locally verified; native cross-platform/protected-prompt/release acceptance remains open under R52 and the inherited unchecked items.

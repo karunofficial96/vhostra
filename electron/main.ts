@@ -682,7 +682,7 @@ function registerIpc() {
             }
         },
     );
-    const siteUrls = new SiteUrlResolver(store, () => hosts, () => services.siteUrlAvailability());
+    const siteUrls = new SiteUrlResolver(store, () => hosts, () => services.siteUrlAvailability(), (url, id) => services.verifyLegacyPreviewRoute(url, id));
     handle("vhostra:resolve-site-url", async (_event, id: string) => {
         const result = await siteUrls.resolve(id);
         return { available: result.available, url: result.url ? publicSiteUrl(result.url) : undefined, message: result.message, details: result.details, repair: result.repair };

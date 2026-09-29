@@ -33,8 +33,9 @@ app.whenReady().then(async()=>{
   await waitFor('document.body.textContent.includes("Dashboard")');await runtime.refresh()
   // Real IPC, capture window, loopback HTTP/Host, host cache and protocol image.
   await waitFor('!!document.querySelector("img[alt=\\"Preview fixture local site preview\\"]")')
-  await waitFor(`document.querySelector('[data-preview-site="${missing.id}"]')?.textContent.includes('not mapped locally')`);await waitFor(`document.querySelector('[data-preview-site="${wrong.id}"]')?.textContent.includes('routing could not be verified')`);await pause(200);await writeFile('/private/tmp/vhostra-preview-dashboard.png',(await window.webContents.capturePage()).toPNG())
+  await waitFor(`document.querySelector('[data-preview-site="${missing.id}"]')?.textContent.includes('not mapped locally')`);await waitFor(`document.querySelector('[data-preview-site="${wrong.id}"]')?.textContent.includes('did not confirm this Site')`);await pause(200);await writeFile('/private/tmp/vhostra-preview-dashboard.png',(await window.webContents.capturePage()).toPNG())
   const saved=(await store.getState()).sites.find(item=>item.id===site.id);assert.ok(saved.screenshot);assert.equal(saved.screenshot.url,`http://preview.test:${port}/`);await evaluate('[...document.querySelectorAll("summary")].find(e=>e.textContent==="Preview information").click()');assert.equal(await evaluate('getComputedStyle(document.querySelector("[data-preview-site] dt")).userSelect'), 'none');assert.equal(await evaluate('getComputedStyle(document.querySelector("[data-preview-site] dd")).userSelect'), 'text')
+  await evaluate(`(()=>{const card=document.querySelector('[data-preview-site="${site.id}"]');[...card.querySelectorAll('button')].find(button=>button.textContent==='Refresh Preview').click()})()`);await waitFor(`document.querySelector('[data-preview-site="${site.id}"]')?.textContent.includes('Preview updated successfully.')`);
   routeId=wrong.vhostId;runtime.set({state:'starting',services:['runtime'],message:'Fixture recovery'});await runtime.refresh();const recovered=await evaluate(`window.vhostra.capturePreview(${JSON.stringify(wrong.id)},false)`);assert.equal(recovered.captured,true,'healthy transition must retry recent failures');routeId=site.vhostId
   runtime.set({state:'starting',services:['runtime'],message:'Fixture rebuild'});await pause(150);assert.ok(await evaluate('[...document.images].some(img => img.alt === "Preview fixture local site preview")'),'retain previous image during rebuild');await runtime.refresh();await pause(100)
   const image=await store.readScreenshot(site.id);assert.ok(image.data.length<1024*1024)
@@ -42,6 +43,7 @@ app.whenReady().then(async()=>{
   await pause(200); await writeFile('/private/tmp/vhostra-local-preview.jpg',image.data)
   await click('Sites')
   await waitFor('document.body.textContent.includes("Check Site")')
+  assert.ok((await evaluate(`(()=>{const labels=[...document.querySelectorAll('dt')].filter(node=>['Server Name','Server Alias','Access Log','Error Log'].includes(node.textContent));return labels.map(label=>[getComputedStyle(label).userSelect,getComputedStyle(label.nextElementSibling).userSelect])})()`)).every(([label,value])=>label==='none'&&value==='text'))
   await evaluate(`(()=>{const edit=[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==='Edit Preview fixture');const row=edit.parentElement.parentElement;[...row.querySelectorAll('button')].find(b=>b.textContent==='Check Site').click()})()`)
   await waitFor('document.body.textContent.includes("Site routing verified.")')
   assert.equal((await evaluate(`window.vhostra.resolveSiteUrl(${JSON.stringify(site.id)})`)).url,`http://preview.test:${port}/`)

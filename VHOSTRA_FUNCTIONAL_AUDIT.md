@@ -1,3 +1,15 @@
+# Additive active-regression audit (2026-09-29)
+
+Current authoritative evidence is the new top section of VHOSTRA_EXECUTION_STATE.md. The earlier named-preview/selection completion claims are reopened where real existing-runtime/UI behavior contradicted them. Missing identity headers in the older active OLS configs caused HTTP 200 localhost/named pages to fail resolver verification; native configuration proof fixes that compatibility path while retaining wrong-vhost refusal. Real current-runtime images were inspected and distinct. The fresh three-server matrix additionally captures localhost, canonical/alias named HTTP/TLS/custom ports and preserves unrelated Docker inventory.
+
+Dashboard service-name and status selection was reversed; the new semantic opt-ins correct it. Global descendant selection is removed, exact Site name/alias/path labels and values are split, and native major-screen/input/dialog/onboarding/terminal behavior is audited. The backend already preflighted duplicate User@Host and the UI preserved Database Name on failures; renewed real instrumentation proves no duplicate mutation, populated name and successful explicit existing-user recovery/SQL row refresh. Error copy and recoverability are improved without clearing safe fields or changing existing passwords/grants.
+
+THIRD_PARTY_NOTICES.md, full dependency evidence, installed container copyright/license records and authoritative font/icon/runtime notices are present. Redis 8's actual multiple-choice terms are recorded; uncertain art/branding, exact source/conversion/release and original DesignMD notice are listed instead of guessed. Third-party source-delivery/release conditions still need their recorded actions; no Vhostra license was selected.
+
+Supplementary real MariaDB/PHP/WordPress account/grant/rollback acceptance passed with exit 0 and exact fixture cleanup in /private/tmp/vhostra-additive-db-live.log. Build and 107 contracts pass; local Electron/three-server/database UI/renderer IPC acceptance logs use the vhostra-additive prefix in /private/tmp. Privacy/performance review confirms local assets/captures, blocked remote preview requests, no new dependency/user-data endpoint, CSS-only selection, bounded cache/logs/sequential transient capture and event-driven inventory. Prior unresolved native platform/signing/protected-prompt/licensed requirements remain open, with a concrete Next exact action in the execution state. No commit, real user-data/Hosts mutation, unrelated runtime change or global prune occurred.
+
+---
+
 # Backup reconciliation / desktop phase audit (2026-09-29)
 
 Current authoritative outcome/evidence is at the top of `VHOSTRA_EXECUTION_STATE.md`; requirement mapping is R1–R54 in the checklist. Local build, 94 contracts, native macOS UI/IPC and sequential actual Docker acceptance passed. Cross-platform/protected-prompt/release requirements remain unchecked.

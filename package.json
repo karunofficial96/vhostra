@@ -26,6 +26,14 @@
       {
         "from": "runtime-image",
         "to": "runtime-image"
+      },
+      {
+        "from": "THIRD_PARTY_NOTICES.md",
+        "to": "THIRD_PARTY_NOTICES.md"
+      },
+      {
+        "from": "third-party-licenses",
+        "to": "third-party-licenses"
       }
     ],
     "mac": {

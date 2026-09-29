@@ -8,7 +8,7 @@ import type { HostsFileManager } from './hosts.js'
 import { redactProgress } from './progress.js'
 
 export interface SiteUrlResult { available: boolean; url?: string; message: string; details?: string; repair?: boolean }
-export interface ResolvedSiteUrl extends SiteUrlResult { site?: Site; host?: VirtualHost; candidates?: string[]; certificate?: string }
+export interface ResolvedSiteUrl extends SiteUrlResult { site?: Site; host?: VirtualHost; candidates?: string[]; certificate?: string; verifiedOrigins?: string[] }
 /** Canonical host first, then configured aliases; HTTP always supported, TLS only when requested and active. */
 export function siteUrlCandidates(state: AppState, site: Site, httpsAvailable: boolean) {
   const host = state.virtualHosts.find(item => item.id === site.vhostId)
@@ -37,18 +37,18 @@ export function validLocalCertificate(pem: string, hostname: string) {
   try { const cert = new X509Certificate(pem); const now = Date.now(); return now >= Date.parse(cert.validFrom) && now < Date.parse(cert.validTo) && Boolean(cert.checkHost(hostname)) } catch { return false }
 }
 /** Only loopback transport; Host and SNI stay named. Never follows an external redirect or reads Site bodies. */
-async function probe(url: string, id: string, certificate: string | undefined, signal: AbortSignal) {
+async function probe(url: string, id: string, certificate: string | undefined, signal: AbortSignal, verifyLegacy?: () => Promise<boolean>) {
   const target = new URL(url)
   return new Promise<{ status: number; location?: string }>((resolve, reject) => {
     const request = (target.protocol === 'https:' ? https : http).request(target, {
       method: 'GET', agent: false, signal, family: 4, ...(target.protocol === 'https:' && certificate ? { ca: certificate } : {}),
       lookup: (_hostname, _options, callback) => callback(null, '127.0.0.1', 4),
-    }, response => {
+    }, async response => {
       const status = response.statusCode ?? 0
       const identity = response.headers['x-vhostra-site']
       const location = response.headers.location
       response.destroy()
-      if (identity !== id) reject(new Error(`Routing verification failed: HTTP ${status} did not identify the requested virtual host. Repair Site configuration.`))
+      if (identity !== id && !(identity === undefined && await verifyLegacy?.().catch(() => false))) reject(new Error(`Routing verification failed: HTTP ${status} did not identify the requested virtual host. Repair Site configuration.`))
       else if (status < 200 || status >= 400) reject(new Error(`Site returned HTTP ${status}.`))
       else resolve({ status, location })
     })
@@ -57,7 +57,7 @@ async function probe(url: string, id: string, certificate: string | undefined, s
   })
 }
 export class SiteUrlResolver {
-  constructor(private store: VhostraStore, private mappings: () => Pick<HostsFileManager, 'mappingStatus'>, private availability: () => { running: boolean; https: boolean }) {}
+  constructor(private store: VhostraStore, private mappings: () => Pick<HostsFileManager, 'mappingStatus'>, private availability: () => { running: boolean; https: boolean }, private verifyLegacy?: (url: string, id: string) => Promise<boolean>) {}
   async resolve(id: string, signal?: AbortSignal): Promise<ResolvedSiteUrl> {
     const state = await this.store.getState(); const site = state.sites.find(item => item.id === id)
     if (!site) return { available: false, message: 'Choose an existing Site.' }
@@ -74,7 +74,7 @@ export class SiteUrlResolver {
     try { const file = path.join(this.store.layout.certificates.public, 'localhost.pem'); if ((await fs.stat(file)).size < 65536) certificate = await fs.readFile(file, 'utf8') } catch { /* system trust may already cover TLS */ }
     const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 6000)
     const abort = () => controller.abort(); signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort()
-    const errors: string[] = []
+    const errors: string[] = []; const verifiedOrigins = new Set<string>()
     try {
       for (const url of local.slice(0, 16)) {
         if (controller.signal.aborted) break
@@ -82,8 +82,8 @@ export class SiteUrlResolver {
           // Verify every redirect, preserving named routing and limiting loops.
           let current = url
           for (let redirects = 0; redirects < 4; redirects++) {
-            const response = await probe(current, site.vhostId, certificate, controller.signal)
-            if (response.status < 300) return { available: true, url: current, message: 'Site routing verified.', site, host, candidates: local, certificate }
+            const response = await probe(current, site.vhostId, certificate, controller.signal, async () => { const origin = new URL(current).origin; if (verifiedOrigins.has(origin)) return true; if (await this.verifyLegacy?.(current, site.vhostId)) { verifiedOrigins.add(origin); return true } return false })
+            if (response.status < 300) return { available: true, url: current, message: 'Site routing verified.', site, host, candidates: local, certificate, verifiedOrigins: [...verifiedOrigins] }
             if (!response.location) throw new Error('Site redirect has no destination.')
             const next = new URL(response.location, current)
             if (next.username || next.password || !local.some(candidate => new URL(candidate).origin === next.origin)) throw new Error('Site redirects outside its mapped local URLs.')
@@ -92,7 +92,7 @@ export class SiteUrlResolver {
           throw new Error('Site redirects too many times.')
         } catch (error) { errors.push(previewErrorText(`${publicSiteUrl(url)}: ${error instanceof Error ? error.message : String(error)}`)) }
       }
-      return { available: false, message: 'The Site could not be reached or its routing could not be verified.', details: errors.join('\n').slice(0, 4000), repair: !site.builtIn }
+      return { available: false, message: errors.some(error => /Routing verification failed/.test(error)) ? 'The server did not confirm this Site’s routing. Restart Vhostra services to load the current configuration.' : errors.some(error => /redirect/i.test(error)) ? 'The Site redirects outside its configured local URLs, or its redirect could not be followed.' : errors.some(error => /HTTP \d{3}/.test(error)) ? 'The Site returned an HTTP error. Open the Site or inspect its logs.' : 'The local Site connection failed. Check the web server and configured ports.', details: errors.join('\n').slice(0, 4000), repair: !site.builtIn }
     } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort) }
   }
 }

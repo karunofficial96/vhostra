@@ -1,3 +1,4 @@
+import { legacyOlsRouteMatches } from './routing-proof.js';
 import { runtimeDocumentRoot } from "./store.js";
 import { generatedMarker, cleanObsoleteGenerated, cleanObsoleteRuntime, restoreGenerated } from "./generated-config.js";
 import { mapDiagnosticPaths } from './errors.js';
@@ -106,6 +107,24 @@ export class DockerRuntimeController {
         return { ...this.counters, operationActive: Boolean(this.operation), progressLines: this.progress?.lines.length ?? 0,
             htaccessWatchers: this.htaccessWatchers.size, state: this.snapshot.state };
     }
+    /** On-demand legacy OLS proof from disposable native working copies, never Site content.
+     * No restart, regeneration, Hosts mutation or document-root read is needed. */
+    async verifyLegacyPreviewRoute(url: string, id: string) {
+        const state = await this.getState();
+        const host = state.virtualHosts.find(host => host.id === id);
+        const target = new URL(url);
+        if (!host || state.settings.selectedWebServer !== 'openlitespeed' ||
+            ![host.hostname, ...host.aliases].includes(target.hostname) ||
+            !await this.vhostraOwnsPort(Number(target.port || (target.protocol === 'https:' ? 443 : 80)))) return false;
+        const file = host.builtIn === 'localhost' ? '/usr/local/lsws/conf/vhosts/Example/vhconf.conf' : `/usr/local/lsws/conf/vhostra-sites/${host.id}.conf`;
+        const [main, config] = await Promise.all([
+            this.compose(['exec', '-T', 'runtime', 'head', '-c', '1048576', '/usr/local/lsws/conf/httpd_config.conf']),
+            this.compose(['exec', '-T', 'runtime', 'head', '-c', '65536', file]),
+        ]);
+        const expected = openLiteSpeedSiteConfig(host.builtIn ? { ...host, indexFiles: ['index.html'] } : host, runtimeDocumentRoot(host));
+        return legacyOlsRouteMatches(main, config, expected, host, target);
+    }
+
     async resourceUsage() {
         if (!existsSync(this.composeFile) && !existsSync(path.join(this.databaseRoot, "compose.yml"))) return null;
         const ids = (await this.docker(["ps", "--filter", `label=${managedLabel}`, "--filter", `label=com.docker.compose.project=${this.scope}`,
@@ -1158,14 +1177,15 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
         return { message: 'Database access verified successfully.', identity: result.identity! };
     }
     async createDatabase(input: { name: string; charset: string; username: string; password: string; host?: string; existingUser?: boolean }) {
+        const name = sqlIdentifier(input.name, 'database name');
         if (input.host !== undefined && typeof input.host !== 'string') throw new Error('Enter a valid database user host.');
-        const name = sqlIdentifier(input.name, 'database name'); const host = typeof input.host === 'string' ? input.host.toLowerCase() : 'localhost';
+        const host = typeof input.host === 'string' ? input.host.toLowerCase() : 'localhost';
         const identity = this.databaseAccount(input.username, host);
-        if (!['utf8mb4','utf8','latin1'].includes(input.charset)) throw new Error('Unsupported MariaDB character set.');
-        if ((await this.listDatabases()).includes(name)) throw new Error(`Database already exists. Database: ${name}.`);
         const exists = await this.databaseAccountExists(input.username, host);
         if (input.existingUser && !exists) throw new Error('This database user no longer exists. Refresh the database users and select again.');
-        if (!input.existingUser && exists) throw new Error(`This database user already exists. Select the existing account to use it without changing its password. Database user: ${input.username}; Requested host: ${host}.`);
+        if (!input.existingUser && exists) throw new Error(`Database user already exists. "${input.username}" already exists for host "${host}". Select this user from the Database User list instead. Database user: ${input.username}; Requested host: ${host}.`);
+        if (!['utf8mb4','utf8','latin1'].includes(input.charset)) throw new Error('Unsupported MariaDB character set.');
+        if ((await this.listDatabases()).includes(name)) throw new Error(`Database already exists. Database: ${name}.`);
         if (typeof input.password !== 'string' || (!input.existingUser && input.password.length < 12)) throw new Error('Database passwords must contain at least 12 characters.');
         // Before any mutation, require the real application path. Existing credentials
         // are verified without resetting the selected account or touching its grants.

@@ -46,6 +46,8 @@ export class SitePreviews {
           browserSession.on('will-download', preventDownload)
           await browserSession.setProxy({ mode: 'direct' })
           await browserSession.clearHostResolverCache()
+          const resolution = await browserSession.resolveHost(new URL(resolved.url).hostname)
+          if (!resolution.endpoints.length || resolution.endpoints.some(endpoint => !['127.0.0.1', '::1'].includes(endpoint.address))) throw new Error('Electron could not resolve the Site hostname to this computer. Check its local Hosts mapping.')
           if (abort.signal.aborted || !this.visible()) throw new Error('Preview capture cancelled.')
           const allowed = new Set(resolved.candidates!.map(url => new URL(url).origin))
           const localUrl = (value: string) => { try { const target = new URL(value); return !target.username && !target.password && allowed.has(target.origin) } catch { return false } }
@@ -63,7 +65,7 @@ export class SitePreviews {
           browserSession.webRequest.onHeadersReceived((details, callback) => {
             const headers = details.responseHeaders ?? {}
             const route = Object.entries(headers).find(([key]) => key.toLowerCase() === 'x-vhostra-site')?.[1]?.[0]
-            const failed = details.resourceType === 'mainFrame' && (route !== site.vhostId || details.statusCode >= 400 || !localUrl(details.url))
+            const failed = details.resourceType === 'mainFrame' && ((route !== site.vhostId && !(route === undefined && resolved.verifiedOrigins?.includes(new URL(details.url).origin))) || details.statusCode >= 400 || !localUrl(details.url))
             if (failed) routingFailure = 'The loaded page did not verify the requested Site routing.'
             callback({ cancel: failed })
           })
@@ -88,11 +90,11 @@ export class SitePreviews {
           if (image.isEmpty() || abort.signal.aborted) throw new Error('No rendered Site viewport.')
           await this.store.saveScreenshot(id, site.url, image.resize({ width: 960 }).toJPEG(75), force ? 'manual' : 'automatic', { documentRoot: site.documentRoot, updatedAt: site.updatedAt }, { url: publicSiteUrl(finalUrl), identity })
           const saved = (await this.store.getState()).sites.find(item => item.id === id)
-          return { captured: true, message: 'Local preview refreshed.', screenshot: saved?.screenshot }
+          return { captured: true, message: 'Preview updated successfully.', screenshot: saved?.screenshot }
         })(),
         new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { abort.abort(); reject(new Error('Local preview timed out.')) }, 15000) }),
       ])
-    } catch (error) { result = { captured: false, message: 'Vhostra could not open the Site URL.', details: previewErrorText(error instanceof Error ? error.message : String(error)).slice(0, 4000) } }
+    } catch (error) { result = { captured: false, message: captureFailureReason(error), details: previewErrorText(error instanceof Error ? error.message : String(error)).slice(0, 4000) } }
     finally {
       clearTimeout(timer); abort.abort(); this.activeAbort = undefined; this.activeWindow = undefined; if (window && !window.isDestroyed()) window.destroy()
       if (browserSession) {
@@ -109,3 +111,15 @@ export class SitePreviews {
   }
 }
 function preventDownload(event: Electron.Event) { event.preventDefault() }
+
+function captureFailureReason(error: unknown) {
+  const text = error instanceof Error ? error.message : String(error)
+  if (/timed out/i.test(text)) return 'The local preview took too long to load.'
+  if (/resolve|ERR_NAME_NOT_RESOLVED/i.test(text)) return 'Electron could not resolve the Site hostname locally.'
+  if (/ERR_CERT|certificate/i.test(text)) return 'The local HTTPS certificate was not accepted.'
+  if (/ERR_CONNECTION_REFUSED/i.test(text)) return 'The local web server refused the connection.'
+  if (/routing|mapped local URLs/i.test(text)) return 'The loaded page did not match this Site’s local routing.'
+  if (/cancelled|ERR_ABORTED/i.test(text)) return 'The preview capture was cancelled.'
+  if (/No rendered/i.test(text)) return 'The Site did not produce a rendered viewport.'
+  return 'The Site page could not be loaded in the local preview browser.'
+}
