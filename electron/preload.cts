@@ -51,6 +51,8 @@ const api = Object.freeze({
   listManagedServices: () => ipcRenderer.invoke('vhostra:list-managed-services'),
   controlManagedService: (id: 'web' | 'mariadb' | 'redis' | 'memcached', action: 'start' | 'stop' | 'restart') => ipcRenderer.invoke('vhostra:control-managed-service', id, action),
   listDatabaseUsers: () => ipcRenderer.invoke('vhostra:list-database-users'),
+  changeDatabaseUserPassword: (input: { username: string; host: string; password: string }) => ipcRenderer.invoke('vhostra:change-database-user-password', input),
+  deleteDatabaseUser: (input: { username: string; host: string }) => ipcRenderer.invoke('vhostra:delete-database-user', input),
   checkDatabaseAccess: (input: unknown) => ipcRenderer.invoke('vhostra:check-database-access', input),
   updateDatabaseAccess: (input: unknown) => ipcRenderer.invoke('vhostra:update-database-access', input),
   listDatabases: () => ipcRenderer.invoke('vhostra:list-databases'),
@@ -75,6 +77,7 @@ const api = Object.freeze({
   capturePreview: (siteId: string, force = false) => ipcRenderer.invoke('vhostra:capture-preview', siteId, force),
   onExplicitQuit: (listener: () => void) => { let live = true; const handler = () => { void ipcRenderer.invoke('vhostra:consume-quit-request').then(pending => { if (live && pending) listener() }) }; ipcRenderer.on('vhostra:explicit-quit', handler); handler(); return () => { live = false; ipcRenderer.removeListener('vhostra:explicit-quit', handler) } },
   onRuntimeStatus: (listener: (status: unknown) => void) => { const handler = (_event: IpcRendererEvent, status: unknown) => listener(status); ipcRenderer.on('vhostra:runtime-status', handler); return () => ipcRenderer.removeListener('vhostra:runtime-status', handler) },
+  onDatabaseReady: (listener: (result: { database: string; siteIds: string[] }) => void) => { const handler = (_event: IpcRendererEvent, result: { database: string; siteIds: string[] }) => listener(result); ipcRenderer.on('vhostra:database-ready', handler); ipcRenderer.on('vhostra:database-imported', handler); return () => { ipcRenderer.removeListener('vhostra:database-ready', handler); ipcRenderer.removeListener('vhostra:database-imported', handler) } },
 })
 
 contextBridge.exposeInMainWorld('vhostra', api)

@@ -1,7 +1,7 @@
 import type { ConfigurationExportRequest, StorageLayout } from './storage'
 import type { RuntimeSnapshot, Site, VhostraSettings, VhostraState, WebServer } from './domain'
 
-export interface SiteInput { vhostId?: string; name: string; documentRoot: string; url: string; framework?: string; aliases?: string[] }
+export interface SiteInput { vhostId?: string; name: string; documentRoot: string; url: string; framework?: string; database?: { name: string; importExpected: boolean }; aliases?: string[] }
 export interface SiteUpdate extends SiteInput { id: string }
 export interface HostsMappingResult { installed: string[]; alreadyMapped: string[]; conflicts: Array<{ hostname: string; address: string }>; message: string }
 
@@ -64,6 +64,8 @@ export interface VhostraDesktopApi {
   listManagedServices(): Promise<Array<{ id: 'web' | 'mariadb' | 'redis' | 'memcached'; label: string; enabled: boolean; state: 'running' | 'stopped' | 'starting' | 'failed' | 'unhealthy' | 'disabled' | 'unavailable' }>>
   controlManagedService(id: 'web' | 'mariadb' | 'redis' | 'memcached', action: 'start' | 'stop' | 'restart'): Promise<Array<{ id: 'web' | 'mariadb' | 'redis' | 'memcached'; label: string; enabled: boolean; state: string }>>
   listDatabaseUsers(): Promise<Array<{ username: string; host: string; globalPrivileges: string[]; roles: string[]; access: Array<{ database: string; privilege: string }> }>>
+  changeDatabaseUserPassword(input: { username: string; host: string; password: string }): Promise<{ message: string }>
+  deleteDatabaseUser(input: { username: string; host: string }): Promise<{ message: string }>
   checkDatabaseAccess(input: { username: string; host: string; password: string; database?: string }): Promise<{message: string; identity: string}>
   updateDatabaseAccess(input: { database: string; username: string; host: string; password: string; resetPassword?: boolean }): Promise<{message: string}>
   listDatabases(): Promise<string[]>
@@ -88,6 +90,7 @@ export interface VhostraDesktopApi {
   resolveSiteUrl(siteId: string): Promise<{ available: boolean; url?: string; message: string; details?: string; repair?: boolean }>
   capturePreview(siteId: string, force?: boolean): Promise<{ captured: boolean; message: string; details?: string; repair?: boolean; screenshot?: Site['screenshot'] }>
   onRuntimeStatus(listener: (status: RuntimeSnapshot) => void): () => void
+  onDatabaseReady(listener: (result: { database: string; siteIds: string[] }) => void): () => void
 }
 
 declare global {

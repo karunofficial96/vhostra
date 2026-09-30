@@ -39,6 +39,23 @@ test('only accepts credential-free HTTP(S) URLs for external site opening', () =
   assert.throws(() => VhostraStore.validateUrl('https://user:secret@project.local'))
 })
 
+test('database import readiness updates only Sites associated with that database', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'vhostra-db-preview-'))
+  try {
+    const store = new VhostraStore(directory)
+    const first = (await store.addSite({ name: 'CMS', documentRoot: '/projects/cms', url: 'http://cms.local', database: { name: 'cms_db', importExpected: true } })).sites.find(site => site.name === 'CMS')
+    const second = (await store.addSite({ name: 'Other', documentRoot: '/projects/other', url: 'http://other.local', database: { name: 'other_db', importExpected: true } })).sites.find(site => site.name === 'Other')
+    const staticSite = (await store.addSite({ name: 'Static', documentRoot: '/projects/static', url: 'http://static.local' })).sites.find(site => site.name === 'Static')
+    assert.equal(first.database.ready, false)
+    assert.equal(staticSite.database, undefined)
+    assert.deepEqual(await store.markDatabaseImported('cms_db'), [first.id])
+    const reloaded = await new VhostraStore(directory).getState()
+    assert.equal(reloaded.sites.find(site => site.id === first.id).database.ready, true)
+    assert.equal(reloaded.sites.find(site => site.id === second.id).database.ready, false)
+    assert.deepEqual(await store.markDatabaseImported('cms_db'), [])
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
 test('parses hosts entries without treating comments or unrelated aliases as mappings', () => {
   const entries = parseHosts('# keep this comment\n127.0.0.1 localhost project.test # Vhostra\n192.168.1.8 existing.test\n')
   assert.deepEqual([...entries.get('project.test')], ['127.0.0.1'])
@@ -166,4 +183,23 @@ test('migration emits real copy, verification, switch and rollback stages', asyn
     await assert.rejects(store.migrateConfiguration(destination, async () => { throw Error('health failure') }, message => stages.push(message)), /rolled back/)
     assert.match(stages.join('\n'), /Copying.*\nVerifying.*\nSwitching.*\nValidating.*\nRolling back/s)
   } finally { await rm(directory, { recursive: true, force: true }); await rm(destination, { recursive: true, force: true }) }
+})
+
+test('first-run configuration root uses the canonical default and persists an exact selected folder', async () => {
+  const profile = await mkdtemp(path.join(os.tmpdir(), 'vhostra-onboarding-path-'))
+  const destination = await mkdtemp(path.join(os.tmpdir(), 'vhostra-onboarding-destination-'))
+  try {
+    const store = new VhostraStore(profile)
+    assert.equal(store.layout.root, path.join(profile, 'Vhostra'))
+    await store.getState()
+    const selectedRoot = path.join(destination, 'ChosenConfiguration')
+    await mkdir(selectedRoot) // Native Browse selects an existing empty directory.
+    const result = await store.migrateConfigurationRoot(selectedRoot)
+    assert.equal(result.root, selectedRoot)
+    assert.equal(new VhostraStore(profile).layout.root, selectedRoot)
+    await access(path.join(selectedRoot, 'settings.json'))
+  } finally {
+    await rm(profile, { recursive: true, force: true })
+    await rm(destination, { recursive: true, force: true })
+  }
 })

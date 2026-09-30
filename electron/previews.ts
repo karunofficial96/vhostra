@@ -1,6 +1,6 @@
 import { BrowserWindow, session, type Session } from 'electron'
 import { X509Certificate, randomUUID } from 'node:crypto'
-import type { Screenshot, VhostraStore } from './store.js'
+import type { Screenshot, VhostraStore, Site } from './store.js'
 import { SiteUrlResolver, previewIdentity, previewMatches, publicSiteUrl, previewErrorText, validLocalCertificate } from './site-url.js'
 
 export interface PreviewResult { captured: boolean; message: string; details?: string; repair?: boolean; screenshot?: Screenshot }
@@ -14,7 +14,7 @@ export class SitePreviews {
   private activeWindow?: BrowserWindow
   clearFailures() { this.attempted.clear() }
   cancel() { this.activeAbort?.abort(); if (this.activeWindow && !this.activeWindow.isDestroyed()) this.activeWindow.destroy() }
-  constructor(private store: VhostraStore, private resolver: SiteUrlResolver, private visible = () => true) {}
+  constructor(private store: VhostraStore, private resolver: SiteUrlResolver, private visible = () => true, private databaseReady: (site: Site) => Promise<boolean> = async () => true) {}
   capture(id: string, force = false): Promise<PreviewResult> {
     if (this.pending.has(id)) return this.pending.get(id)!
     if (this.pending.size >= 6) return Promise.resolve({ captured: false, message: 'Preview queue is busy. Refresh this preview later.' })
@@ -25,6 +25,7 @@ export class SitePreviews {
     if (!this.visible()) return { captured: false, message: 'Open Dashboard to refresh previews.' }
     const state = await this.store.getState(); const site = state.sites.find(site => site.id === id)
     if (!site) return { captured: false, message: 'Choose an existing Site.' }
+    if (site.database && (!site.database.ready || !await this.databaseReady?.(site))) return { captured: false, message: 'Preview waiting for database setup.' }
     const identity = previewIdentity(state, site)
     const attemptIdentity = JSON.stringify([identity, site.updatedAt, state.virtualHosts.find(host => host.id === site.vhostId)?.aliases])
     if (!force && previewMatches(state, site) && Date.now() - Date.parse(site.screenshot!.capturedAt) < 86400000 && await this.store.readScreenshot(id)) return { captured: false, message: 'Using the cached local preview.', screenshot: site.screenshot }
@@ -84,6 +85,8 @@ export class SitePreviews {
           await currentWindow.webContents.executeJavaScript(`(${waitForVisualReadiness.toString()})()`)
           if (abort.signal.aborted || !this.visible() || currentWindow.isDestroyed()) throw new Error('Preview capture cancelled.')
           if (routingFailure) throw new Error(routingFailure)
+          const incompleteDatabasePage = await currentWindow.webContents.executeJavaScript(`(() => { const text = (document.body?.innerText || '').slice(0, 12000).toLowerCase(); return ['error establishing a database connection', 'database connection failed', 'database connection error', 'could not connect to the database'].some(phrase => text.includes(phrase)) || (text.includes('sqlstate[hy000]') && (text.includes('connection refused') || text.includes('unknown database'))) || ['/wp-admin/install.php', '/wp-admin/setup-config.php'].some(path => location.pathname.endsWith(path)) })()`)
+          if (incompleteDatabasePage) return { captured: false, message: 'Preview waiting for database setup.' }
           const finalUrl = currentWindow.webContents.getURL()
           if (!localUrl(finalUrl)) throw new Error('Site navigation left its mapped local URLs.')
           const image = await currentWindow.webContents.capturePage()
@@ -139,7 +142,7 @@ function waitForVisualReadiness(): Promise<void> {
       const now = performance.now()
       const next = layout()
       if (next !== geometry) { geometry = next; changed = now }
-      if (now - started >= 1100 && now - changed >= 450 && document.readyState === 'complete' && fontsReady && firstViewportImagesReady()) finish()
+      if (now - started >= 2000 && now - changed >= 500 && document.readyState === 'complete' && fontsReady && firstViewportImagesReady()) finish()
     }, 100)
     const deadline = setTimeout(finish, 8000)
     document.fonts?.ready.then(() => { fontsReady = true; mark() }, () => { fontsReady = true })

@@ -9,6 +9,19 @@ const fixture = async task => {
  const profile=await mkdtemp(path.join(os.tmpdir(),'vhostra-db-contract-')); const store=new VhostraStore(profile,path.resolve('dist-welcome')); const state=await store.getState(); const runtime=new DockerRuntimeController(store.layout,()=>store.getState(),undefined,'vhostra-db-contract')
  try { await task({profile,store,state,runtime}) } finally { runtime.dispose();await rm(profile,{recursive:true,force:true}) }
 }
+test('an attempted MariaDB start failure is failed, while an intentional stop is stopped', () => fixture(async ({ runtime }) => {
+  runtime.databaseStatus = async () => 'stopped'
+  runtime.requireDocker = async () => {}
+  runtime.prepareDatabase = async () => {}
+  runtime.startDatabase = async () => { throw new Error('Injected startup failure') }
+  runtime.databaseCompose = async () => ''
+  runtime.refresh = async () => ({ state: 'stopped' })
+  assert.equal((await runtime.listManagedServices()).find(row => row.id === 'mariadb').state, 'stopped')
+  await assert.rejects(runtime.controlManagedService('mariadb', 'start'), /Injected startup failure/)
+  assert.equal((await runtime.listManagedServices()).find(row => row.id === 'mariadb').state, 'failed')
+  await runtime.controlManagedService('mariadb', 'stop')
+  assert.equal((await runtime.listManagedServices()).find(row => row.id === 'mariadb').state, 'stopped')
+}))
 test('database data/config/secrets belong to independent Compose lifecycle and runtime has only local proxies',()=>fixture(async({store,state,runtime})=>{
  await runtime.generate(state)
  const web=await readFile(path.join(store.layout.root,'runtime','compose.yml'),'utf8');const db=await readFile(path.join(store.layout.runtime.mariaDb,'compose.yml'),'utf8')

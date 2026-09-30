@@ -9,6 +9,7 @@ export interface RuntimeSnapshot {
   services: string[]
   progress?: { id: number; lines: string[] }
   updatedAt: string
+  serviceRevision?: number
 }
 
 export interface ServiceConfiguration {
@@ -59,6 +60,7 @@ export interface Site {
   url: string
   vhostId: string
   framework?: string
+  database?: { name: string; importExpected: boolean; ready: boolean }
   screenshot?: SiteScreenshot
   builtIn?: 'localhost'
   createdAt: string

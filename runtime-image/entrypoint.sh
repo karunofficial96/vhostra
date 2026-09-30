@@ -63,7 +63,7 @@ OPCACHE_ENABLED=1
 PHP_INI="/usr/local/lsws/lsphp${VHOSTRA_LSPHP_VERSION}/etc/php/${PHP_VERSION}/litespeed/php.ini"
 sed -i '/; Vhostra PHP policy begin/,/; Vhostra PHP policy end/d' "$PHP_INI"
 {
-  printf '\n; Vhostra PHP policy begin\nexpose_php=Off\nopcache.enable=%s\nopcache.memory_consumption=64\n' "$OPCACHE_ENABLED"
+  printf '\n; Vhostra PHP policy begin\nexpose_php=Off\nopcache.enable=%s\nopcache.memory_consumption=64\nupload_max_filesize=64M\npost_max_size=65M\n' "$OPCACHE_ENABLED"
   cat /etc/vhostra/php/vhostra.ini
   printf '; Vhostra PHP policy end\n'
 } >> "$PHP_INI"

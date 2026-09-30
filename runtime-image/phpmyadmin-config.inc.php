@@ -14,4 +14,5 @@ $cfg['Servers'][1]['user'] = 'vhostra_pma';
 $cfg['Servers'][1]['password'] = '__VHOSTRA_PMA_PASSWORD__';
 $cfg['Servers'][1]['AllowNoPassword'] = false;
 $cfg['Servers'][1]['AllowRoot'] = false;
+$cfg['AllowUserDropDatabase'] = true;
 $cfg['Servers'][1]['compress'] = false;

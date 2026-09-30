@@ -1,15 +1,15 @@
 // Read-only resource acceptance harness; never uses the real desktop profile.
 import { app } from 'electron'
-import { rm } from 'node:fs/promises'
 import { mkdtempSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-const profile = mkdtempSync(path.join(os.tmpdir(), 'vhostra-app-performance-'))
+const profile = mkdtempSync(path.join(process.env.VHOSTRA_PERFORMANCE_ROOT ?? os.tmpdir(), 'vhostra-app-performance-'))
 app.setPath('userData', profile)
 app.whenReady().then(async () => {
 const pause = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
 const applicationSessionRuntimeCleanup = async () => { const { applicationSession } = await import('../dist-electron/main.js'); await applicationSession().runtime.pauseBackgroundWork(); applicationSession().runtime.dispose(); applicationSession().window?.destroy(); await (await import('../dist-electron/logs.js')).drainApplicationLogs() }
 const timeout = setTimeout(() => { console.error('Native resource harness timed out'); app.exit(1) }, 120000)
+let failed = false
 try {
  const { applicationSession } = await import('../dist-electron/main.js')
  await app.whenReady(); await pause(3000)
@@ -32,6 +32,6 @@ try {
  window.show(); await pause(200)
  assert.ok(await window.webContents.executeJavaScript('window.resourceStatusEvents')>0,'Showing window publishes latest snapshot')
  console.log('Hidden progress suppression, show synchronization, and terminal buffer/timer dormancy passed.')
-} finally { clearTimeout(timeout); await applicationSessionRuntimeCleanup(); await rm(profile,{recursive:true,force:true}); app.quit() }
+} catch (error) { failed = true; console.error(error) } finally { clearTimeout(timeout); await applicationSessionRuntimeCleanup(); app.exit(failed ? 1 : 0) }
 
 }).catch(error => { console.error(error); app.exit(1) })

@@ -32,6 +32,7 @@ export interface RuntimeSnapshot {
     message: string;
     services: string[];
     updatedAt: string;
+    serviceRevision?: number;
     progress?: { id: number; lines: string[]; total: number };
 }
 export interface ManagedServiceStatus {
@@ -77,6 +78,9 @@ export class DockerRuntimeController {
     private welcomeWrites: Promise<void> = Promise.resolve();
     private httpsWarning = "";
     private disposed = false;
+    private mariaDbStartFailed = false;
+    private startingServices = new Set<ManagedServiceStatus['id']>();
+    private serviceRevision = 0;
     private counters = { dockerCalls: 0, composeCalls: 0, refreshes: 0, builds: 0, operations: 0 };
     private imageName = "";
     private htaccessWatchers = new Map<string, FSWatcher>();
@@ -255,6 +259,9 @@ export class DockerRuntimeController {
                     services: ["runtime"],
                 });
                 await this.healthCheck(state.settings.selectedWebServer);
+                this.clearStarting('web');
+                this.clearStarting('redis');
+                this.clearStarting('memcached');
                 await this.cleanGenerated(state).catch(error => console.error("Generated cleanup deferred:", error.message));
                 await fs.writeFile(
                     path.join(this.runtimeRoot, "healthy-state.json"),
@@ -610,7 +617,8 @@ export class DockerRuntimeController {
     }
     async listManagedServices(): Promise<ManagedServiceStatus[]> {
         const state = await this.getState();
-        const databaseState = await this.databaseStatus();
+        const actualDatabaseState = await this.databaseStatus();
+        const databaseState = this.startingServices.has('mariadb') ? 'starting' : this.mariaDbStartFailed && ['stopped', 'starting'].includes(actualDatabaseState) ? 'failed' : actualDatabaseState;
         if (this.snapshot.state !== "running")
             return [
                 {
@@ -622,7 +630,7 @@ export class DockerRuntimeController {
                               ? "Apache"
                               : "Nginx",
                     enabled: true,
-                    state:
+                    state: this.startingServices.has('web') ? 'starting' :
                         this.snapshot.state === "unavailable"
                             ? "unavailable"
                             : "stopped",
@@ -638,7 +646,7 @@ export class DockerRuntimeController {
                     label: "Redis",
                     enabled: state.settings.optionalServices.redis,
                     state: state.settings.optionalServices.redis
-                        ? "stopped"
+                        ? this.startingServices.has('redis') ? 'starting' : "stopped"
                         : "disabled",
                 },
                 {
@@ -646,7 +654,7 @@ export class DockerRuntimeController {
                     label: "Memcached",
                     enabled: state.settings.optionalServices.memcached,
                     state: state.settings.optionalServices.memcached
-                        ? "stopped"
+                        ? this.startingServices.has('memcached') ? 'starting' : "stopped"
                         : "disabled",
                 },
             ];
@@ -669,7 +677,11 @@ export class DockerRuntimeController {
             const value = rows.get(name) ?? "";
             if (value === "RUNNING") return "running";
             if (value === "STARTING") return "starting";
-            if (value === "STOPPED" || value === "EXITED") return "stopped";
+            if (value === "STOPPED") return "stopped";
+            if (value === "EXITED" || value === "FATAL" || value === "BACKOFF") return "failed";
+            // An absent optional process or a runtime being deliberately stopped
+            // is not evidence of a failed start.
+            if (!value || value === "UNKNOWN") return "stopped";
             return "failed";
         };
         return [
@@ -682,7 +694,7 @@ export class DockerRuntimeController {
                           ? "Apache"
                           : "Nginx",
                 enabled: true,
-                state: supervisorState("web"),
+                state: this.startingServices.has('web') ? 'starting' : supervisorState("web"),
             },
             {
                 id: "mariadb",
@@ -695,7 +707,7 @@ export class DockerRuntimeController {
                 label: "Redis",
                 enabled: state.settings.optionalServices.redis,
                 state: state.settings.optionalServices.redis
-                    ? supervisorState("redis")
+                    ? this.startingServices.has('redis') ? 'starting' : supervisorState("redis")
                     : "disabled",
             },
             {
@@ -703,7 +715,7 @@ export class DockerRuntimeController {
                 label: "Memcached",
                 enabled: state.settings.optionalServices.memcached,
                 state: state.settings.optionalServices.memcached
-                    ? supervisorState("memcached")
+                    ? this.startingServices.has('memcached') ? 'starting' : supervisorState("memcached")
                     : "disabled",
             },
         ];
@@ -714,10 +726,13 @@ export class DockerRuntimeController {
     ) {
         const state = await this.getState();
         if (id === "mariadb") return this.runExclusive(action === "stop" ? "stopping" : "starting", `${actionLabel(action)} MariaDB…`, async () => {
-            await this.requireDocker();
-            if (action === "stop") await this.databaseCompose(["stop", "mariadb"]);
-            else { await this.prepareDatabase(state); if (action === "restart") await this.databaseCompose(["stop", "mariadb"]); await this.startDatabase(); }
-            await this.refresh(); return this.listManagedServices();
+            try {
+                await this.requireDocker();
+                if (action === "stop") await this.databaseCompose(["stop", "mariadb"]);
+                else { await this.prepareDatabase(state); if (action === "restart") await this.databaseCompose(["stop", "mariadb"]); await this.startDatabase(); }
+                this.mariaDbStartFailed = false;
+                await this.refresh(); return this.listManagedServices();
+            } catch (error) { if (action !== 'stop') this.mariaDbStartFailed = true; throw error; }
         });
         const name = id === "web" ? "web" : id;
         if (
@@ -740,6 +755,7 @@ export class DockerRuntimeController {
             `${actionLabel(action)} ${id === "web" ? "the active web server" : id}…`,
             async () => {
                 await this.requireDocker();
+                if (action !== 'stop') this.markStarting(id);
                 await this.compose([
                     "exec",
                     "-T",
@@ -770,6 +786,7 @@ export class DockerRuntimeController {
                         "-lc",
                         `printf 'version\\r\\n' | nc -w 3 127.0.0.1 ${state.settings.ports.memcached} | grep -q '^VERSION'`,
                     ]);
+                this.clearStarting(id);
                 await this.refresh();
                 return this.listManagedServices();
             },
@@ -1145,6 +1162,22 @@ export class DockerRuntimeController {
     private async databaseAccountExists(username: string, host: string) {
         return (await this.accountSql(`SELECT COUNT(*) FROM mysql.user WHERE BINARY User=${sqlLiteral(username)} AND BINARY Host=${sqlLiteral(host)} AND is_role='N'`)).trim() === '1';
     }
+    async changeDatabaseUserPassword(input: { username: string; host: string; password: string }) {
+        const identity = this.databaseAccount(input.username, input.host);
+        if (!await this.databaseAccountExists(input.username, input.host)) throw new Error('This database user no longer exists. Refresh the list.');
+        if (typeof input.password !== 'string' || input.password.length < 12) throw new Error('The new password must contain at least 12 characters.');
+        try { await this.accountSql(`ALTER USER ${identity} IDENTIFIED BY ${sqlLiteral(input.password)}`); }
+        catch (error) { throw new Error(redactProgress(error instanceof Error ? error.message : String(error), [input.password])); }
+        return { message: 'Database user password changed successfully.' };
+    }
+    async deleteDatabaseUser(input: { username: string; host: string }) {
+        const identity = this.databaseAccount(input.username, input.host);
+        if (!await this.databaseAccountExists(input.username, input.host)) throw new Error('This database user no longer exists. Refresh the list.');
+        const account = (await this.listDatabaseUsers()).find(row => row.username === input.username && row.host === input.host);
+        if (!account || account.globalPrivileges.length || account.roles.length) throw new Error('This account has global privileges or roles and cannot be deleted from Vhostra. Review it in MariaDB.');
+        await this.accountSql(`DROP USER ${identity}`);
+        return { message: 'Database user deleted successfully.' };
+    }
     /** Credentials travel only over stdin; no files, argv, environment or stored plaintext. */
     async checkDatabaseAccess(input: { username: string; host: string; password: string; database?: string; verifyWrites?: boolean }) {
         input = { ...input, host: typeof input.host === 'string' ? input.host.toLowerCase() : input.host };
@@ -1495,6 +1528,7 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
         const previousMessage = this.snapshot.message;
         this.snapshot = {
             ...next,
+            serviceRevision: this.serviceRevision,
             progress: this.progress ? { ...this.progress, lines: [...this.progress.lines] } : undefined,
             message: redactProgress(message, this.secrets),
             updatedAt: new Date().toISOString(),
@@ -1504,6 +1538,18 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
             .catch(error => { console.error("Vhostra welcome update failed:", redactProgress(error instanceof Error ? error.message : String(error), this.secrets)); });
         this.listeners.forEach((listener) => listener());
         return this.snapshot;
+    }
+    private markStarting(id: ManagedServiceStatus['id']) {
+        this.startingServices.add(id);
+        this.serviceRevision++;
+        this.snapshot = { ...this.snapshot, serviceRevision: this.serviceRevision };
+        this.listeners.forEach(listener => listener());
+    }
+    private clearStarting(id: ManagedServiceStatus['id']) {
+        if (!this.startingServices.delete(id)) return;
+        this.serviceRevision++;
+        this.snapshot = { ...this.snapshot, serviceRevision: this.serviceRevision };
+        this.listeners.forEach(listener => listener());
     }
     private async runExclusive<T>(
         state: RuntimeState,
@@ -1545,6 +1591,11 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
             )
             .finally(() => {
                 this.operation = null;
+                if (this.startingServices.size) {
+                    this.startingServices.clear();
+                    this.serviceRevision++;
+                    this.snapshot = { ...this.snapshot, serviceRevision: this.serviceRevision };
+                }
                 clearTimeout(this.progressNotification); this.progressNotification = undefined;
                 this.progress = undefined;
                 this.snapshot = { ...this.snapshot, progress: undefined };
@@ -1593,6 +1644,12 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
             if (!compatible) throw new Error("The compatible runtime tag is owned by an unrecognized image; refusing to overwrite it.");
         }
         if (!compatible) { this.counters.builds++; await this.compose(["build", "runtime"]); }
+        if (this.snapshot.state !== 'running' || forceRecreate) {
+            const state = await this.getState();
+            this.markStarting('web');
+            if (state.settings.optionalServices.redis) this.markStarting('redis');
+            if (state.settings.optionalServices.memcached) this.markStarting('memcached');
+        }
         await this.compose(["up", "--detach", "--no-build", "--pull", "never", ...(forceRecreate ? ["--force-recreate"] : []), "--no-deps", "runtime"]);
     }
     private async requireDocker() {
@@ -2152,6 +2209,9 @@ foreach (['localhost', '127.0.0.1'] as $host) {
                     "The requested cwebp binary is unavailable in the Vhostra runtime.",
                 );
         }
+        this.clearStarting('web');
+        this.clearStarting('redis');
+        this.clearStarting('memcached');
     }
     private async availablePhpPackages() {
         const state = await this.getState();
@@ -2320,7 +2380,7 @@ foreach (['localhost', '127.0.0.1'] as $host) {
             if (!ids.length) return "stopped";
             const [row] = JSON.parse(await this.docker(["inspect", ...ids]));
             if (row.State.Status === "restarting" || row.State.Status === "created") return "starting";
-            if (!row.State.Running) return row.State.ExitCode ? "failed" : "stopped";
+            if (!row.State.Running) return row.State.OOMKilled || row.State.Error || (row.State.ExitCode && ![137, 143].includes(row.State.ExitCode)) ? "failed" : "stopped";
             return row.State.Health?.Status === "healthy" ? "running" : row.State.Health?.Status === "unhealthy" ? "unhealthy" : "starting";
         } catch { return "unavailable"; }
     }
@@ -2421,8 +2481,10 @@ networks:
         } else await this.databaseCompose(["build", "mariadb"]);
         // No force-recreate and no automatic rebuild on PHP/server changes.
         await this.databaseContainerIds(true);
+        if (await this.databaseStatus() !== 'running') this.markStarting('mariadb');
         await this.databaseCompose(["up", "--detach", "--no-build", "--pull", "never", "mariadb"]);
         await this.waitForDatabase();
+        this.clearStarting('mariadb');
     }
     private async waitForDatabase() {
         for (let attempt = 0; attempt < 90; attempt++) {
@@ -2725,7 +2787,7 @@ function nginxConfig(
     }>,
     httpsEnabled: boolean,
 ) {
-    return `${mounts.map(({ host, container }) => `server {\n  server_tokens off;\n  listen 8088${host.builtIn ? " default_server" : ""};\n  ${httpsEnabled ? `listen 8443 ssl${host.builtIn ? " default_server" : ""};\n  ssl_certificate /etc/vhostra/certificates/public/localhost.pem;\n  ssl_certificate_key /etc/vhostra/certificates/private/localhost.key;\n  ssl_protocols TLSv1.2 TLSv1.3;` : ""}\n  server_name ${[host.hostname, ...host.aliases].join(" ")};\n  add_header X-Vhostra-Site "${host.id}" always;\n  proxy_hide_header X-Vhostra-Site;\n  root ${container};\n  index ${(host.indexFiles ?? ["index.php", "index.html"]).join(" ")};\n  access_log /var/log/vhostra/sites/${host.id}/access.log;\n  error_log /var/log/vhostra/sites/${host.id}/error.log;\n  location ~ /\\. { deny all; }\n  # Vhostra managed WordPress-compatible front controller. Unsupported .htaccess directives remain reported in the neutral model.\n  location / { try_files $uri $uri/ ${host.rewriteEnabled === false ? "=404" : "/index.php?$query_string"}; }\n  location ~ \\.php(?:/|$) { proxy_set_header Host $http_host; proxy_set_header X-Forwarded-Proto $scheme; proxy_set_header X-Vhostra-Request-Line ""; proxy_set_header X-Vhostra-Request-Uri $request_uri; proxy_pass http://127.0.0.1:8089; }\n}\n`).join("\n")}`;
+    return `${mounts.map(({ host, container }) => `server {\n  server_tokens off;\n  listen 8088${host.builtIn ? " default_server" : ""};\n  ${httpsEnabled ? `listen 8443 ssl${host.builtIn ? " default_server" : ""};\n  ssl_certificate /etc/vhostra/certificates/public/localhost.pem;\n  ssl_certificate_key /etc/vhostra/certificates/private/localhost.key;\n  ssl_protocols TLSv1.2 TLSv1.3;` : ""}\n  server_name ${[host.hostname, ...host.aliases].join(" ")};\n  client_max_body_size 65m;\n  add_header X-Vhostra-Site "${host.id}" always;\n  proxy_hide_header X-Vhostra-Site;\n  root ${container};\n  index ${(host.indexFiles ?? ["index.php", "index.html"]).join(" ")};\n  access_log /var/log/vhostra/sites/${host.id}/access.log;\n  error_log /var/log/vhostra/sites/${host.id}/error.log;\n  location ~ /\\. { deny all; }\n  # Vhostra managed WordPress-compatible front controller. Unsupported .htaccess directives remain reported in the neutral model.\n  location / { try_files $uri $uri/ ${host.rewriteEnabled === false ? "=404" : "/index.php?$query_string"}; }\n  location ~ \\.php(?:/|$) { proxy_set_header Host $http_host; proxy_set_header X-Forwarded-Proto $scheme; proxy_set_header X-Vhostra-Request-Line ""; proxy_set_header X-Vhostra-Request-Uri $request_uri; proxy_pass http://127.0.0.1:8089; }\n}\n`).join("\n")}`;
 }
 function openLiteSpeedConfig(
     mounts: Array<{

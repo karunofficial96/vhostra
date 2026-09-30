@@ -265,3 +265,28 @@ New acceptance: production build `/private/tmp/vhostra-db-build.log`; **99/99** 
 - [ ] Inherited native Windows/Linux, protected administrative prompts, signed/login/release and licensed Enterprise acceptance still require their recorded environments. This phase does not mark those boundaries complete.
 
 Detailed evidence and diagnosis: `docs/site-previews.md`. Original database/runtime/privacy/selection work remains in the repository.
+
+## Service/database UX phase — reopened 2026-09-30
+
+- [x] Shared stopped/failed mapping and Dashboard runtime-status colon; isolated actual stopped, independent running, and occupied-port failed-start acceptance passed.
+- [x] Exact User@Host Change Password and confirmed Delete controls; live account/host-variant and renderer acceptance passed. Accounts with global privileges or roles are protected.
+- [x] Reusable Show/Hide Password on all current database-entry fields; native hidden/reveal/hide and unchanged-value acceptance passed.
+- [x] Database operation result scroll in the content pane; native completion assertion passed.
+- [x] Explicit database dependency and pending-import metadata; pre-render preview gate; matching event-driven readiness; real PHP/SQL first-preview acceptance passed.
+- [x] Sequential local service, account, preview, scroll, privacy-source and scoped CPU/RAM/storage acceptance. Evidence and limits are in VHOSTRA_EXECUTION_STATE.md and PERFORMANCE.md.
+- [x] Delete scope is the isolated Vhostra-owned MariaDB instance; exact User@Host confirmation, grant summary, named internal-account protection and global privilege/role refusal are verified. Origin-tool provenance for ordinary accounts is not recorded; optional registry hardening is documented in VHOSTRA_EXECUTION_STATE.md.
+
+2026-09-30 continuation: explicit Site database association, pending SQL-import state, pre-render MariaDB/database availability gate and import event have now been implemented; focused persistence test passed. The unchecked gate above remains open for native first-preview and resource acceptance.
+
+## Required fixes continuation (2026-09-30)
+
+- [x] Diagnosed phpMyAdmin restriction from actual account/grants/config and phpMyAdmin controller: `vhostra_pma` is a dedicated `mysql_native_password` account with global administrative grants; phpMyAdmin defaults `AllowUserDropDatabase` to false for non-superuser UI. Enabled the setting and verified isolated HTTP create/import/export with structure and data/browse/alter/drop and account/grant operations against real MariaDB. The export page initially failed because PHP cURL was absent; it is now a required runtime extension.
+- [x] Database actions render under every name, including short, medium and long fixtures; geometry and light-theme screenshot inspected.
+- [x] First-run Local Configuration Path step has canonical prefilled root, editable input, native Browse, exact selected-root migration through the existing verified copy/pointer transaction. The selected existing empty folder now works through a verified sibling staging copy. Native Continue, invalid relative-path rejection, renderer reload and new-store pointer persistence passed in an isolated Docker scope.
+- [x] Logs now has source selection, bounded file list and on-demand 64 KiB viewer with selectable path/output; empty and loaded real-log states plus light/dark surface screenshots inspected.
+- [x] Backend publishes MariaDB Starting on actual Compose startup, preserves Stopped after an intentional stop, and reports an isolated genuine failed start. Selected frontend/cache Starting state uses real Compose/Supervisor operations and a bounded revision event.
+- [ ] Security closure: the dedicated phpMyAdmin account still has global `ALL ... WITH GRANT OPTION`. phpMyAdmin's database-destroy controller excludes built-in schemas, but SQL and account operations can still reach internal objects. A MariaDB-level isolation design is required before claiming internal system objects are fully protected.
+- [ ] Isolate phpMyAdmin administrative credentials from arbitrary Site PHP within the shared runtime. The existing config/env architecture keeps them out of renderer/URL/logs but is not a security boundary against local Site code in the same container.
+- [x] Native Logs acceptance covered a real 73 KiB file with a 70,000-character line and 500 further lines, the 64 KiB tail/truncation notice, wrapping at the 860 px minimum window, and a removed-file read error with selectable diagnostic text. The narrow screenshot was inspected.
+- [ ] Complete actual system-theme Logs check, full Electron process restart after a selected configuration path, and backup-import onboarding interaction under an isolated desktop profile.
+- [ ] Verify all represented service transitions including safe actual failure cases for web/cache/PHP/phpMyAdmin. Matched pre/post-cURL isolated Nginx/MariaDB and clean packaged Electron idle samples are recorded in PERFORMANCE.md; broader platform and workload budgets remain open.

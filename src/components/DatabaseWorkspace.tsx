@@ -1,6 +1,7 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { ServiceBrand } from './ServiceBrand'
 import { ErrorNotice } from './ErrorNotice'
+import { PasswordField } from './PasswordField'
 type Account = Awaited<ReturnType<NonNullable<Window['vhostra']>['listDatabaseUsers']>>[number]
 export function DatabaseWorkspace({ running, applicationRunning, port }: { running: boolean; applicationRunning: boolean; port: number }) {
   const [databases, setDatabases] = useState<string[]>([])
@@ -16,6 +17,26 @@ export function DatabaseWorkspace({ running, applicationRunning, port }: { runni
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
   const [success, setSuccess] = useState<string | null>(null)
+  const [editingUser, setEditingUser] = useState<Account | null>(null)
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const root = useRef<HTMLDivElement>(null)
+  const passwordDialog = useRef<HTMLFormElement>(null)
+  useEffect(() => {
+    if (!editingUser) return
+    const previous = document.activeElement as HTMLElement | null
+    passwordDialog.current?.querySelector<HTMLButtonElement>('button[data-cancel]')?.focus()
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !busy) { setEditingUser(null); setNewPassword(''); setConfirmPassword('') }
+      if (event.key !== 'Tab') return
+      const controls = [...(passwordDialog.current?.querySelectorAll<HTMLElement>('input,button:not(:disabled)') ?? [])]
+      if (event.shiftKey && document.activeElement === controls[0]) { event.preventDefault(); controls.at(-1)?.focus() }
+      else if (!event.shiftKey && document.activeElement === controls.at(-1)) { event.preventDefault(); controls[0]?.focus() }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('keydown', onKey); previous?.focus() }
+  }, [editingUser, busy])
+  const revealResult = () => requestAnimationFrame(() => { let node = root.current?.parentElement; while (node && getComputedStyle(node).overflowY !== 'auto') node = node.parentElement; if (node) node.scrollTo({ top: 0, behavior: 'smooth' }) })
   const key = (user: Account) => JSON.stringify([user.username, user.host])
   const account = users.find(user => key(user) === selected)
   const duplicate = !account && /database user already exists/i.test(String(error)) ? users.find(user => user.username === username && user.host === host.toLowerCase()) : undefined
@@ -27,8 +48,8 @@ export function DatabaseWorkspace({ running, applicationRunning, port }: { runni
   useEffect(() => { if (!success) return; const timer = setTimeout(() => setSuccess(null), 6000); return () => clearTimeout(timer) }, [success])
   const perform = async (operation: () => Promise<unknown>, message: string) => {
     setBusy(true); setError(null); setSuccess(null)
-    try { const result = await operation(); if (result === null) return; await refresh(); setSuccess(message) }
-    catch (reason) { setError(reason); await refresh().catch(() => {}) }
+    try { const result = await operation(); if (result === null) return; await refresh(); setSuccess(message); revealResult() }
+    catch (reason) { setError(reason); revealResult(); await refresh().catch(() => {}) }
     finally { setBusy(false); setPassword('') }
   }
   const credentials = () => ({ username: account?.username ?? username, host: account?.host ?? host, password })
@@ -42,7 +63,7 @@ export function DatabaseWorkspace({ running, applicationRunning, port }: { runni
   }
   const inputClass = 'input mt-2'
   const actionClass = 'h-9 rounded-full border border-[#E5E5E5] px-4 text-sm font-medium disabled:opacity-50'
-  return <div className="mx-auto max-w-[900px] px-6 py-6 lg:px-8">
+  return <div ref={root} className="mx-auto max-w-[900px] px-6 py-6 lg:px-8">
     <ServiceBrand name="MariaDB"/><h1 className="mt-4 text-2xl font-bold">MariaDB</h1>
     <p className="mt-2 text-sm leading-5 text-[#606060]">PHP applications connect using <span className="selectable font-mono">localhost:3306</span>. Host database tools connect using <span className="selectable font-mono">127.0.0.1:{port}</span>.</p>
     {error != null && <ErrorNotice error={error} onDismiss={() => setError(null)}/>}
@@ -66,7 +87,7 @@ export function DatabaseWorkspace({ running, applicationRunning, port }: { runni
           <p className="text-xs leading-5 text-[#606060] md:col-span-2">Host determines where this database user is allowed to connect from. Vhostra’s localhost gateway connects as localhost. Other hosts remain separate accounts and may not match this connection.</p>
         </>}
         {account && <p className="text-xs leading-5 text-[#606060] md:col-span-2">Enter this account’s password to verify access. Vhostra cannot display its existing password. Existing grants and passwords are preserved unless you choose to change the password.</p>}
-        <label className="text-sm font-medium md:col-span-2">{resetPassword ? 'New Password' : account ? 'Password to Verify Access' : 'Password'}<input aria-label="Database Password" autoComplete="new-password" type="password" required minLength={!account || resetPassword ? 12 : undefined} value={password} onChange={event => setPassword(event.target.value)} className={inputClass}/></label>
+        <PasswordField className="md:col-span-2" label={resetPassword ? 'New Password' : account ? 'Password to Verify Access' : 'Password'} ariaLabel="Database Password" autoComplete={account && !resetPassword ? 'current-password' : 'new-password'} minLength={!account || resetPassword ? 12 : undefined} value={password} onChange={event => setPassword(event.target.value)}/>
         {!account && <button type="button" className={actionClass} onClick={() => { const alphabet='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_'; setPassword(Array.from(crypto.getRandomValues(new Uint8Array(24)), value=>alphabet[value % alphabet.length]).join('')) }}>Generate Password</button>}
         {accessDatabase && account && <label className="flex items-center gap-2 text-sm md:col-span-2"><input type="checkbox" checked={resetPassword} onChange={event => { setResetPassword(event.target.checked); setPassword('') }}/>Change this account’s password for all its databases</label>}
         <div className="flex flex-wrap justify-end gap-3 md:col-span-2">
@@ -77,7 +98,7 @@ export function DatabaseWorkspace({ running, applicationRunning, port }: { runni
         </fieldset>
       </form>
       <div className="mt-6 flex items-center justify-between gap-4"><h2 className="text-xl font-medium">Databases</h2><button disabled={busy} onClick={() => void refresh().catch(setError)} className={actionClass}>Refresh</button></div>
-      <div className="mt-4 divide-y divide-[#E5E5E5] border-y border-[#E5E5E5]">{databases.map(database => <div key={database} data-database={database} className="flex flex-wrap items-center justify-between gap-4 py-4"><span className="selectable font-mono text-sm">{database}</span><div className="flex flex-wrap gap-2">
+      <div className="mt-4 divide-y divide-[#E5E5E5] border-y border-[#E5E5E5]">{databases.map(database => <div key={database} data-database={database} className="min-w-0 py-4"><p className="selectable min-w-0 break-all font-mono text-sm leading-5">{database}</p><div className="mt-4 flex flex-wrap items-center gap-3">
         <button disabled={busy} className={actionClass} onClick={() => { setAccessDatabase(database); setSelected(users[0] ? key(users[0]) : 'custom'); setPassword(''); setResetPassword(false) }}>Database Access</button>
         <button disabled={busy} className={actionClass} onClick={() => void window.vhostra!.openPhpMyAdmin(database).catch(setError)}>Manage with phpMyAdmin</button>
         <button disabled={busy} className={actionClass} onClick={() => void perform(() => window.vhostra!.importDatabase(database), 'Database imported successfully.')}>Import</button>
@@ -85,7 +106,8 @@ export function DatabaseWorkspace({ running, applicationRunning, port }: { runni
         <button disabled={busy} className={actionClass} onClick={() => void perform(() => window.vhostra!.repairDatabase(database), 'Database checked successfully.')}>Repair</button>
         <button disabled={busy} className={`${actionClass} text-[#FF0000]`} onClick={() => { if (window.confirm(`Delete database “${database}”? This permanently removes its tables and data. Database users are not removed.`)) void perform(() => window.vhostra!.deleteDatabase(database), 'Database deleted successfully.') }}>Delete</button>
       </div></div>)}{databases.length === 0 && <p className="py-8 text-center text-sm text-[#606060]">No databases yet. Create one above.</p>}</div>
-      <h2 className="mt-6 text-xl font-medium">Database Users</h2><div className="mt-4 divide-y divide-[#E5E5E5] border-y border-[#E5E5E5]">{users.map(user => <article key={key(user)} className="py-4"><p className="selectable font-mono text-sm">{user.username} @ {user.host}</p><p className="mt-2 text-xs text-[#606060]">Database Access</p><p className="selectable mt-1 break-all text-xs leading-5">{user.access.length ? user.access.map(access => `${access.database}: ${access.privilege}`).join(' · ') : 'No direct database grants.'}</p>{user.globalPrivileges?.length > 0 && <p className="mt-2 text-xs">Global privileges: <span className="selectable">{user.globalPrivileges.join(', ')}</span></p>}{user.roles?.length > 0 && <p className="mt-2 text-xs">Roles: <span className="selectable">{user.roles.join(', ')}</span></p>}</article>)}{users.length === 0 && <p className="py-4 text-sm text-[#606060]">No application database users yet.</p>}</div>
+      <h2 className="mt-6 text-xl font-medium">Database Users</h2><div className="mt-4 divide-y divide-[#E5E5E5] border-y border-[#E5E5E5]">{users.map(user => <article key={key(user)} className="py-4"><p className="selectable font-mono text-sm">{user.username} @ {user.host}</p><p className="mt-2 text-xs text-[#606060]">Database Access</p><p className="selectable mt-1 break-all text-xs leading-5">{user.access.length ? user.access.map(access => `${access.database}: ${access.privilege}`).join(' · ') : 'No direct database grants.'}</p>{user.globalPrivileges?.length > 0 && <p className="mt-2 text-xs">Global privileges: <span className="selectable">{user.globalPrivileges.join(', ')}</span></p>}{user.roles?.length > 0 && <p className="mt-2 text-xs">Roles: <span className="selectable">{user.roles.join(', ')}</span></p>}<div className="mt-4 flex flex-wrap gap-3"><button disabled={busy} className={actionClass} onClick={() => { setEditingUser(user); setNewPassword(''); setConfirmPassword('') }}>Change Password</button>{!user.globalPrivileges?.length && !user.roles?.length && <button disabled={busy} className={`${actionClass} text-[#FF0000]`} onClick={() => { const identity = `${user.username} @ ${user.host}`; const access = user.access.map(item => item.database).filter((name, index, all) => all.indexOf(name) === index); if (window.confirm(`Delete database user ${identity}? ${access.length ? `This removes access to ${access.join(', ')}.` : 'This account has no direct database grants.'} The account and its grants will be removed.`)) void perform(() => window.vhostra!.deleteDatabaseUser({ username: user.username, host: user.host }), 'Database user deleted successfully.') }}>Delete</button>}</div></article>)}{users.length === 0 && <p className="py-4 text-sm text-[#606060]">No application database users yet.</p>}</div>
+      {editingUser && <div role="dialog" aria-modal="true" aria-label="Change database user password" className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6"><form ref={passwordDialog} onSubmit={event => { event.preventDefault(); if (newPassword !== confirmPassword) { setError(new Error('New passwords do not match.')); setEditingUser(null); revealResult(); return } const user = editingUser; void perform(() => window.vhostra!.changeDatabaseUserPassword({ username: user.username, host: user.host, password: newPassword }), 'Database user password changed successfully.').finally(() => { setNewPassword(''); setConfirmPassword(''); setEditingUser(null) }) }} className="w-full max-w-md space-y-4 rounded-lg bg-white p-6 text-[#0F0F0F]"><h2 className="text-xl font-medium">Change Password</h2><p className="selectable font-mono text-sm">{editingUser.username} @ {editingUser.host}</p><PasswordField label="New Password" value={newPassword} minLength={12} onChange={event => setNewPassword(event.target.value)}/><PasswordField label="Confirm New Password" value={confirmPassword} minLength={12} onChange={event => setConfirmPassword(event.target.value)}/><div className="flex justify-end gap-3"><button type="button" data-cancel className={actionClass} onClick={() => { setEditingUser(null); setNewPassword(''); setConfirmPassword('') }}>Cancel</button><button type="submit" disabled={busy} className="h-9 rounded-full bg-[#FF0000] px-4 text-sm font-medium text-white disabled:opacity-50">Change Password</button></div></form></div>}
     </> : <p className="mt-6 rounded-lg bg-[#F2F2F2] p-4 text-sm text-[#606060]">Start MariaDB in Services to create and list persistent databases.</p>}
   </div>
 }

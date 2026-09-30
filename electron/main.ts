@@ -109,10 +109,13 @@ const trayIcon = app.isPackaged
 function createRuntimeController() {
     services?.dispose();
     trayStatusKey = "";
+    const testScope = process.env.VHOSTRA_TEST_SCOPE;
+    if (testScope && (app.isPackaged || !/^vhostra-[a-z0-9-]+$/.test(testScope))) throw new Error('Invalid isolated Vhostra test scope.');
     services = new DockerRuntimeController(
         store.layout,
         () => store.getState(),
         (message) => store.updateLocalhostWelcome(message),
+        testScope,
     );
     hosts = new HostsFileManager(path.join(store.layout.root, "temporary"), path.join(store.layout.backups, "hosts"));
     const controller = services;
@@ -629,6 +632,9 @@ function registerIpc() {
                 throw new Error(
                     "Choose an absolute local configuration destination.",
                 );
+            const onboarding = await store.getOnboarding();
+            const selectedRoot = onboarding.completed ? path.resolve(directory, 'Vhostra') : path.resolve(directory);
+            if (selectedRoot === store.layout.root) return { root: selectedRoot, message: 'Vhostra is already using this local configuration path.' };
             if (migrationProgress || services.current().progress) throw new Error("A Vhostra operation is already in progress.");
             migrationProgress = { id: -Date.now(), lines: [], total: 0 };
             recordMigrationStage("Preparing configuration migration…");
@@ -640,7 +646,7 @@ function registerIpc() {
             try {
                 await services.resetRuntime(false);
                 await services.pauseBackgroundWork();
-                const result = await store.migrateConfiguration(
+                const result = await (onboarding.completed ? store.migrateConfiguration.bind(store) : store.migrateConfigurationRoot.bind(store))(
                     directory,
                     async () => {
                         createRuntimeController();
@@ -790,7 +796,11 @@ function registerIpc() {
     });
     let dashboardVisible = false;
     const previewVisible = () => dashboardVisible && Boolean(primaryWindow?.isVisible()) && !primaryWindow?.isMinimized();
-    const previews = new SitePreviews(store, siteUrls, previewVisible);
+    const previews = new SitePreviews(store, siteUrls, previewVisible, async site => {
+        if (!site.database) return true;
+        const database = (await services.listManagedServices()).find(row => row.id === 'mariadb');
+        return database?.state === 'running' && (await services.listDatabases()).includes(site.database.name);
+    });
     cancelPreviewCapture = () => previews.cancel();
     clearPreviewFailures = () => previews.clearFailures();
     handle("vhostra:preview-activity", (_event, visible: boolean) => { dashboardVisible = visible === true; if (!dashboardVisible) previews.cancel(); });
@@ -844,6 +854,8 @@ function registerIpc() {
     );
     handle("vhostra:list-databases", () => services.listDatabases());
     handle("vhostra:list-database-users", () => services.listDatabaseUsers());
+    handle("vhostra:change-database-user-password", (_event, input) => services.changeDatabaseUserPassword(input));
+    handle("vhostra:delete-database-user", (_event, input) => services.deleteDatabaseUser(input));
     handle("vhostra:check-database-access", (_event, input) => services.checkDatabaseAccess(input));
     handle("vhostra:update-database-access", (_event, input) => services.updateDatabaseAccess(input));
     handle("vhostra:list-php-extensions", () =>
@@ -897,9 +909,11 @@ function registerIpc() {
             return result;
         },
     );
-    handle("vhostra:create-database", (_event, input) =>
-        services.createDatabase(input),
-    );
+    handle("vhostra:create-database", async (_event, input) => {
+        const created = await services.createDatabase(input);
+        primaryWindow?.webContents.send('vhostra:database-ready', { database: created.name, siteIds: [] });
+        return created;
+    });
     handle(
         "vhostra:open-phpmyadmin",
         async (_event, database?: string) => {
@@ -914,9 +928,11 @@ function registerIpc() {
                 properties: ["openFile"],
                 filters: [{ name: "SQL database dump", extensions: ["sql"] }],
             });
-            return result.canceled || !result.filePaths[0]
-                ? null
-                : services.importDatabase(database, result.filePaths[0]);
+            if (result.canceled || !result.filePaths[0]) return null;
+            const imported = await services.importDatabase(database, result.filePaths[0]);
+            const pendingSites = await store.markDatabaseImported(database);
+            primaryWindow?.webContents.send('vhostra:database-imported', { database, siteIds: pendingSites });
+            return imported;
         },
     );
     handle(
