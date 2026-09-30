@@ -75,13 +75,13 @@ export class SitePreviews {
           window.webContents.on('will-navigate', (event, destination) => { if (!localUrl(destination)) event.preventDefault() })
           window.webContents.on('will-redirect', (event, destination) => { if (!localUrl(destination)) event.preventDefault() })
           const currentWindow = window
-          // DOM readiness plus bounded render time: analytics/long polling cannot hold capture open.
+          // DOM readiness starts a temporary, bounded visual readiness check.
           await new Promise<void>((resolve, reject) => {
             currentWindow.webContents.once('dom-ready', () => resolve())
             void currentWindow.loadURL(resolved.url!).catch(reject)
           })
           await currentWindow.webContents.insertCSS('* { scrollbar-width: none !important; } *::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }', { cssOrigin: 'user' })
-          await new Promise<void>(resolve => { const renderTimer = setTimeout(done, 500); function done() { clearTimeout(renderTimer); abort.signal.removeEventListener('abort', done); resolve() } abort.signal.addEventListener('abort', done, { once: true }); if (abort.signal.aborted) done() })
+          await currentWindow.webContents.executeJavaScript(`(${waitForVisualReadiness.toString()})()`)
           if (abort.signal.aborted || !this.visible() || currentWindow.isDestroyed()) throw new Error('Preview capture cancelled.')
           if (routingFailure) throw new Error(routingFailure)
           const finalUrl = currentWindow.webContents.getURL()
@@ -111,6 +111,40 @@ export class SitePreviews {
   }
 }
 function preventDownload(event: Electron.Event) { event.preventDefault() }
+
+/** Runs only in the transient capture renderer; all observation ends before capture. */
+function waitForVisualReadiness(): Promise<void> {
+  return new Promise(resolve => {
+    const started = performance.now()
+    let changed = started
+    let fontsReady = !document.fonts || document.fonts.status === 'loaded'
+    const mark = () => { changed = performance.now() }
+    const observer = new MutationObserver(mark)
+    observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true })
+    const layout = () => {
+      const root = document.documentElement
+      const visible = Array.from(document.body?.children ?? []).slice(0, 24).map(element => {
+        const box = element.getBoundingClientRect()
+        return [Math.round(box.x), Math.round(box.y), Math.round(box.width), Math.round(box.height)].join(',')
+      }).join(';')
+      return `${root.scrollWidth}:${root.scrollHeight}:${visible}`
+    }
+    let geometry = layout()
+    const firstViewportImagesReady = () => Array.from(document.images).every(image => {
+      const rect = image.getBoundingClientRect()
+      return rect.bottom <= 0 || rect.top >= innerHeight || rect.right <= 0 || rect.left >= innerWidth || image.complete
+    })
+    const finish = () => { clearInterval(sample); clearTimeout(deadline); observer.disconnect(); resolve() }
+    const sample = setInterval(() => {
+      const now = performance.now()
+      const next = layout()
+      if (next !== geometry) { geometry = next; changed = now }
+      if (now - started >= 1100 && now - changed >= 450 && document.readyState === 'complete' && fontsReady && firstViewportImagesReady()) finish()
+    }, 100)
+    const deadline = setTimeout(finish, 8000)
+    document.fonts?.ready.then(() => { fontsReady = true; mark() }, () => { fontsReady = true })
+  })
+}
 
 function captureFailureReason(error: unknown) {
   const text = error instanceof Error ? error.message : String(error)

@@ -4,6 +4,10 @@
 
 Vhostra is a lightweight, cross-platform graphical local PHP development environment. It is designed around one shared runtime: many local websites use one selected web server, one selected PHP version, and shared supporting services.
 
+## Source and Licensing
+
+Vhostra's source is publicly viewable, but no software license is currently granted for Vhostra itself. Third-party software, fonts, icons, and assets retain their own terms; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 > Development status: Vhostra persists settings and site/neutral-vhost definitions locally, creates a protected localhost welcome page, and manages its dedicated web/PHP runtime and independent persistent MariaDB container. The current desktop UI includes real MariaDB management, phpMyAdmin launching, port checks, hosts-file integration, PHP extension discovery, and runtime lifecycle controls. Portable JSON configuration import/apply and verified configuration-location migration are implemented. Bounded Apache/Nginx/LiteSpeed configuration import, first-run onboarding, and visible-only resource monitoring are implemented. First-run Vhostra JSON backup restoration and protected reset are implemented. Dashboard previews are captured locally and cached. Backups from unrelated formats remain outside the supported workflows.
 
 ![Vhostra Dashboard with shared runtime controls and host-backed Sites](docs/images/dashboard.png)
@@ -93,7 +97,7 @@ By default, a portable configuration bundle excludes website content, database c
 
 Clicking a saved site URL, preview, or external-link button opens the validated `http` or `https` URL with the operating system's default browser via Electron's main-process `shell.openExternal` API. Websites are never opened in a Vhostra `BrowserWindow`; the renderer remains isolated with `contextIsolation` enabled and `nodeIntegration` disabled.
 
-Dashboard previews use a screenshot only when a site's definition references a real supported image file in Vhostra's host-side screenshot cache. Otherwise, Vhostra shows an explicit no-preview fallback. Missing/stale previews are captured locally on Dashboard visibility, with explicit Refresh Preview, a first-screen desktop viewport, compressed host JPEG cache, bounded retries and a placeholder on failure. No screenshot service receives Site URLs or content.
+Dashboard previews use a screenshot only when a site's definition references a real supported image file in Vhostra's host-side screenshot cache. Otherwise, Vhostra shows a generating or unavailable state. Missing/stale previews are captured locally on Dashboard visibility, with explicit Refresh Preview, a first-screen desktop viewport, compressed host JPEG cache and bounded visual readiness. No screenshot service receives Site URLs or content.
 
 ## Tray and application lifecycle
 

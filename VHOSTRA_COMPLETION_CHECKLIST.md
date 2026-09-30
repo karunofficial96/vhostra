@@ -246,6 +246,13 @@ This additive phase continues the existing repository and preserves the earlier 
 
 New acceptance: production build `/private/tmp/vhostra-db-build.log`; **99/99** regression tests `/private/tmp/vhostra-database-unit.log`; live account/WordPress `/private/tmp/vhostra-database-access-live.log` (exit 0); native real SQL UI `/private/tmp/vhostra-database-access-ui.log` (exit 0). Initial failure repro is `/private/tmp/vhostra-db-reproduction.log`. Final native fixture cleanup/inventory verification passed. Prior persistence, full backup reconciliation and desktop regressions also passed; final logs and preserved environment boundaries are recorded in the execution state.
 
+## Visual readiness and notice correction (2026-09-30)
+
+- [x] README now states that Vhostra grants no software license; Enterprise is documented as configuration import only.
+- [x] First preview capture waits for bounded document/font/visible-image/layout readiness; no idle observer or network-idle requirement is introduced.
+- [x] Isolated real runtime verified automatic first localhost and named previews on Nginx, then sequential Apache/OpenLiteSpeed routing, HTTP/HTTPS/custom ports and cleanup.
+- [ ] Packaged desktop artifact notice contents and the complete WordPress/plugin visual matrix require further verification; configuration and fixture review alone do not close these checks.
+
 ## Named Site preview phase (2026-09-29)
 
 - [x] P01 (1–7, 21, 40–42): traced/reproduced legacy bare-loopback navigation; central canonical/alias resolver, exact live vhost marker, named Host/SNI/browser navigation and default-vhost separation. Literal reported ERR_INVALID_ARGUMENT did not reproduce; no invented cause is claimed.
