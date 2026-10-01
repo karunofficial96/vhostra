@@ -16,11 +16,11 @@ app.whenReady().then(async () => {
     const window = applicationSession().window; desktopWindow = window; runtime = applicationSession().runtime; runtime.scope = `vhostra-phase-ui-${process.pid}`
     const evaluate = code => window.webContents.executeJavaScript(code)
     const waitFor = async expression => { const deadline = Date.now() + 15000; while (!await evaluate(expression)) { if (Date.now() > deadline) throw Error(`Timed out waiting for ${expression}`); await pause(100) } }
-    const click = text => evaluate(`[...document.querySelectorAll('button')].find(button => button.textContent.includes(${JSON.stringify(text)})).click()`)
+    const click = async text => { const missing = await evaluate(`(()=>{const button=[...document.querySelectorAll('button')].find(button => button.textContent.includes(${JSON.stringify(text)}));if(!button)return document.body.textContent.slice(0,500);button.click();return null})()`); assert.equal(missing, null, `Missing button ${text}: ${missing}`) }
     assert.match(await evaluate('document.body.textContent'), /Welcome to Vhostra/)
     const initial = await evaluate('window.vhostra.getOnboarding()')
     assert.equal(initial.preferences.completed, false); assert.equal(initial.preferences.php, initial.phpVersions.at(-1)); assert.equal(initial.preferences.server, 'openlitespeed'); assert.equal(initial.preferences.cache, 'none')
-    await click('Set up as new'); await pause(100)
+    await click('Set up as new'); await pause(100); await click('Continue'); await pause(100)
     await click('Dark'); await pause(150)
     assert.equal(await evaluate('document.documentElement.dataset.theme'), 'dark')
     await writeFile('/private/tmp/vhostra-onboarding-dark.png', (await window.webContents.capturePage()).toPNG())
@@ -36,6 +36,9 @@ app.whenReady().then(async () => {
     assert.equal(await evaluate('document.querySelector("select").value'), initial.phpVersions.at(-1))
     await click('Continue'); await pause(100)
     for (const cache of ['Redis', 'Memcached', 'No cache service']) { await click(cache); await pause(100) }
+    await click('Continue'); await pause(100)
+    assert.match(await evaluate('document.body.textContent'), /Startup Settings/)
+    assert.equal(await evaluate(`[...document.querySelectorAll('label')].find(label=>label.textContent.includes('Start configured services when Vhostra opens')).querySelector('input').checked`), true)
     await click('Continue'); await pause(100)
     assert.match(await evaluate('document.body.textContent'), /Ready to set up/)
     const start = runtime.start

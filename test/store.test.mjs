@@ -14,6 +14,7 @@ test('persists site definitions and preserves document-root files on removal', a
     assert.equal(first.settings.selectedWebServer, 'openlitespeed')
     assert.equal(first.settings.selectedPhpVersion, '8.5')
     assert.equal(first.settings.php.cwebpEnabled, true)
+    assert.equal(first.settings.startup.startServicesOnLaunch, true)
     assert.equal(first.settings.startup.closeBehavior, 'minimize-to-tray')
     const localhost = first.sites.find(site => site.builtIn === 'localhost')
     assert.ok(localhost)

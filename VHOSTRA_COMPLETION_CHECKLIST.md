@@ -343,3 +343,16 @@ The command coverage and remaining live cases are recorded in [VHOSTRA_CLI_TEST_
 - [ ] Windows/Linux window-manager and small-display native acceptance.
 - [ ] Full live Docker CLI success/failure matrix for every mutating command, including running/stopped MariaDB, disabled caches, real errors and clean exit. A sequential isolated MariaDB fixture now verifies real CLI database list/status while Running and a clear nonzero database-list error while Stopped, plus exact Docker inventory cleanup. Other live paths remain unverified.
 - [ ] Release packaging and a cross-platform installed CLI launcher. The npm bin mapping is not an installed desktop command.
+
+## Runtime/settings/service/CLI/startup follow-up — 2026-10-01
+
+- [x] Settings selectors and cache checkboxes show the requested value immediately, display action-derived pending labels, and roll back after an injected backend failure; the web-server icon changes with the request. A native Electron fixture also verified final Runtime Status scrolling.
+- [x] The old generated Memcached config in the reported profile lacked its run-as-user flag; its log said Memcached refused to start as root. Missing `-u nobody` and private loopback flags are now repaired while existing local config/comments are preserved. An isolated live runtime passed both cache PHP localhost checks.
+- [x] OpenLiteSpeed PHP 8.5→8.4→8.5 and a cold PHP 8.2 candidate passed in isolated scopes; the final 8.4→8.5 fixture found 72 extension catalog entries, loaded Redis/Memcached, passed both PHP localhost checks at each version, and removed its exact test scope. The existing three-server fixture passed routing, database survival, cache lifecycle, and injected rollback.
+- [x] Help tabs wrap without horizontal scrolling; local search/keyboard/copy passed in Electron. The redundant Settings Appearance selector is removed.
+- [x] Fresh profiles enable start-on-open; Settings and Welcome expose three shared startup preferences. Native login-item argument registration has unit coverage and the Welcome UI passed.
+- [x] A local unsigned `Vhostra.app` package includes `Contents/Resources/bin/vhostra`; isolated packaged CLI help, all service status targets, prerequisite and syntax tests run from outside the checkout without npm. The final app archive is 3.8 MB and the unsigned bundle is 305 MB.
+- [ ] The historical apt exit-100 log contains only BuildKit's long command, so its first failing package/repository line cannot be recovered. The current cold build passed; separate build layers and concise future diagnostics are implemented.
+- [ ] Apache/Nginx still run the selected LSPHP package's CLI development backend, rather than an independent normal PHP-FPM package. Architecture correction and all-version native acceptance remain open.
+- [ ] Complete the remaining live CLI mutation matrix and Windows/Linux native package/login acceptance. A PATH entry is not installed automatically by the app package.
+- [ ] Measure matched idle CPU/RAM and full runtime/storage deltas, and verify startup after a real OS login.

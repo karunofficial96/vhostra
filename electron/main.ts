@@ -314,7 +314,7 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
                     return;
                 }
             }
-            if ((await store.getOnboarding()).completed && state.settings.startup.startServicesOnLaunch && services.current().state !== 'running')
+            if ((await store.getOnboarding()).completed && (state.settings.startup.startServicesOnLaunch || (process.argv.includes('--vhostra-login-start') && state.settings.startup.startServicesAfterLogin)) && services.current().state === 'stopped')
                 return services
                     .start()
                     .catch((error) =>

@@ -17,27 +17,27 @@ const platformDataRoot = () => process.env.VHOSTRA_USER_DATA || (process.platfor
 const usage = `Vhostra CLI (local-only)
 
 Usage:
-  npm run cli -- status [apache|nginx|openlitespeed|web|php|mariadb|phpmyadmin|redis|memcached]
-  npm run cli -- <start|stop|restart> [web|apache|nginx|openlitespeed|mariadb|redis|memcached]
-  npm run cli -- runtime <status|start|stop|restart>
-  npm run cli -- sites <list|add FILE|edit ID FILE|remove ID|repair [ID]>
-  npm run cli -- config <export FILE|preview FILE|import FILE>
-  npm run cli -- database create NAME USER [utf8mb4|utf8|latin1]
-  npm run cli -- database <list|import NAME FILE|export NAME FILE|repair NAME|delete NAME>
-  npm run cli -- reset
-  npm run cli -- service <list|web|mariadb|redis|memcached> [status|start|stop|restart|enable|disable]
-  npm run cli -- web <status|start|stop|restart>
-  npm run cli -- mariadb <status|start|stop|restart>
-  npm run cli -- php <status|versions|select VERSION>
-  npm run cli -- vhost list
-  npm run cli -- hosts <status|repair> [hostname]
-  npm run cli -- import <preview|apply> PATH [apache|nginx|openlitespeed|litespeed-enterprise] [--accept-warnings]
-  npm run cli -- php extensions list
-  npm run cli -- php extension <install|enable|disable|remove> <package>
-  npm run cli -- opcache <status|enable|disable>
-  npm run cli -- cwebp <status|enable|disable>
-  npm run cli -- redis <status|enable|disable|start|stop|restart>
-  npm run cli -- memcached <status|enable|disable|start|stop|restart>
+  vhostra status [apache|nginx|openlitespeed|web|php|mariadb|phpmyadmin|redis|memcached]
+  vhostra <start|stop|restart> [web|apache|nginx|openlitespeed|mariadb|redis|memcached]
+  vhostra runtime <status|start|stop|restart>
+  vhostra sites <list|add FILE|edit ID FILE|remove ID|repair [ID]>
+  vhostra config <export FILE|preview FILE|import FILE>
+  vhostra database create NAME USER [utf8mb4|utf8|latin1]
+  vhostra database <list|import NAME FILE|export NAME FILE|repair NAME|delete NAME>
+  vhostra reset
+  vhostra service <list|web|mariadb|redis|memcached> [status|start|stop|restart|enable|disable]
+  vhostra web <status|start|stop|restart>
+  vhostra mariadb <status|start|stop|restart>
+  vhostra php <status|versions|select VERSION>
+  vhostra vhost list
+  vhostra hosts <status|repair> [hostname]
+  vhostra import <preview|apply> PATH [apache|nginx|openlitespeed|litespeed-enterprise] [--accept-warnings]
+  vhostra php extensions list
+  vhostra php extension <install|enable|disable|remove> <package>
+  vhostra opcache <status|enable|disable>
+  vhostra cwebp <status|enable|disable>
+  vhostra redis <status|enable|disable|start|stop|restart>
+  vhostra memcached <status|enable|disable|start|stop|restart>
 
 Set VHOSTRA_USER_DATA only when using a non-default Electron user-data directory.
 Reset is interactive only: explains database preservation or removal, asks Keep/Remove/Cancel, then requires explicit final confirmation. Back up in the graphical app first. No non-interactive destructive reset flags exist.
@@ -48,10 +48,10 @@ const [command = 'status', subcommand] = args
 if (args.includes('--help') || args.includes('-h') || command === 'help') {
   const target = command === 'help' ? subcommand : command
   const examples = {
-    runtime: 'Check or start the full local environment. Example: npm run cli -- runtime status',
-    service: 'Inspect or control one managed service. Example: npm run cli -- service mariadb status',
-    database: 'Manage local MariaDB databases. Example: npm run cli -- database list',
-    sites: 'Manage local Site definitions. Example: npm run cli -- sites list',
+    runtime: 'Check or start the full local environment. Example: vhostra runtime status',
+    service: 'Inspect or control one managed service. Example: vhostra service mariadb status',
+    database: 'Manage local MariaDB databases. Example: vhostra database list',
+    sites: 'Manage local Site definitions. Example: vhostra sites list',
     config: 'Export, preview or import a local configuration bundle.',
     php: 'Inspect PHP or change the selected version and optional extensions.',
     hosts: 'Inspect or repair Vhostra-owned local Hosts mappings.',
@@ -107,7 +107,7 @@ try {
   const requireMariaDb = async () => {
     const service = (await runtime.listManagedServices()).find(row => row.id === 'mariadb')
     if (service?.state === 'running') return
-    throw new Error(prerequisiteMessage('MariaDB', service?.state, 'npm run cli -- mariadb start'))
+    throw new Error(prerequisiteMessage('MariaDB', service?.state, 'vhostra mariadb start'))
   }
   const save = async mutate => { await runtime.refresh(); const current = await store.getState(); await store.saveSettings(mutate(current.settings)); try { await runtime.applyConfiguration(); print(await runtime.refresh()) } catch (error) { await store.saveSettings(current.settings); throw error } }
   const confirm = async question => {
@@ -185,7 +185,7 @@ try {
   } else if (subject === 'help' || subject === '--help' || subject === '-h') print(usage)
   else if (subject === 'php' && (!action || action === 'status' || action === 'versions')) {
     const state = await store.getState(); await runtime.refresh()
-    print({ implementation: 'LSPHP', selected: state.settings.selectedPhpVersion, supported: supportedPhpVersions, runtime: runtime.current(), ...(action !== 'versions' ? { service: (await runtime.runtimeStatuses()).find(row => row.id === 'php') } : {}) })
+    print(action === 'versions' ? { selected: state.settings.selectedPhpVersion, supported: supportedPhpVersions } : (await runtime.runtimeStatuses()).find(row => row.id === 'php'))
   } else if (subject === 'php' && action === 'select' && process.argv[4]) {
     if (!supportedPhpVersions.includes(process.argv[4])) throw new Error(`Supported PHP versions: ${supportedPhpVersions.join(', ')}`)
     await save(settings => ({ ...settings, selectedPhpVersion: process.argv[4] }))
@@ -231,7 +231,7 @@ try {
     if (action === 'status') { await runtime.refresh(); print(await runtime.getCwebpStatus()) }
     else { await runtime.refresh(); const result = await runtime.configureCwebp(action === 'enable'); const current = await store.getState(); await store.saveSettings({ ...current.settings, php: { ...current.settings.php, cwebpEnabled: action === 'enable' } }); print(result) }
   } else if (['redis', 'memcached'].includes(subject) && ['status', 'enable', 'disable', 'start', 'stop', 'restart'].includes(action)) {
-    if (action === 'status') { await runtime.refresh(); const state = await store.getState(); print({ enabled: state.settings.optionalServices[subject], service: (await runtime.listManagedServices()).find(service => service.id === subject), runtime: runtime.current() }) }
+    if (action === 'status') { await runtime.refresh(); print((await runtime.runtimeStatuses()).find(service => service.id === subject)) }
     else if (['start', 'stop', 'restart'].includes(action)) { await runtime.refresh(); print(await runtime.controlManagedService(subject, action)) }
     else await save(settings => ({ ...settings, optionalServices: { ...settings.optionalServices, [subject]: action === 'enable' } }))
   } else { process.stderr.write(`${usage}\n`); process.exitCode = 64 }

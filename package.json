@@ -12,8 +12,17 @@
     "appId": "com.vhostra.app",
     "productName": "Vhostra",
     "directories": {
-      "buildResources": "build"
+      "buildResources": "build",
+      "output": "release"
     },
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "dist-welcome/**",
+      "scripts/vhostra.mjs",
+      "scripts/cli-format.mjs",
+      "package.json"
+    ],
     "extraResources": [
       {
         "from": "build/trayIcon.png",
@@ -37,13 +46,32 @@
       }
     ],
     "mac": {
-      "icon": "build/icon.icns"
+      "icon": "build/icon.icns",
+      "extraFiles": [
+        {
+          "from": "packaging/macos/vhostra",
+          "to": "Resources/bin/vhostra"
+        }
+      ]
     },
     "win": {
-      "icon": "build/icon.ico"
+      "icon": "build/icon.ico",
+      "extraFiles": [
+        {
+          "from": "packaging/windows/vhostra.cmd",
+          "to": "vhostra.cmd"
+        }
+      ]
     },
     "linux": {
-      "icon": "build/icons"
+      "icon": "build/icons",
+      "executableName": "VhostraDesktop",
+      "extraFiles": [
+        {
+          "from": "packaging/linux/vhostra",
+          "to": "vhostra"
+        }
+      ]
     }
   },
   "scripts": {
@@ -56,21 +84,22 @@
     "test": "npm run build && node --test test/*.test.mjs",
     "test:bridge": "node scripts/run-bridge-test.mjs",
     "cli": "node scripts/vhostra.mjs",
+    "package:mac": "npm run build && electron-builder --mac dir --publish never",
     "lint": "eslint . --max-warnings=0"
   },
-  "dependencies": {
+  "dependencies": {},
+  "devDependencies": {
     "@tailwindcss/vite": "^4.0.9",
     "@vitejs/plugin-react": "^4.3.4",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "vite": "^6.1.0"
-  },
-  "devDependencies": {
+    "vite": "^6.1.0",
     "@types/node": "^22.10.0",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "electron": "^44.4.5",
+    "electron-builder": "^26.15.3",
     "tailwindcss": "^4.0.9",
     "typescript": "^5.7.3"
   }

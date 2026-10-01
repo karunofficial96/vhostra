@@ -13,9 +13,9 @@ test('Linux startup uses XDG location, preserves unrelated entries, and launches
         const file = path.join(env.configHome, 'autostart/vhostra.desktop');
         const unrelated = path.join(env.configHome, 'autostart/other.desktop');
         await writeFile(unrelated, 'unrelated');
-        assert.match(await readFile(file, 'utf8'), /Exec="\/opt\/My App\/electron" "\/work\/Vhostra"/);
+        assert.match(await readFile(file, 'utf8'), /Exec="\/opt\/My App\/electron" "\/work\/Vhostra" "--vhostra-login-start"/);
         await configureStartup(true, { ...env, packaged: true });
-        assert.match(await readFile(file, 'utf8'), /Exec="\/opt\/My App\/electron"\n/);
+        assert.match(await readFile(file, 'utf8'), /Exec="\/opt\/My App\/electron" "--vhostra-login-start"\n/);
         await configureStartup(false, env);
         await assert.rejects(access(file), { code: 'ENOENT' });
         assert.equal(await readFile(unrelated, 'utf8'), 'unrelated');
@@ -33,9 +33,9 @@ for (const platform of ['darwin', 'win32']) {
             setLoginItemSettings: (value) => { received = value; current = value.openAtLogin; },
             getLoginItemSettings: (options) => { assert.deepEqual(options.args, received?.args ?? []); return { openAtLogin: current }; } };
         await configureStartup(true, env);
-        assert.deepEqual(received, { openAtLogin: true, args: [platform === 'win32' ? '"/work/vhostra"' : '/work/vhostra'] });
+        assert.deepEqual(received, { openAtLogin: true, args: [platform === 'win32' ? '"/work/vhostra"' : '/work/vhostra', '--vhostra-login-start'] });
         await configureStartup(false, { ...env, packaged: true });
-        assert.deepEqual(received, { openAtLogin: false, args: [] });
+        assert.deepEqual(received, { openAtLogin: false, args: ['--vhostra-login-start'] });
         await assert.rejects(configureStartup(true, { ...env, setLoginItemSettings: value => { received = value; } }), /operating system did not apply/);
         await assert.rejects(configureStartup(true, { ...env, setLoginItemSettings: () => { throw new Error('OS refused'); } }), /OS refused/);
         await assert.rejects(configureStartup(true, { ...env, getLoginItemSettings: () => ({ openAtLogin: true, status: 'requires-approval' }) }), /login-item permissions/);

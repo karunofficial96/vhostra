@@ -2,6 +2,7 @@ node_modules/
 dist/
 dist-electron/
 dist-welcome/
+release/
 .DS_Store
 *.tsbuildinfo
 build/Vhostra.iconset/

@@ -36,15 +36,15 @@ test('database commands explain a missing MariaDB without a SQL placeholder or s
       const result = invoke(args, root)
       assert.equal(result.status, 1, args.join(' '))
       assert.match(result.stderr, /MariaDB is Not Created/)
-      assert.match(result.stderr, /npm run cli -- mariadb start/)
+      assert.match(result.stderr, /vhostra mariadb start/)
       assert.doesNotMatch(result.stderr, /SQL value omitted|at .*\.mjs:\d+/)
     }
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
 test('human output excludes backend revisions and secret redaction preserves ordinary names', () => {
-  const rendered = formatStatus({ state: 'stopped', serviceRevision: 25, updatedAt: 'private' }, [{ label: 'MariaDB', state: 'stopped' }, { label: 'Redis', state: 'disabled' }])
-  assert.match(rendered, /MariaDB\s+Stopped/)
+  const rendered = formatStatus({ state: 'stopped', serviceRevision: 25, updatedAt: 'private' }, [{ label: 'MariaDB', enabled: true, state: 'stopped' }, { label: 'Redis', enabled: false, state: 'disabled' }])
+  assert.match(rendered, /MariaDB\s+Configured: Enabled · Status: Stopped/)
   assert.doesNotMatch(rendered, /serviceRevision|updatedAt|\{/)
   assert.equal(formatResult(['projectdb']), 'projectdb')
   assert.equal(redactProgress('MariaDB service projectdb Site example.test'), 'MariaDB service projectdb Site example.test')

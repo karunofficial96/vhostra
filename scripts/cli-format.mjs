@@ -13,7 +13,7 @@ export function prerequisiteMessage(service, state, startCommand) {
   return `${service} is ${label}. ${next}`
 }
 export function formatStatus(runtime, services) {
-  return ['Vhostra Runtime', `Status: ${stateLabel(runtime.state)}`, '', 'Services', ...services.map(row => `${row.label.padEnd(20)} ${stateLabel(row.state)}`)].join('\n')
+  return ['Vhostra Runtime', `Status: ${stateLabel(runtime.state)}`, '', 'Services', ...services.map(row => `${row.label.padEnd(20)} Configured: ${row.enabled ? 'Enabled' : 'Disabled'} · Status: ${stateLabel(row.state)}`)].join('\n')
 }
 export function formatResult(value, context = '') {
   if (value === null || value === undefined) return 'Done.'
@@ -22,7 +22,7 @@ export function formatResult(value, context = '') {
     if (!value.length) return 'None found.'
     return value.map(item => {
       if (safe(item)) return String(item)
-      if (item.label && item.state) return `${item.label}: ${stateLabel(item.state)}`
+      if (item.label && item.state) return `${item.label}: Configured: ${item.enabled ? 'Enabled' : 'Disabled'} · Status: ${stateLabel(item.state)}`
       if (item.hostname) return [item.hostname, item.aliases?.length ? `Aliases: ${item.aliases.join(', ')}` : '', item.documentRoot ? `Root: ${item.documentRoot}` : '', item.state ? `Status: ${stateLabel(item.state)}` : ''].filter(Boolean).join('  ·  ')
       if (item.name || item.url) return [item.name || item.hostname, item.url || '', item.documentRoot || ''].filter(Boolean).join('  ·  ')
       if (item.id && item.status) return `${item.id}: ${stateLabel(item.status)}`
@@ -30,7 +30,7 @@ export function formatResult(value, context = '') {
     }).join('\n')
   }
   if (value.runtime && value.services) return formatStatus(value.runtime, value.services)
-  if (value.label && value.state) return `${value.label}: ${stateLabel(value.state)}`
+  if (value.label && value.state) return `${value.label}: Configured: ${value.enabled ? 'Enabled' : 'Disabled'} · Status: ${stateLabel(value.state)}`
   if (value.state) return `Status: ${stateLabel(value.state)}`
   if (value.sites && Array.isArray(value.sites)) return `Site saved.\n${formatResult(value.sites)}${value.mapping?.message ? `\nHosts: ${value.mapping.message}` : ''}`
   if (value.message && typeof value.message === 'string') return value.message

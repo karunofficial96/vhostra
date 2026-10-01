@@ -20,7 +20,7 @@ export function desktopArgument(value: string): string {
 }
 
 export async function configureStartup(enabled: boolean, env: StartupEnvironment): Promise<void> {
-    const args = env.packaged ? [] : [env.platform === 'win32' ? `"${env.appPath}"` : env.appPath];
+    const args = [...(env.packaged ? [] : [env.platform === 'win32' ? `"${env.appPath}"` : env.appPath]), '--vhostra-login-start'];
     if (env.platform === 'linux') {
         const root = env.configHome && path.isAbsolute(env.configHome)
             ? env.configHome : path.join(env.home, '.config');

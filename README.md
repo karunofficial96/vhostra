@@ -36,7 +36,7 @@ Vhostra's source is publicly viewable, but no software license is currently gran
 - PHP extension inventory obtained from the selected LSPHP package catalog when the runtime is running; selected optional extensions are installed into the replacement image and checked through the real PHP request path
 - Zend OPcache preference and `cwebp` support (enabled by default); `cwebp` is supplied by the runtime’s `webp` package and validated in the runtime health check
 - Hosts-file mappings for virtual-host hostnames and aliases, using a narrow elevation prompt rather than running the app with permanent administrator privileges
-- Launch-on-login and optional runtime-start-on-launch preferences
+- Three local startup preferences: launch Vhostra on login, start configured services when Vhostra opens, and start them after login; fresh profiles enable service start on open
 
 ## Architecture summary
 
@@ -139,39 +139,39 @@ Vhostra's native main window chooses a fixed size that fits the current display 
 
 ## CLI commands
 
-After building, run `npm run cli -- help` from the source checkout. A desktop release launcher is not configured yet. All runtime commands share the desktop store/controller and exact managed Compose scope.
+The packaged desktop app includes a `vhostra` launcher. Put that launcher on your PATH to use the commands below. On macOS it is inside `Vhostra.app/Contents/Resources/bin/vhostra`; on Linux it is beside `VhostraDesktop`, and on Windows use `vhostra.cmd` beside `Vhostra.exe`. A source checkout can use `npm run cli -- help` after `npm run build`. All runtime commands share the desktop store/controller and exact managed Compose scope.
 
 ```sh
-npm run cli -- status [web|apache|nginx|openlitespeed|php|mariadb|phpmyadmin|redis|memcached]
-npm run cli -- start|stop|restart [web|apache|nginx|openlitespeed|mariadb|redis|memcached]
-npm run cli -- sites list
-npm run cli -- sites add /path/site.json
-npm run cli -- sites edit SITE_ID /path/site.json
-npm run cli -- sites remove SITE_ID
-npm run cli -- sites repair [SITE_ID]
-npm run cli -- config export|preview|import /path/backup.json
-npm run cli -- database list
-npm run cli -- database create NAME USER [utf8mb4|utf8|latin1]
-npm run cli -- database import|export NAME /path/database.sql
-npm run cli -- database repair|delete NAME
-npm run cli -- reset
-npm run cli -- runtime status|start|stop|restart
-npm run cli -- service list
-npm run cli -- service web|mariadb|redis|memcached status|start|stop|restart
-npm run cli -- web status|start|stop|restart
-npm run cli -- mariadb status|start|stop|restart
-npm run cli -- php status|versions
-npm run cli -- php select 8.4
-npm run cli -- php extensions list
-npm run cli -- php extension install|remove|enable|disable apcu
-npm run cli -- opcache status|enable|disable
-npm run cli -- redis status|enable|disable|start|stop|restart
-npm run cli -- memcached status|enable|disable|start|stop|restart
-npm run cli -- cwebp status|enable|disable
-npm run cli -- vhost list
-npm run cli -- hosts status|repair [hostname]
-npm run cli -- import preview /path/site.conf nginx
-npm run cli -- import apply /path/site.conf nginx --accept-warnings
+vhostra status [web|apache|nginx|openlitespeed|php|mariadb|phpmyadmin|redis|memcached]
+vhostra start|stop|restart [web|apache|nginx|openlitespeed|mariadb|redis|memcached]
+vhostra sites list
+vhostra sites add /path/site.json
+vhostra sites edit SITE_ID /path/site.json
+vhostra sites remove SITE_ID
+vhostra sites repair [SITE_ID]
+vhostra config export|preview|import /path/backup.json
+vhostra database list
+vhostra database create NAME USER [utf8mb4|utf8|latin1]
+vhostra database import|export NAME /path/database.sql
+vhostra database repair|delete NAME
+vhostra reset
+vhostra runtime status|start|stop|restart
+vhostra service list
+vhostra service web|mariadb|redis|memcached status|start|stop|restart
+vhostra web status|start|stop|restart
+vhostra mariadb status|start|stop|restart
+vhostra php status|versions
+vhostra php select 8.4
+vhostra php extensions list
+vhostra php extension install|remove|enable|disable apcu
+vhostra opcache status|enable|disable
+vhostra redis status|enable|disable|start|stop|restart
+vhostra memcached status|enable|disable|start|stop|restart
+vhostra cwebp status|enable|disable
+vhostra vhost list
+vhostra hosts status|repair [hostname]
+vhostra import preview /path/site.conf nginx
+vhostra import apply /path/site.conf nginx --accept-warnings
 ```
 
 Use one alternative per `|` above. Hosts commands verify canonical ownership and use the same scoped administrative mutation path as the desktop. Before protected writes, Vhostra keeps a private local recovery snapshot; it retains ten completed snapshots. The elevated operation verifies the write before removing only its own transient native backup; failed/ambiguous native and local recovery remain available. Exit 0 indicates success, 1 backend/validation failure, 2 invalid import/unresolved mappings or failed/unavailable status target, and 64 invalid command usage. Cache status reports actual Supervisor state as well as saved enablement. A source import with unsupported directives requires preview/review and `--accept-warnings`; imports do not activate source text. Commands dispose temporary listeners/watchers on exit.
@@ -266,46 +266,45 @@ Stopping the web service also stops its associated PHP workers.
 
 ## Terminal commands
 
-Vhostra also exposes the same local runtime controller through its CLI. From a
-development checkout, use `npm run cli -- …`. The current desktop packaging does not install a system-wide `vhostra` executable; the `bin` field applies only to npm package installation. The CLI never uses global Docker cleanup and only invokes Vhostra's generated, labeled Compose project.
+Vhostra also exposes the same local runtime controller through its bundled CLI. Put the package launcher on your PATH, then use `vhostra …`. Packaging includes the launcher but does not modify your PATH or install a system-wide symlink automatically. In a development checkout, use `npm run cli -- …`. The CLI never uses global Docker cleanup and only invokes Vhostra's generated, labeled Compose project.
 
-Normal command output is short text. For example, `npm run cli -- runtime status` lists the runtime and managed services with readable states. Database commands report whether MariaDB is not created, stopped, or unavailable before attempting SQL work. CLI help and status do not open a graphical window.
+Normal command output is short text. For example, `vhostra runtime status` lists the runtime and managed services with readable states. Database commands report whether MariaDB is not created, stopped, or unavailable before attempting SQL work. CLI help and status do not open a graphical window.
 
 ```bash
-npm run cli -- status [web|apache|nginx|openlitespeed|php|mariadb|phpmyadmin|redis|memcached]
-npm run cli -- start|stop|restart [web|apache|nginx|openlitespeed|mariadb|redis|memcached]
-npm run cli -- sites list
-npm run cli -- sites add /path/site.json
-npm run cli -- sites edit SITE_ID /path/site.json
-npm run cli -- sites remove SITE_ID
-npm run cli -- sites repair [SITE_ID]
-npm run cli -- config export|preview|import /path/backup.json
-npm run cli -- database list
-npm run cli -- database create NAME USER [utf8mb4|utf8|latin1]
-npm run cli -- database import|export NAME /path/database.sql
-npm run cli -- database repair|delete NAME
-npm run cli -- reset
-npm run cli -- runtime status
-npm run cli -- runtime start
-npm run cli -- runtime stop
-npm run cli -- runtime restart
-npm run cli -- service list
-npm run cli -- service web restart
-npm run cli -- service mariadb restart
-npm run cli -- service redis stop
-npm run cli -- service redis enable
-npm run cli -- service memcached disable
+vhostra status [web|apache|nginx|openlitespeed|php|mariadb|phpmyadmin|redis|memcached]
+vhostra start|stop|restart [web|apache|nginx|openlitespeed|mariadb|redis|memcached]
+vhostra sites list
+vhostra sites add /path/site.json
+vhostra sites edit SITE_ID /path/site.json
+vhostra sites remove SITE_ID
+vhostra sites repair [SITE_ID]
+vhostra config export|preview|import /path/backup.json
+vhostra database list
+vhostra database create NAME USER [utf8mb4|utf8|latin1]
+vhostra database import|export NAME /path/database.sql
+vhostra database repair|delete NAME
+vhostra reset
+vhostra runtime status
+vhostra runtime start
+vhostra runtime stop
+vhostra runtime restart
+vhostra service list
+vhostra service web restart
+vhostra service mariadb restart
+vhostra service redis stop
+vhostra service redis enable
+vhostra service memcached disable
 
-npm run cli -- php extensions list
-npm run cli -- php extension enable imagick
-npm run cli -- php extension disable imagick
-npm run cli -- opcache status
-npm run cli -- opcache enable
-npm run cli -- cwebp status
-npm run cli -- cwebp disable
-npm run cli -- redis status
-npm run cli -- redis enable
-npm run cli -- memcached restart
+vhostra php extensions list
+vhostra php extension enable imagick
+vhostra php extension disable imagick
+vhostra opcache status
+vhostra opcache enable
+vhostra cwebp status
+vhostra cwebp disable
+vhostra redis status
+vhostra redis enable
+vhostra memcached restart
 ```
 
 Commands return non-zero for invalid syntax, unavailable Docker, failed health

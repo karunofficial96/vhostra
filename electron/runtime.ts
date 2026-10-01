@@ -1887,8 +1887,12 @@ foreach (['localhost', '127.0.0.1'] as $host) {
         const redisConfigured = /^port\s+\d+.*$/m.test(redisSource) ? redisSource.replace(/^port\s+\d+.*$/gm, redisPort) : `${redisSource}\n${redisPort}\n`;
         if (redisConfigured !== redisSource) await fs.writeFile(redisFile, redisConfigured, { mode: 0o600 });
         const memcachedSource = await fs.readFile(memcachedFile, "utf8");
+        // Older generated profiles contained only memory/port flags. Memcached
+        // refuses to start as root without -u, so repair missing safe defaults
+        // while retaining the profile's existing local configuration/comments.
+        const memcachedDefaults = `${/(?:^|\s)-u\s+\S+/.test(memcachedSource) ? '' : '-u nobody\n'}${/(?:^|\s)-l\s+\S+/.test(memcachedSource) ? '' : '-l 127.0.0.1\n'}${memcachedSource}`;
         const memcachedPort = `-p ${state.settings.ports.memcached}`;
-        const memcachedConfigured = /(?:^|\s)-p\s+\d+/.test(memcachedSource) ? memcachedSource.replace(/(^|\s)-p\s+\d+/g, `$1${memcachedPort}`) : `${memcachedSource}\n${memcachedPort}\n`;
+        const memcachedConfigured = /(?:^|\s)-p\s+\d+/.test(memcachedDefaults) ? memcachedDefaults.replace(/(^|\s)-p\s+\d+/g, `$1${memcachedPort}`) : `${memcachedDefaults}\n${memcachedPort}\n`;
         if (memcachedConfigured !== memcachedSource) await fs.writeFile(memcachedFile, memcachedConfigured, { mode: 0o600 });
         await fs.writeFile(path.join(this.layout.runtime.php, "roots.json"), JSON.stringify(Object.fromEntries(
             mounts.flatMap(({ host, container }) => [host.hostname, ...host.aliases].map(name => [name.toLowerCase(), container])))), { mode: 0o644 });
@@ -2706,12 +2710,19 @@ const execute = (command: string, args: string[], allowFailure = false, output?:
                 ? resolve(stdout)
                 : reject(
                       new Error(
-                          stderr.trim() ||
+                          (args.includes('build') ? buildFailureSummary(`${stdout}\n${stderr}`) : stderr.trim()) ||
                               `${command} operation exited with ${code}`,
                       ),
                   );
         });
     });
+function buildFailureSummary(output: string): string {
+    const lines = output.split(/\r?\n/).map(line => line.replace(/^(?:#\d+\s+\d+(?:\.\d+)?\s+|\s*=>\s*)/, '').trim()).filter(Boolean);
+    const diagnostic = lines.find(line => /(?:E:\s|Err:\s|Unable to locate package|has no installation candidate|unmet dependencies|Vhostra build error:|GPG error:|Could not resolve|Temporary failure resolving)/i.test(line));
+    if (diagnostic) return `Runtime image build failed: ${diagnostic.slice(0, 600)}`;
+    const last = [...lines].reverse().find(line => !/^(?:RUN\s|\[.*\]\s|failed to solve: process|Dockerfile:\d+|[-+>])/i.test(line) && line.length < 500);
+    return `Runtime image build failed: ${(last ?? 'See Runtime Status build output for the failing package step.').slice(0, 600)}`;
+}
 const executeWithInput = async (
     command: string,
     args: string[],

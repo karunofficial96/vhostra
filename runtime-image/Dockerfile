@@ -2,16 +2,25 @@
 # The base image's bundled LSPHP must never decide the selected runtime.
 FROM litespeedtech/openlitespeed:latest
 
-ARG LSPHP_VERSION
-ARG LSPHP_EXTENSIONS=""
-ARG VHOSTRA_CWEBP=true
-RUN test -n "$LSPHP_VERSION" && case "$LSPHP_VERSION" in 81|82|83|84|85) ;; *) echo "Unsupported Vhostra LSPHP version: $LSPHP_VERSION" >&2; exit 64 ;; esac
-
 # LiteSpeed's repository is required because the upstream OLS image only bundles
 # one LSPHP version. Fail the build if the requested package cannot be resolved.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates openssl curl gnupg supervisor logrotate apache2 nginx mariadb-client socat redis-server memcached netcat-openbsd \
  && curl -fsSL https://repo.litespeed.sh | bash \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
+
+# The phpMyAdmin archive is version independent and stays cached across PHP switches.
+RUN curl -fsSL --retry 3 -o /tmp/phpmyadmin.tar.gz https://files.phpmyadmin.net/phpMyAdmin/5.2.2/phpMyAdmin-5.2.2-all-languages.tar.gz \
+ && mkdir -p /usr/share/phpmyadmin \
+ && tar -xzf /tmp/phpmyadmin.tar.gz --strip-components=1 -C /usr/share/phpmyadmin \
+ && rm -f /tmp/phpmyadmin.tar.gz
+
+# Keep the selected PHP package transaction in its own diagnostic/cache layer.
+ARG LSPHP_VERSION
+ARG LSPHP_EXTENSIONS=""
+ARG VHOSTRA_CWEBP=true
+RUN test -n "$LSPHP_VERSION" && case "$LSPHP_VERSION" in 81|82|83|84|85) ;; *) echo "Unsupported Vhostra LSPHP version: $LSPHP_VERSION" >&2; exit 64 ;; esac \
  && apt-get update \
  && apt-cache show "lsphp${LSPHP_VERSION}" >/dev/null \
  && for package in redis memcached curl; do apt-cache show "lsphp${LSPHP_VERSION}-${package}" >/dev/null || { echo "Vhostra build error: LSPHP ${LSPHP_VERSION} does not provide ${package}" >&2; exit 65; }; done \
@@ -28,10 +37,6 @@ RUN apt-get update \
       "lsphp${LSPHP_VERSION}" "lsphp${LSPHP_VERSION}-mysql" "lsphp${LSPHP_VERSION}-curl" "lsphp${LSPHP_VERSION}-redis" "lsphp${LSPHP_VERSION}-memcached" \
       $extension_packages $opcache_package $cwebp_package \
  && test -x "/usr/local/lsws/lsphp${LSPHP_VERSION}/bin/lsphp" \
- && curl -fsSL --retry 3 -o /tmp/phpmyadmin.tar.gz https://files.phpmyadmin.net/phpMyAdmin/5.2.2/phpMyAdmin-5.2.2-all-languages.tar.gz \
- && mkdir -p /usr/share/phpmyadmin \
- && tar -xzf /tmp/phpmyadmin.tar.gz --strip-components=1 -C /usr/share/phpmyadmin \
- && rm -f /tmp/phpmyadmin.tar.gz \
  && apt-cache search "^lsphp${LSPHP_VERSION}-" | awk -F ' - ' '$2 !~ /(Common files|Debug symbols|development|runtime|PEAR|source package)/ {print $1}' | sed "s/^lsphp${LSPHP_VERSION}-//" | sort -u > /usr/local/share/vhostra-php-catalog \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/* /tmp/lshttpd/*
