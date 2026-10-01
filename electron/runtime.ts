@@ -33,6 +33,7 @@ export interface RuntimeSnapshot {
     services: string[];
     updatedAt: string;
     serviceRevision?: number;
+    serviceTransitions?: Partial<Record<ManagedServiceStatus['id'], 'starting' | 'stopping' | 'restarting'>>;
     progress?: { id: number; lines: string[]; total: number };
 }
 export interface ManagedServiceStatus {
@@ -43,6 +44,8 @@ export interface ManagedServiceStatus {
         | "running"
         | "stopped"
         | "starting"
+        | "stopping"
+        | "restarting"
         | "failed"
         | "unhealthy"
         | "disabled"
@@ -79,7 +82,12 @@ export class DockerRuntimeController {
     private httpsWarning = "";
     private disposed = false;
     private mariaDbStartFailed = false;
+    private databaseReadyStartedAt: string | undefined;
     private startingServices = new Set<ManagedServiceStatus['id']>();
+    private stoppingServices = new Set<ManagedServiceStatus['id']>();
+    private restartingServices = new Set<ManagedServiceStatus['id']>();
+    private failedServices = new Set<ManagedServiceStatus['id']>();
+    private fullRestart = false;
     private serviceRevision = 0;
     private counters = { dockerCalls: 0, composeCalls: 0, refreshes: 0, builds: 0, operations: 0 };
     private imageName = "";
@@ -214,6 +222,8 @@ export class DockerRuntimeController {
             "starting",
             "Preparing Vhostra runtime…",
             async () => {
+                if (includeDatabase) this.markStarting('mariadb');
+                this.markStarting('web');
                 this.set({
                     state: "starting",
                     message: "Checking Docker…",
@@ -259,15 +269,13 @@ export class DockerRuntimeController {
                     services: ["runtime"],
                 });
                 await this.healthCheck(state.settings.selectedWebServer);
-                this.clearStarting('web');
-                this.clearStarting('redis');
-                this.clearStarting('memcached');
                 await this.cleanGenerated(state).catch(error => console.error("Generated cleanup deferred:", error.message));
                 await fs.writeFile(
                     path.join(this.runtimeRoot, "healthy-state.json"),
                     JSON.stringify(state),
                     { mode: 0o600 },
                 );
+                this.finishStarting(['web', 'redis', 'memcached']);
                 await this.refresh();
                 await this.cleanupImages().catch(error => console.error("Vhostra image cache cleanup deferred:", error.message));
             },
@@ -295,7 +303,7 @@ export class DockerRuntimeController {
         });
     }
     async runtimeStatuses() {
-        await this.refresh();
+        if (!this.operation) await this.refresh();
         const rows: Array<{ id: string; label: string; enabled: boolean; state: string }> = await this.listManagedServices();
         const { settings } = await this.getState();
         const frontend = rows.find(row => row.id === "web")?.state;
@@ -315,17 +323,33 @@ export class DockerRuntimeController {
             "stopping",
             "Stopping Vhostra services…",
             async () => {
+                for (const id of ['web', 'redis', 'memcached', 'mariadb'] as const) this.markStopping(id);
                 await this.requireDocker();
                 if (existsSync(this.composeFile)) await this.compose(["stop", "runtime"]);
+                for (const id of ['web', 'redis', 'memcached'] as const) this.clearStopping(id);
                 await this.databaseCompose(["stop"]);
+                this.clearStopping('mariadb');
                 await this.refresh();
             },
         );
     }
     async restartAll() {
         if (!existsSync(this.composeFile)) return this.start();
-        await this.controlManagedService("mariadb", "restart");
-        return this.restart();
+        if (this.operation) throw new Error('A Vhostra service operation is already in progress.');
+        this.fullRestart = true;
+        this.set({ state: 'starting', message: 'Restarting Vhostra services…', services: this.snapshot.services });
+        this.markRestarting('web');
+        try {
+            const state = await this.getState();
+            if (state.settings.optionalServices.redis) this.markRestarting('redis');
+            if (state.settings.optionalServices.memcached) this.markRestarting('memcached');
+            await this.controlManagedService("mariadb", "restart");
+            return await this.restart();
+        }
+        finally {
+            this.fullRestart = false;
+            for (const id of ['web', 'redis', 'memcached'] as const) this.clearRestarting(id);
+        }
     }
     async restart(preserveStopped = false) {
         const restoreStopped = preserveStopped && this.snapshot.state !== "running";
@@ -333,6 +357,7 @@ export class DockerRuntimeController {
             "stopping",
             "Restarting Vhostra services…",
             async () => {
+                this.markRestarting('web');
                 this.set({
                     state: "stopping",
                     message:
@@ -341,6 +366,8 @@ export class DockerRuntimeController {
                 });
                 await this.requireDocker();
                 const state = await this.getState();
+                if (state.settings.optionalServices.redis && !this.startingServices.has('redis') && !this.stoppingServices.has('redis')) this.markRestarting('redis');
+                if (state.settings.optionalServices.memcached && !this.startingServices.has('memcached') && !this.stoppingServices.has('memcached')) this.markRestarting('memcached');
                 await this.prepareDatabase(state);
                 if (!(await this.databaseContainerIds(true)).length) await this.startDatabase();
                 await this.ensurePortsAvailable(requiredHostPorts(state), true);
@@ -473,6 +500,9 @@ export class DockerRuntimeController {
                         message: "Promoting verified runtime configuration…",
                         services: ["runtime"],
                     });
+                    this.markStarting('web');
+                    if (state.settings.optionalServices.redis) this.markStarting('redis');
+                    if (state.settings.optionalServices.memcached) this.markStarting('memcached');
                     await this.generate(state);
                     await this.compose(["config", "--quiet"]);
                     await this.upCompatibleImage(true);
@@ -484,8 +514,10 @@ export class DockerRuntimeController {
                         { mode: 0o600 },
                     );
                     if (restoreStopped) await this.compose(["stop", "runtime"]);
-                    await this.refresh();
                     await this.cleanGenerated(state).catch(error => console.error("Generated cleanup deferred:", error.message));
+                    this.finishStarting(['web', 'redis', 'memcached']);
+                    for (const id of ['redis', 'memcached'] as const) if (!state.settings.optionalServices[id] && this.stoppingServices.delete(id)) this.serviceRevision++;
+                    await this.refresh();
                     recoveredOrPromoted = true;
                 } catch (error) {
                     this.set({ state: "starting", message: "Recovering runtime replacement; rolling back to verified configuration…", services: ["runtime"] });
@@ -617,8 +649,8 @@ export class DockerRuntimeController {
     }
     async listManagedServices(): Promise<ManagedServiceStatus[]> {
         const state = await this.getState();
-        const actualDatabaseState = await this.databaseStatus();
-        const databaseState = this.startingServices.has('mariadb') ? 'starting' : this.mariaDbStartFailed && ['stopped', 'starting'].includes(actualDatabaseState) ? 'failed' : actualDatabaseState;
+        const actualDatabaseState = this.restartingServices.has('mariadb') ? 'restarting' : this.stoppingServices.has('mariadb') ? 'stopping' : this.startingServices.has('mariadb') ? 'starting' : await this.databaseStatus();
+        const databaseState = this.restartingServices.has('mariadb') ? 'restarting' : this.stoppingServices.has('mariadb') ? 'stopping' : this.startingServices.has('mariadb') ? 'starting' : this.failedServices.has('mariadb') || this.mariaDbStartFailed && ['stopped', 'starting'].includes(actualDatabaseState) ? 'failed' : actualDatabaseState;
         if (this.snapshot.state !== "running")
             return [
                 {
@@ -630,7 +662,7 @@ export class DockerRuntimeController {
                               ? "Apache"
                               : "Nginx",
                     enabled: true,
-                    state: this.startingServices.has('web') ? 'starting' :
+                    state: this.restartingServices.has('web') ? 'restarting' : this.stoppingServices.has('web') ? 'stopping' : this.startingServices.has('web') ? 'starting' : this.failedServices.has('web') ? 'failed' :
                         this.snapshot.state === "unavailable"
                             ? "unavailable"
                             : "stopped",
@@ -645,16 +677,16 @@ export class DockerRuntimeController {
                     id: "redis",
                     label: "Redis",
                     enabled: state.settings.optionalServices.redis,
-                    state: state.settings.optionalServices.redis
-                        ? this.startingServices.has('redis') ? 'starting' : "stopped"
+                    state: this.restartingServices.has('redis') ? 'restarting' : this.stoppingServices.has('redis') ? 'stopping' : this.startingServices.has('redis') ? 'starting' : state.settings.optionalServices.redis
+                        ? this.failedServices.has('redis') ? 'failed' : "stopped"
                         : "disabled",
                 },
                 {
                     id: "memcached",
                     label: "Memcached",
                     enabled: state.settings.optionalServices.memcached,
-                    state: state.settings.optionalServices.memcached
-                        ? this.startingServices.has('memcached') ? 'starting' : "stopped"
+                    state: this.restartingServices.has('memcached') ? 'restarting' : this.stoppingServices.has('memcached') ? 'stopping' : this.startingServices.has('memcached') ? 'starting' : state.settings.optionalServices.memcached
+                        ? this.failedServices.has('memcached') ? 'failed' : "stopped"
                         : "disabled",
                 },
             ];
@@ -694,7 +726,7 @@ export class DockerRuntimeController {
                           ? "Apache"
                           : "Nginx",
                 enabled: true,
-                state: this.startingServices.has('web') ? 'starting' : supervisorState("web"),
+                state: this.restartingServices.has('web') ? 'restarting' : this.stoppingServices.has('web') ? 'stopping' : this.startingServices.has('web') ? 'starting' : this.failedServices.has('web') ? 'failed' : supervisorState("web"),
             },
             {
                 id: "mariadb",
@@ -706,19 +738,25 @@ export class DockerRuntimeController {
                 id: "redis",
                 label: "Redis",
                 enabled: state.settings.optionalServices.redis,
-                state: state.settings.optionalServices.redis
-                    ? this.startingServices.has('redis') ? 'starting' : supervisorState("redis")
+                state: this.restartingServices.has('redis') ? 'restarting' : this.stoppingServices.has('redis') ? 'stopping' : this.startingServices.has('redis') ? 'starting' : state.settings.optionalServices.redis
+                    ? this.failedServices.has('redis') ? 'failed' : supervisorState("redis")
                     : "disabled",
             },
             {
                 id: "memcached",
                 label: "Memcached",
                 enabled: state.settings.optionalServices.memcached,
-                state: state.settings.optionalServices.memcached
-                    ? this.startingServices.has('memcached') ? 'starting' : supervisorState("memcached")
+                state: this.restartingServices.has('memcached') ? 'restarting' : this.stoppingServices.has('memcached') ? 'stopping' : this.startingServices.has('memcached') ? 'starting' : state.settings.optionalServices.memcached
+                    ? this.failedServices.has('memcached') ? 'failed' : supervisorState("memcached")
                     : "disabled",
             },
         ];
+    }
+    beginOptionalServiceChange(id: 'redis' | 'memcached', enabled: boolean) {
+        if (enabled) this.markStarting(id); else this.markStopping(id);
+    }
+    endOptionalServiceChange(id: 'redis' | 'memcached') {
+        this.clearStarting(id); this.clearStopping(id); this.clearRestarting(id);
     }
     async controlManagedService(
         id: ManagedServiceStatus["id"],
@@ -726,13 +764,14 @@ export class DockerRuntimeController {
     ) {
         const state = await this.getState();
         if (id === "mariadb") return this.runExclusive(action === "stop" ? "stopping" : "starting", `${actionLabel(action)} MariaDB…`, async () => {
+            if (action === 'start') this.markStarting('mariadb'); else if (action === 'stop') this.markStopping('mariadb'); else this.markRestarting('mariadb');
             try {
                 await this.requireDocker();
                 if (action === "stop") await this.databaseCompose(["stop", "mariadb"]);
-                else { await this.prepareDatabase(state); if (action === "restart") await this.databaseCompose(["stop", "mariadb"]); await this.startDatabase(); }
-                this.mariaDbStartFailed = false;
-                await this.refresh(); return this.listManagedServices();
-            } catch (error) { if (action !== 'stop') this.mariaDbStartFailed = true; throw error; }
+                else { await this.prepareDatabase(state); if (action === "restart") { await this.databaseCompose(["stop", "mariadb"]); this.clearStopping('mariadb'); this.markStarting('mariadb'); } await this.startDatabase(); }
+                this.clearStarting('mariadb'); this.clearStopping('mariadb'); this.clearRestarting('mariadb'); this.failedServices.delete('mariadb'); this.mariaDbStartFailed = false;
+                if (!this.fullRestart) await this.refresh(); return this.listManagedServices();
+            } catch (error) { this.failedServices.add('mariadb'); this.mariaDbStartFailed = true; throw error; }
         });
         const name = id === "web" ? "web" : id;
         if (
@@ -755,7 +794,7 @@ export class DockerRuntimeController {
             `${actionLabel(action)} ${id === "web" ? "the active web server" : id}…`,
             async () => {
                 await this.requireDocker();
-                if (action !== 'stop') this.markStarting(id);
+                if (action === 'start') this.markStarting(id); else if (action === 'stop') this.markStopping(id); else this.markRestarting(id);
                 await this.compose([
                     "exec",
                     "-T",
@@ -786,8 +825,9 @@ export class DockerRuntimeController {
                         "-lc",
                         `printf 'version\\r\\n' | nc -w 3 127.0.0.1 ${state.settings.ports.memcached} | grep -q '^VERSION'`,
                     ]);
-                this.clearStarting(id);
+                this.finishStarting([id]);
                 await this.refresh();
+                this.clearStopping(id); this.clearRestarting(id); this.failedServices.delete(id);
                 return this.listManagedServices();
             },
         );
@@ -1414,6 +1454,23 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
             };
         });
     }
+    /** Generates one Site from its canonical definition without touching active files. */
+    exportSiteConfiguration(host: AppState['virtualHosts'][number], server: 'apache' | 'nginx' | 'openlitespeed') {
+        const hostname = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+        if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(host.id) || !Array.isArray(host.aliases) || [host.hostname, ...host.aliases].some(name => typeof name !== 'string' || !hostname.test(name)) || !path.isAbsolute(host.documentRoot) || /[\r\n\0]/.test(host.documentRoot) || host.indexFiles && (!Array.isArray(host.indexFiles) || host.indexFiles.some(index => !/^[a-z0-9_.-]+$/i.test(index)))) throw new Error('Invalid canonical Site configuration; repair it before export.');
+        const container = runtimeDocumentRoot(host);
+        const mounts = [{ host, container }];
+        const warning = host.source?.status === 'Requires review' || host.preservedDirectives?.length
+            ? '# Requires review: unsupported imported source directives are preserved in Vhostra metadata and are not applied here.\n'
+            : '';
+        if (server === 'apache') {
+            const config = apacheConfig(mounts);
+            const secure = host.https.enabled ? config.slice(config.indexOf('<VirtualHost')).replaceAll('<VirtualHost *:8088>', '<VirtualHost *:8443>\n  SSLEngine on\n  SSLCertificateFile /etc/vhostra/certificates/public/localhost.pem\n  SSLCertificateKeyFile /etc/vhostra/certificates/private/localhost.key\n  RequestHeader set X-Forwarded-Proto https') : '';
+            return generatedMarker + warning + config + secure;
+        }
+        if (server === 'nginx') return generatedMarker + warning + nginxConfig(mounts, host.https.enabled);
+        return generatedMarker + warning + `# OpenLiteSpeed virtual-host file for ${host.hostname}.\n# Register this file in the server's virtualHost and listener map separately.\n` + openLiteSpeedSiteConfig(host, container);
+    }
     async repairDatabase(name: string) {
         const database = sqlIdentifier(name, "database name");
         return this.runDatabaseOperation(
@@ -1529,6 +1586,7 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
         this.snapshot = {
             ...next,
             serviceRevision: this.serviceRevision,
+            serviceTransitions: this.transitionStates(),
             progress: this.progress ? { ...this.progress, lines: [...this.progress.lines] } : undefined,
             message: redactProgress(message, this.secrets),
             updatedAt: new Date().toISOString(),
@@ -1539,16 +1597,57 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
         this.listeners.forEach((listener) => listener());
         return this.snapshot;
     }
+    private transitionStates(): RuntimeSnapshot['serviceTransitions'] {
+        const states: RuntimeSnapshot['serviceTransitions'] = {};
+        for (const id of this.startingServices) states[id] = 'starting';
+        for (const id of this.stoppingServices) states[id] = 'stopping';
+        for (const id of this.restartingServices) states[id] = 'restarting';
+        return states;
+    }
     private markStarting(id: ManagedServiceStatus['id']) {
+        this.stoppingServices.delete(id);
+        this.restartingServices.delete(id);
+        this.failedServices.delete(id);
         this.startingServices.add(id);
         this.serviceRevision++;
-        this.snapshot = { ...this.snapshot, serviceRevision: this.serviceRevision };
+        this.snapshot = { ...this.snapshot, serviceRevision: this.serviceRevision, serviceTransitions: this.transitionStates() };
         this.listeners.forEach(listener => listener());
     }
     private clearStarting(id: ManagedServiceStatus['id']) {
         if (!this.startingServices.delete(id)) return;
         this.serviceRevision++;
-        this.snapshot = { ...this.snapshot, serviceRevision: this.serviceRevision };
+        this.snapshot = { ...this.snapshot, serviceRevision: this.serviceRevision, serviceTransitions: this.transitionStates() };
+        this.listeners.forEach(listener => listener());
+    }
+    private finishStarting(ids: ManagedServiceStatus['id'][]) {
+        let changed = false;
+        for (const id of ids) changed = this.startingServices.delete(id) || changed;
+        if (changed) this.serviceRevision++;
+    }
+    private markStopping(id: ManagedServiceStatus['id']) {
+        this.startingServices.delete(id);
+        this.restartingServices.delete(id);
+        this.failedServices.delete(id);
+        this.stoppingServices.add(id);
+        this.serviceRevision++;
+        this.snapshot = { ...this.snapshot, serviceRevision: this.serviceRevision, serviceTransitions: this.transitionStates() };
+        this.listeners.forEach(listener => listener());
+    }
+    private clearStopping(id: ManagedServiceStatus['id']) {
+        if (!this.stoppingServices.delete(id)) return;
+        this.serviceRevision++;
+        this.snapshot = { ...this.snapshot, serviceRevision: this.serviceRevision, serviceTransitions: this.transitionStates() };
+        this.listeners.forEach(listener => listener());
+    }
+    private markRestarting(id: ManagedServiceStatus['id']) {
+        this.startingServices.delete(id); this.stoppingServices.delete(id); this.failedServices.delete(id);
+        this.restartingServices.add(id); this.serviceRevision++;
+        this.snapshot = { ...this.snapshot, serviceRevision: this.serviceRevision, serviceTransitions: this.transitionStates() };
+        this.listeners.forEach(listener => listener());
+    }
+    private clearRestarting(id: ManagedServiceStatus['id']) {
+        if (!this.restartingServices.delete(id)) return;
+        this.serviceRevision++; this.snapshot = { ...this.snapshot, serviceRevision: this.serviceRevision, serviceTransitions: this.transitionStates() };
         this.listeners.forEach(listener => listener());
     }
     private async runExclusive<T>(
@@ -1574,6 +1673,7 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
             } catch { /* first start has no credentials yet */ }
             return task();
         }).catch(async (error) => {
+            for (const id of [...this.startingServices, ...this.stoppingServices, ...this.restartingServices]) this.failedServices.add(id);
             const current = await this.getState().catch(()=>null);
             const mappings: Array<[string,string]> = [['/etc/vhostra/nginx',this.layout.runtime.nginx],['/etc/vhostra/apache',this.layout.runtime.apache],['/etc/vhostra/php',this.layout.runtime.php],['/etc/vhostra/openlitespeed',this.layout.runtime.openLiteSpeed],['/usr/local/lsws/conf/vhostra-sites',this.layout.runtime.openLiteSpeed], ...(current?.sites ?? []).filter(site=>!site.builtIn).map(site=>[`/var/www/vhostra/${site.vhostId}`,site.documentRoot] as [string,string])];
             const message = mapDiagnosticPaths(redactProgress(error instanceof Error ? error.message : String(error), this.secrets),mappings);
@@ -1591,10 +1691,12 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
             )
             .finally(() => {
                 this.operation = null;
-                if (this.startingServices.size) {
+                if (this.startingServices.size || this.stoppingServices.size || this.restartingServices.size && !this.fullRestart) {
                     this.startingServices.clear();
+                    this.stoppingServices.clear();
+                    if (!this.fullRestart) this.restartingServices.clear();
                     this.serviceRevision++;
-                    this.snapshot = { ...this.snapshot, serviceRevision: this.serviceRevision };
+                    this.snapshot = { ...this.snapshot, serviceRevision: this.serviceRevision, serviceTransitions: this.transitionStates() };
                 }
                 clearTimeout(this.progressNotification); this.progressNotification = undefined;
                 this.progress = undefined;
@@ -2209,9 +2311,6 @@ foreach (['localhost', '127.0.0.1'] as $host) {
                     "The requested cwebp binary is unavailable in the Vhostra runtime.",
                 );
         }
-        this.clearStarting('web');
-        this.clearStarting('redis');
-        this.clearStarting('memcached');
     }
     private async availablePhpPackages() {
         const state = await this.getState();
@@ -2377,11 +2476,13 @@ foreach (['localhost', '127.0.0.1'] as $host) {
     private async databaseStatus(): Promise<ManagedServiceStatus["state"]> {
         try {
             const ids = await this.databaseContainerIds(true);
-            if (!ids.length) return "stopped";
+            if (!ids.length) { this.databaseReadyStartedAt = undefined; return "stopped"; }
             const [row] = JSON.parse(await this.docker(["inspect", ...ids]));
             if (row.State.Status === "restarting" || row.State.Status === "created") return "starting";
-            if (!row.State.Running) return row.State.OOMKilled || row.State.Error || (row.State.ExitCode && ![137, 143].includes(row.State.ExitCode)) ? "failed" : "stopped";
-            return row.State.Health?.Status === "healthy" ? "running" : row.State.Health?.Status === "unhealthy" ? "unhealthy" : "starting";
+            if (!row.State.Running) { this.databaseReadyStartedAt = undefined; return row.State.OOMKilled || row.State.Error || (row.State.ExitCode && ![137, 143].includes(row.State.ExitCode)) ? "failed" : "stopped"; }
+            if (row.State.Health?.Status === "unhealthy") return "unhealthy";
+            if (row.State.Health?.Status === "healthy" || this.databaseReadyStartedAt !== undefined && this.databaseReadyStartedAt === row.State.StartedAt) return "running";
+            return "starting";
         } catch { return "unavailable"; }
     }
     async allServicesStopped() {
@@ -2487,11 +2588,22 @@ networks:
         this.clearStarting('mariadb');
     }
     private async waitForDatabase() {
-        for (let attempt = 0; attempt < 90; attempt++) {
-            const status = await this.databaseStatus();
-            if (status === "running") return;
-            if (status === "failed" || status === "unhealthy") throw new Error(`MariaDB is ${status}. Inspect its local bounded logs; persistent data was retained.`);
-            await wait(1000);
+        const ids = await this.databaseContainerIds(true);
+        if (!ids.length) throw new Error('MariaDB container was not created. Persistent data was retained.');
+        const deadline = Date.now() + 90000;
+        for (let attempt = 0; attempt < 90 && Date.now() < deadline; attempt++) {
+            const [row] = JSON.parse(await this.docker(['inspect', ids[0]]));
+            if (row.State.Health?.Status === 'healthy') { this.databaseReadyStartedAt = row.State.StartedAt; return; }
+            if (row.State.Health?.Status === 'unhealthy' || !row.State.Running && row.State.Status !== 'created' && row.State.Status !== 'restarting') throw new Error('MariaDB did not become healthy. Inspect its local bounded logs; persistent data was retained.');
+            if (row.State.Running) {
+                try {
+                    this.counters.dockerCalls++;
+                    await execute('docker', ['exec', ids[0], '/bin/sh', '-lc', "mariadb --protocol=socket -uroot -N -e 'SELECT 1' >/dev/null && pgrep -x socat >/dev/null"], false, undefined, Math.min(5000, Math.max(1000, deadline - Date.now())));
+                    this.databaseReadyStartedAt = row.State.StartedAt;
+                    return;
+                } catch { /* Active startup probe; Docker health remains the fallback. */ }
+            }
+            if (Date.now() < deadline) await wait(Math.min(1000, deadline - Date.now()));
         }
         throw new Error("MariaDB did not become healthy within 90 seconds. Persistent data was retained.");
     }

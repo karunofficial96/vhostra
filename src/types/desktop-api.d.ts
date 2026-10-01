@@ -28,6 +28,7 @@ export interface VhostraDesktopApi {
   newSitePlan(): Promise<{ id: string; logs: { access: string; error: string } }>
   repairSite(id: string): Promise<HostsMappingResult>
   siteDetails(id: string, includeNative?: boolean): Promise<{ host: VhostraState['virtualHosts'][number]; native: string; nativePath: string; logs: { access: string; error: string } }>
+  exportSiteConfiguration(siteId: string, server: WebServer): Promise<{ path: string; requiresReview: boolean } | null>
   runtimeStatuses(): Promise<RuntimeStatusRow[]>
   getOnboarding(): Promise<{ preferences: OnboardingPreferences; phpVersions: VhostraSettings['selectedPhpVersion'][] }>
   saveOnboarding(preferences: OnboardingPreferences): Promise<OnboardingPreferences>
@@ -61,7 +62,7 @@ export interface VhostraDesktopApi {
   findAvailablePort(port: number): Promise<number>
   reloadWebServer(): Promise<void>
   setOptionalService(id: 'redis' | 'memcached', enabled: boolean): Promise<Array<{ id: 'web' | 'mariadb' | 'redis' | 'memcached'; label: string; enabled: boolean; state: string }>>
-  listManagedServices(): Promise<Array<{ id: 'web' | 'mariadb' | 'redis' | 'memcached'; label: string; enabled: boolean; state: 'running' | 'stopped' | 'starting' | 'failed' | 'unhealthy' | 'disabled' | 'unavailable' }>>
+  listManagedServices(): Promise<Array<{ id: 'web' | 'mariadb' | 'redis' | 'memcached'; label: string; enabled: boolean; state: 'running' | 'stopped' | 'starting' | 'stopping' | 'restarting' | 'failed' | 'unhealthy' | 'disabled' | 'unavailable' }>>
   controlManagedService(id: 'web' | 'mariadb' | 'redis' | 'memcached', action: 'start' | 'stop' | 'restart'): Promise<Array<{ id: 'web' | 'mariadb' | 'redis' | 'memcached'; label: string; enabled: boolean; state: string }>>
   listDatabaseUsers(): Promise<Array<{ username: string; host: string; globalPrivileges: string[]; roles: string[]; access: Array<{ database: string; privilege: string }> }>>
   changeDatabaseUserPassword(input: { username: string; host: string; password: string }): Promise<{ message: string }>
@@ -77,6 +78,7 @@ export interface VhostraDesktopApi {
   openPhpMyAdmin(database?: string): Promise<void>
   importDatabase(database: string): Promise<{ database: string; message: string } | null>
   exportDatabase(database: string): Promise<{ database: string; message: string } | null>
+  exportProductionDatabase(database: string, productionUrl: string, productionRoot: string): Promise<{ database: string; message: string } | null>
   repairDatabase(database: string): Promise<{ database: string; message: string }>
   deleteDatabase(database: string): Promise<{ database: string; message: string }>
   syncAllHosts(): Promise<HostsMappingResult>

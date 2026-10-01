@@ -158,17 +158,18 @@ async function safelyEnsureHosts(hostnames: string[]) {
 
 async function setOptionalService(id: "redis" | "memcached", enabled: boolean) {
     const state = await store.getState();
-    await store.saveSettings({
-        ...state.settings,
-        optionalServices: { ...state.settings.optionalServices, [id]: enabled },
-    });
+    services.beginOptionalServiceChange(id, enabled);
     try {
+        await store.saveSettings({
+            ...state.settings,
+            optionalServices: { ...state.settings.optionalServices, [id]: enabled },
+        });
         await services.applyConfiguration();
         await services.refresh();
     } catch (error) {
         await store.saveSettings(state.settings);
         throw error;
-    }
+    } finally { services.endOptionalServiceChange(id); }
 }
 
 const createWindow = () => {
@@ -343,11 +344,18 @@ async function previewBackupFile(source: string) {
     return { ...preview, warnings: full ? preview.warnings.filter(warning => !warning.startsWith("This configuration bundle")).concat("Full backup includes database data, users, roles and grants. Website files, cache contents, system accounts and private TLS keys are excluded. Keep the private sibling folder with the manifest.") : preview.warnings, source, databaseItems: full?.items ?? [], plannedLogs: Object.fromEntries(Object.entries(plans).map(([hostname, id]) => [hostname, { access: path.join(store.layout.logs, "sites", id, "access.log"), error: path.join(store.layout.logs, "sites", id, "error.log") }])) };
 }
 function registerIpc() {
+    const assertExportDestination = async (destination: string) => {
+        const parent = await fs.realpath(path.dirname(destination));
+        const managed = await fs.realpath(store.layout.root);
+        const exports = await fs.realpath(store.layout.exports).catch(() => path.resolve(store.layout.exports));
+        const within = (child: string, root: string) => child === root || child.startsWith(root + path.sep);
+        if (within(parent, managed) && !within(parent, exports)) throw new Error('Choose an export destination outside Vhostra active configuration and runtime storage.');
+    };
     const migrationMutations = new Set([
         "cancel-backup-preview", "export-full-backup", "compare-backup-database", "repair-site", "finish-onboarding", "reset-app", "edit-hosts", "restore-backup", "setup-onboarding", "save-onboarding", "apply-native-import", "save-settings", "add-site", "update-site", "remove-site", "sync-all-hosts", "sync-hosts",
         "set-vhost-rewrite", "import-configuration", "start-services", "stop-services", "restart-services",
         "reload-web-server", "set-optional-service", "control-managed-service", "manage-php-extension",
-        "configure-cwebp", "create-database", "update-database-access", "import-database", "repair-database", "delete-database", "quit-application",
+        "configure-cwebp", "create-database", "update-database-access", "import-database", "export-database", "export-production-database", "export-site-configuration", "repair-database", "delete-database", "quit-application",
     ]);
     const handle = (channel: string, listener: Parameters<typeof ipcMain.handle>[1]) => ipcMain.handle(channel, async (event, ...args) => {
         const mutating = migrationMutations.has(channel.replace("vhostra:", ""));
@@ -740,6 +748,21 @@ function registerIpc() {
         try { if (includeNative) { const details = await fs.stat(file); if (details.size > 1024 * 1024) native = "Generated configuration exceeds the 1 MiB preview limit."; else native = await fs.readFile(file, "utf8"); } } catch { /* no generated runtime yet */ }
         return { host: { ...host, source: host.source ? { ...host.source, raw: undefined } : undefined }, native, nativePath: file, logs: { access: path.join(store.layout.logs, "sites", host.id, "access.log"), error: path.join(store.layout.logs, "sites", host.id, "error.log") } };
     });
+    handle("vhostra:export-site-configuration", async (_event, id: string, server: WebServer) => {
+        if (!['apache', 'nginx', 'openlitespeed'].includes(server)) throw new Error('Choose a supported export server.');
+        const state = await store.getState();
+        const site = state.sites.find(item => item.id === id);
+        const host = state.virtualHosts.find(item => item.id === site?.vhostId);
+        if (!site || !host) throw new Error('Site not found.');
+        const result = await dialog.showSaveDialog({ title: `Export ${server} configuration`, defaultPath: `${host.hostname}-${server}.conf`, filters: [{ name: 'Server configuration', extensions: ['conf'] }] });
+        if (result.canceled || !result.filePath) return null;
+        await assertExportDestination(result.filePath);
+        const content = services.exportSiteConfiguration(host, server);
+        const temporary = `${result.filePath}.vhostra-${randomUUID()}.tmp`;
+        try { await fs.writeFile(temporary, content, { mode: 0o600, flag: 'wx' }); await fs.rename(temporary, result.filePath); }
+        finally { await fs.rm(temporary, { force: true }); }
+        return { path: result.filePath, requiresReview: host.source?.status === 'Requires review' || Boolean(host.preservedDirectives?.length) };
+    });
     handle("vhostra:list-persistent-logs", async (_event, filter = "all") => {
         if (filter === "all") return listPersistentLogs(store.layout.logs);
         if (filter === "runtime") return [...await listPersistentLogs(store.layout.logs, false), ...(await listPersistentLogs(path.join(store.layout.logs, "mariadb"))).map(file => ({ ...file, path: path.join("mariadb", file.path) }))].sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt)).slice(0, 100);
@@ -948,6 +971,19 @@ function registerIpc() {
                 : services.exportDatabase(database, result.filePath);
         },
     );
+    handle('vhostra:export-production-database', async (_event, database: string, productionUrl: string, productionRoot: string) => {
+        if (typeof productionUrl !== 'string' || productionUrl.length > 2048 || typeof productionRoot !== 'string' || productionRoot.length > 4096) throw new Error('Enter a valid production URL and root directory.');
+        let url: URL;
+        try { url = new URL(productionUrl); } catch { throw new Error('Enter a valid production URL.'); }
+        if (url.protocol !== 'https:' && url.protocol !== 'http:' || url.username || url.password || !url.hostname || url.search || url.hash) throw new Error('Enter a production HTTP or HTTPS URL without credentials, query or fragment.');
+        if (!productionRoot || !path.isAbsolute(productionRoot) || /[\r\n\0]/.test(productionRoot)) throw new Error('Enter an absolute production root directory.');
+        if (!(await services.listDatabases()).includes(database)) throw new Error('Choose an existing database.');
+        const result = await dialog.showSaveDialog({ title: `Export ${database} for production`, defaultPath: `${database}-production.sql`, filters: [{ name: 'SQL database dump', extensions: ['sql'] }] });
+        if (result.canceled || !result.filePath) return null;
+        await assertExportDestination(result.filePath);
+        const exported = await services.exportDatabase(database, result.filePath);
+        return { ...exported, message: 'Database exported successfully. Data was exported unchanged; update application-specific URLs and paths after deployment.' };
+    });
     handle("vhostra:repair-database", (_event, database: string) =>
         services.repairDatabase(database),
     );

@@ -10,6 +10,7 @@ export interface RuntimeSnapshot {
   progress?: { id: number; lines: string[] }
   updatedAt: string
   serviceRevision?: number
+  serviceTransitions?: Partial<Record<'web' | 'mariadb' | 'redis' | 'memcached', 'starting' | 'stopping' | 'restarting'>>
 }
 
 export interface ServiceConfiguration {

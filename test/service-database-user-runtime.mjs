@@ -1,6 +1,6 @@
 // Isolated exact User@Host acceptance. Never touches the default Vhostra profile.
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, readFile, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import net from 'node:net'
@@ -29,6 +29,12 @@ try {
   assert.equal(independent.find(row => row.id === 'mariadb').state, 'running')
   assert.equal(independent.find(row => row.id === 'web').state, 'stopped')
   const sql = statement => runtime.databaseCompose(['exec', '-T', 'mariadb', 'mariadb', '-uroot', '-N', '-e', statement])
+  await sql("CREATE DATABASE export_fixture; CREATE TABLE export_fixture.payload (id INT PRIMARY KEY AUTO_INCREMENT, body MEDIUMTEXT); INSERT INTO export_fixture.payload(body) VALUES ('a:1:{s:4:\"home\";s:17:\"http://local.test\";}'); INSERT INTO export_fixture.payload(body) SELECT REPEAT('X', 10000) FROM information_schema.COLUMNS LIMIT 150")
+  const dump = path.join(profile, 'large-export.sql')
+  await runtime.exportDatabase('export_fixture', dump)
+  assert.ok((await stat(dump)).size > 1000000, 'Large-enough streamed dump fixture missing')
+  assert.match(await readFile(dump, 'utf8'), /http:\/\/local\.test/)
+  await assert.rejects(runtime.exportDatabase('export_fixture', path.join(profile, 'missing-directory', 'invalid.sql')))
   await sql("CREATE USER 'exact_user'@'localhost' IDENTIFIED BY 'fixture-original-pass'; CREATE USER 'exact_user'@'%' IDENTIFIED BY 'fixture-other-pass'")
   const accounts = await runtime.listDatabaseUsers()
   assert.ok(accounts.some(row => row.username === 'exact_user' && row.host === 'localhost'))
@@ -40,6 +46,7 @@ try {
   assert.equal((await sql("SELECT COUNT(*) FROM mysql.user WHERE User='exact_user' AND Host='localhost'")).trim(), '0')
   assert.equal((await sql("SELECT COUNT(*) FROM mysql.user WHERE User='exact_user' AND Host='%'")).trim(), '1')
   await runtime.controlManagedService('mariadb', 'stop')
+  await Promise.all(checks); assert.ok(observed.includes('stopping'), `MariaDB did not publish Stopping: ${observed.join(', ')}`)
   assert.equal((await runtime.listManagedServices()).find(row => row.id === 'mariadb').state, 'stopped')
   const occupiedPort = net.createServer()
   await new Promise((resolve, reject) => occupiedPort.once('error', reject).listen(35306, '127.0.0.1', resolve))

@@ -1,0 +1,118 @@
+import assert from 'node:assert/strict'
+import { app, dialog } from 'electron'
+import { mkdtempSync } from 'node:fs'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+
+const profile = mkdtempSync(path.join(os.tmpdir(), 'vhostra-required-export-ui-'))
+app.setPath('userData', profile)
+const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
+const deadline = setTimeout(() => app.exit(1), 90000)
+app.whenReady().then(async () => {
+  let window, runtime, passed = false
+  try {
+    const { VhostraStore } = await import('../dist-electron/store.js')
+    const store = new VhostraStore(profile, path.resolve('dist-welcome'))
+    const root = path.join(profile, 'site'); await mkdir(root)
+    const state = await store.addSite({ name: 'Export Site', url: 'http://export.test/', documentRoot: root })
+    const site = state.sites.find(item => item.name === 'Export Site')
+    await store.saveOnboarding({ ...await store.getOnboarding(), completed: true, themeSaved: true, theme: 'light' })
+    const { applicationSession } = await import('../dist-electron/main.js')
+    await pause(600)
+    ;({ window, runtime } = applicationSession())
+    const native = applicationSession()
+    runtime.scope = `vhostra-export-ui-${process.pid}`
+    runtime.listManagedServices = async () => [{ id: 'web', label: 'Nginx', enabled: true, state: 'running' }, { id: 'mariadb', label: 'MariaDB', enabled: true, state: 'running' }]
+    runtime.listDatabases = async () => ['export_db']
+    runtime.listDatabaseUsers = async () => []
+    let dumpCalls = 0
+    runtime.exportDatabase = async (_database, destination) => { dumpCalls++; await writeFile(destination, 'CREATE DATABASE export_db;\n'); return { database: 'export_db', message: 'Exported.' } }
+    runtime.set({ state: 'running', message: 'Fixture runtime running.', services: ['runtime'] })
+    const evaluate = code => window.webContents.executeJavaScript(code)
+    const waitFor = async code => { const until = Date.now() + 15000; while (!await evaluate(code)) { if (Date.now() > until) throw Error(`UI timeout: ${code}`); await pause(80) } }
+    const nav = label => evaluate(`(()=>{[...document.querySelectorAll('nav button')].find(b=>b.textContent.trim()===${JSON.stringify(label)}).click()})()`)
+    const click = label => evaluate(`(()=>{[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===${JSON.stringify(label)}).click()})()`)
+    await waitFor('document.body.textContent.includes("Dashboard")')
+    await nav('Sites'); await waitFor('document.body.textContent.includes("Export Site")')
+    await click('Add site'); await waitFor('document.body.textContent.includes("Add site")')
+    assert.equal(await evaluate('document.body.textContent.includes("Framework (optional)")'), false)
+    assert.equal(await evaluate('document.body.textContent.includes("Associated database (optional)")'), false)
+    await click('Cancel')
+    const config = path.join(profile, 'exported-apache.conf')
+    dialog.showSaveDialog = async () => ({ canceled: false, filePath: config })
+    await click('Export'); await waitFor('document.body.textContent.includes("Configuration exported successfully.")')
+    assert.match(await readFile(config, 'utf8'), /<VirtualHost/)
+    assert.match(await readFile(config, 'utf8'), /export\.test/)
+    assert.equal((await store.getState()).settings.selectedWebServer, 'openlitespeed')
+    assert.equal((await store.getState()).sites.find(item => item.id === site.id).url, site.url)
+    await mkdir(store.layout.configuration.generated, { recursive: true })
+    dialog.showSaveDialog = async () => ({ canceled: false, filePath: path.join(store.layout.configuration.generated, 'unsafe.conf') })
+    await assert.rejects(evaluate(`window.vhostra.exportSiteConfiguration(${JSON.stringify(site.id)},'apache')`), /outside Vhostra active configuration/)
+    await nav('Database'); await waitFor('document.body.textContent.includes("Export Database for Production")')
+    const fill = (selector, value) => evaluate(`(()=>{const input=document.querySelector(${JSON.stringify(selector)});const descriptor=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');descriptor.set.call(input,${JSON.stringify(value)});input.dispatchEvent(new Event('input',{bubbles:true}))})()`)
+    await evaluate("(()=>{const input=document.querySelector('select:has(option[value=export_db])');input.value='export_db';input.dispatchEvent(new Event('change',{bubbles:true}))})()")
+    await fill('input[placeholder="https://example.com"]', 'https://example.com')
+    await fill('input[placeholder="/var/www/example.com"]', '/var/www/example.com')
+    await evaluate("[...document.querySelectorAll('form')].find(form=>form.textContent.includes('Export Database for Production')).scrollIntoView({block:'center'})")
+    await pause(250)
+    assert.ok(await evaluate("document.querySelector('main > section > div.overflow-auto').scrollTop>0"))
+    await writeFile('/private/tmp/vhostra-required-production-export-ui.png', (await window.webContents.capturePage()).toPNG())
+    await evaluate("document.querySelector('button[aria-label^=\"Appearance:\"]').click()")
+    await waitFor("window.vhostra.getOnboarding().then(value=>value.preferences.theme==='system')")
+    await pause(500)
+    await evaluate("document.querySelector('button[aria-label^=\"Appearance:\"]').click()")
+    await waitFor("window.vhostra.getOnboarding().then(value=>value.preferences.theme==='dark')")
+    await pause(500)
+    assert.equal(await evaluate('document.documentElement.dataset.theme'), 'dark')
+    await writeFile('/private/tmp/vhostra-required-production-export-dark-ui.png', (await window.webContents.capturePage()).toPNG())
+    await evaluate("document.querySelector('button[aria-label^=\"Appearance:\"]').click()")
+    await waitFor("window.vhostra.getOnboarding().then(value=>value.preferences.theme==='light')")
+    await pause(500)
+    const dump = path.join(profile, 'exported.sql')
+    dialog.showSaveDialog = async () => ({ canceled: false, filePath: dump })
+    await evaluate("(()=>{[...document.querySelectorAll('form')].find(form=>form.textContent.includes('Export Database for Production')).querySelector('button').click()})()")
+    await waitFor('document.body.textContent.includes("Database exported successfully.")')
+    assert.match(await readFile(dump, 'utf8'), /CREATE DATABASE export_db/)
+    assert.match(await evaluate('document.body.textContent'), /Data was exported unchanged/)
+    const exportFormButton = "[...document.querySelectorAll('form')].find(form=>form.textContent.includes('Export Database for Production')).querySelector('button')"
+    dialog.showSaveDialog = async () => ({ canceled: true })
+    await evaluate(`${exportFormButton}.click()`); await pause(200)
+    assert.equal(dumpCalls, 1, 'Canceled export must not dump data')
+    dialog.showSaveDialog = async () => ({ canceled: false, filePath: path.join(profile, 'missing-directory', 'invalid.sql') })
+    await evaluate(`${exportFormButton}.click()`); await waitFor('!!document.querySelector("[role=alert]")')
+    assert.equal(dumpCalls, 1, 'Invalid destination must be rejected before dumping data')
+    const hostsFile = path.join(profile, 'fixture-hosts')
+    await writeFile(hostsFile, '127.0.0.1 export.test created.test imported.test\n')
+    Object.defineProperty(native.hosts, 'hostsPath', { value: hostsFile, configurable: true })
+    runtime.applyConfiguration = async () => {}
+    await nav('Sites'); await waitFor('document.body.textContent.includes("Export Site")')
+    await click('Add site')
+    const formFill = (index, value) => evaluate(`(()=>{const input=document.querySelectorAll('form input')[${index}];Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(value)});input.dispatchEvent(new Event('input',{bubbles:true}))})()`)
+    await formFill(0, 'Created Site'); await formFill(1, 'http://created.test/'); await formFill(3, root)
+    await writeFile('/private/tmp/vhostra-required-add-site-ui.png', (await window.webContents.capturePage()).toPNG())
+    window.setSize(860, 620)
+    const scrollPane = "document.querySelector('main > section > div.overflow-auto')"
+    await evaluate(`(()=>{const pane=${scrollPane};pane.scrollTop=200})()`)
+    assert.ok(await evaluate(`${scrollPane}.scrollTop>0`), 'Site content pane must be scrollable for result acceptance')
+    await click('Save site'); await waitFor('document.body.textContent.includes("Site created successfully.")')
+    await waitFor(`${scrollPane}.scrollTop<5`)
+    assert.match(await evaluate('document.body.textContent'), /If this Site requires a database, create or import it in Databases/)
+    assert.equal((await store.getState()).sites.find(item => item.name === 'Created Site').database, undefined)
+    const source = path.join(profile, 'import.conf')
+    const sourceText = `<VirtualHost *:80>\nServerName imported.test\nDocumentRoot "${root}"\n</VirtualHost>\n`
+    await writeFile(source, sourceText)
+    await evaluate("[...document.querySelectorAll('summary')].find(s=>s.textContent.includes('Import existing server configuration')).click()")
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [source] })
+    await click('Choose configuration and preview'); await waitFor('document.body.textContent.includes("imported.test")')
+    await evaluate(`(()=>{const pane=${scrollPane};pane.scrollTop=200})()`)
+    await click('Accept findings and import Sites'); await waitFor('document.body.textContent.includes("Site configuration imported successfully.")')
+    await waitFor(`${scrollPane}.scrollTop<5`)
+    assert.match(await evaluate('document.body.textContent'), /If this Site requires a database, create or import it in Databases/)
+    assert.equal((await store.getState()).sites.find(item => item.url.includes('imported.test')).database, undefined)
+    assert.equal(await readFile(source, 'utf8'), sourceText)
+    console.log('PASS Add Site, vhost import/reminders, native vhost export, unchanged canonical Site, and generic production export UI')
+    passed = true
+  } catch (error) { console.error(error) }
+  finally { clearTimeout(deadline); await runtime?.pauseBackgroundWork(); runtime?.dispose(); window?.destroy(); await (await import('../dist-electron/logs.js')).drainApplicationLogs(); if (passed) await rm(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); else console.error('Retained isolated UI fixture:', profile); app.exit(passed ? 0 : 1) }
+})

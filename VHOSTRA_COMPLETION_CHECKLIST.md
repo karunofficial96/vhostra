@@ -290,3 +290,16 @@ Detailed evidence and diagnosis: `docs/site-previews.md`. Original database/runt
 - [x] Native Logs acceptance covered a real 73 KiB file with a 70,000-character line and 500 further lines, the 64 KiB tail/truncation notice, wrapping at the 860 px minimum window, and a removed-file read error with selectable diagnostic text. The narrow screenshot was inspected.
 - [ ] Complete actual system-theme Logs check, full Electron process restart after a selected configuration path, and backup-import onboarding interaction under an isolated desktop profile.
 - [ ] Verify all represented service transitions including safe actual failure cases for web/cache/PHP/phpMyAdmin. Matched pre/post-cURL isolated Nginx/MariaDB and clean packaged Electron idle samples are recorded in PERFORMANCE.md; broader platform and workload budgets remain open.
+
+## Lifecycle and export continuation — 2026-10-01
+
+- [x] Independent MariaDB Starting, Stopping, Running, Stopped and genuine failed-start transitions passed against an isolated container; no real stop remains labelled Running.
+- [x] Sequential shared Nginx/MariaDB Start, Stop and Restart acceptance passed, including direct backend transition events, Docker process timestamps, healthy final states and exact resource cleanup. Individual web Stop/Start also passed with PHP Stopped after frontend shutdown. A transient web Stopped event during startup was found and fixed before the final run.
+- [x] Add Site no longer shows Framework or Associated database. Native UI verified the remaining form and read-only Site config export; Site save and native-vhost import show the database reminder through their success notice paths.
+- [x] Apache, Nginx and OpenLiteSpeed per-Site exports use the canonical host and existing generators on demand; the isolated runtime fixture checked each structure and unchanged canonical state. Unsupported imported directives are marked Requires review and left inactive.
+- [x] Generic local production database export uses the existing streamed MariaDB dump, validates destination inputs and exports SQL unchanged. Native UI verified the form and local save. No WordPress-specific conversion or raw SQL replacement is performed.
+- [x] README states local development only, explains production hosting/SSL limits, and preserves the no-Vhostra-license notice.
+- [x] Isolated native UI created a Site, imported an Apache vhost, displayed both database reminders at the top of the scrolled content pane, preserved the source, and did not fabricate databases.
+- [x] Isolated MariaDB exported over 1 MiB of SQL with serialized-style content unchanged and rejected an invalid destination. Native UI cancellation performed no dump; an invalid destination and a Save target inside active Vhostra configuration were rejected before writing.
+- [x] Optional-service state contract confirms Starting before enable, Stopping during disable even after the setting changes, and Disabled after completion; disabled caches do not appear Restarting in the full runtime fixture.
+- [ ] WordPress-aware conversion, actual optional cache/web/phpMyAdmin failure transitions, and matched post-change CPU/RAM/peak-dump-memory measurements remain to be verified. Production export intentionally leaves WordPress data unchanged until a serialization-safe conversion strategy exists.

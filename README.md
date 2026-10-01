@@ -4,6 +4,8 @@
 
 Vhostra is a lightweight, cross-platform graphical local PHP development environment. It is designed around one shared runtime: many local websites use one selected web server, one selected PHP version, and shared supporting services.
 
+**Local development only.** Vhostra runs on your own computer and is not a production hosting control panel. Its runtime and security model are intended for local development, not an Internet-facing server. It does not provide the hosting or SSL management expected of a production platform. Local database and Site configuration exports can help you move a project to a separate production host.
+
 ## Source and Licensing
 
 Vhostra's source is publicly viewable, but no software license is currently granted for Vhostra itself. Third-party software, fonts, icons, and assets retain their own terms; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
@@ -89,7 +91,9 @@ Changing the global server renders a new target-server configuration from the ne
 
 ## Configuration import, export, and recovery
 
-The architecture defines a portable `vhostra/config-bundle` manifest with schema version `1`. The current Export Configuration action writes an all-configuration JSON bundle containing settings, site definitions, and neutral vhost definitions. Preview Import validates a selected bundle; Import Configuration creates a local backup, adds non-conflicting definitions, refreshes runtime configuration, and requests scoped hosts mappings. Individual-site/vhost/server/PHP/MariaDB/optional-service export scopes are represented in the model and planned for the export UI.
+The architecture defines a portable `vhostra/config-bundle` manifest with schema version `1`. The current Export Configuration action writes an all-configuration JSON bundle containing settings, site definitions, and neutral vhost definitions. Preview Import validates a selected bundle; Import Configuration creates a local backup, adds non-conflicting definitions, refreshes runtime configuration, and requests scoped hosts mappings. Each Site can also export on-demand Apache, Nginx, or OpenLiteSpeed virtual-host configuration generated from its canonical definition. OpenLiteSpeed listener mapping is a separate server-level setting, noted in its exported file. Imported directives requiring review remain inactive in incompatible exports.
+
+The Database page can save a local MariaDB SQL dump for deployment elsewhere. Production URL and root directory describe the destination; Vhostra leaves application data unchanged because generic SQL replacement can corrupt serialized or application-specific values. Update those values with the application's supported tools after deployment. Exports do not upload or deploy data.
 
 By default, a portable configuration bundle excludes website content, database contents, passwords/secrets, and private TLS keys. Those require separate, explicit backup/export behavior. Imports create a local recovery snapshot before applying validated site definitions. Migration copies and verifies managed data before switching locations; runtime replacement retains verified configuration and an image lease until promotion/recovery succeeds.
 
