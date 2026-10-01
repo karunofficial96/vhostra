@@ -53,3 +53,6 @@ html[data-theme="dark"] .runtime-line-error { color: #ff7373; }
 input, textarea, [contenteditable="true"], [contenteditable="true"] *, .selectable, .selectable-value, .selectable-status, .selectable-path, .selectable-message, .selectable-diagnostic, .runtime-terminal, .runtime-line { -webkit-user-select: text; user-select: text; }
 /* Labels inside a copyable diagnostic/document remain UI chrome. */
 h1, h2, h3, h4, h5, h6, summary, dt, button, nav, label, select, .ui-label { -webkit-user-select: none; user-select: none; }
+
+/* Help opts in by content role while its titles, navigation and controls stay chrome. */
+.help-copyable, .help-copyable * { -webkit-user-select: text; user-select: text; }

@@ -322,3 +322,10 @@ Detailed evidence and diagnosis: `docs/site-previews.md`. Original database/runt
 - [x] All main-process native file/save/folder dialogs use one local last-directory preference with cancellation and missing-directory fallback.
 - [x] Native restart/fallback dialog acceptance and migrated OpenLiteSpeed routing under all three servers on this Mac.
 - [ ] Windows/Linux native dialog and release-package acceptance.
+
+## Help and CLI documentation — 2026-10-01
+
+- [x] Replaced the brief Help summary with local, plain-language topics for onboarding, services, Sites, Databases, PHP/caches, Hosts, Logs, settings/backup/reset, CLI, troubleshooting and privacy. Checked user-facing CLI command groups against `scripts/vhostra.mjs` and actual CLI help.
+- [x] Help title/description, all headings, topic navigation and controls remain unselectable. Documentation prose and command/output examples use explicit selectable semantics. Each CLI code block has Copy/Copied feedback.
+- [x] Existing local search retained; static topic text and command names are searched while Help is mounted. Empty query shows navigation, no match shows a simple message, and Clear resets the query. No search persistence, request or indexing process was added.
+- [x] Build and 116/116 repository tests passed with local loopback permission. An isolated `npm run cli -- help` matched the documented syntax. An isolated Electron fixture verified computed text-selection styles, search terms/empty/clear behavior, zero Help search requests, Copy/clipboard, focus and light/dark and 860px-width visuals.
