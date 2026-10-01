@@ -32,6 +32,7 @@ import { readNativeConfiguration, type NativeImportPreview, type SourceServer } 
 import { localStorageUsage } from "./resources.js";
 import { supportedPhpVersions } from "./store.js";
 import { configureStartup } from "./startup.js";
+import { openFileDialog, saveFileDialog } from "./file-dialogs.js";
 
 if (!app.isPackaged && process.env.NODE_ENV === "development" && process.env.VHOSTRA_DEV_PROFILE) {
     if (!path.isAbsolute(process.env.VHOSTRA_DEV_PROFILE)) throw new Error("VHOSTRA_DEV_PROFILE must be an absolute local test directory.");
@@ -297,11 +298,18 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     createTray();
     createWindow();
     startResourceDiagnostics(() => services, () => Boolean(primaryWindow?.isVisible() && !primaryWindow.isMinimized()));
-    void services.refresh();
     void store
         .getState()
         .then(async (state) => {
-            if ((await store.getOnboarding()).completed && state.settings.startup.startServicesOnLaunch)
+            await services.refresh();
+            if (store.didMigrateUnifiedSites && services.current().state !== 'unavailable') {
+                try { await services.applyConfiguration(); }
+                catch (error) {
+                    dialog.showErrorBox('Site configuration needs attention', `Your Site definitions were preserved. Vhostra could not refresh the selected server: ${error instanceof Error ? error.message : String(error)}`);
+                    return;
+                }
+            }
+            if ((await store.getOnboarding()).completed && state.settings.startup.startServicesOnLaunch && services.current().state !== 'running')
                 return services
                     .start()
                     .catch((error) =>
@@ -374,7 +382,7 @@ function registerIpc() {
         return proveDatabaseEquality(pendingBackup.full, services, key, path.join(store.layout.root, "temporary"));
     });
     handle("vhostra:export-full-backup", async () => {
-        const result = await dialog.showSaveDialog({ title: "Export full Vhostra backup", defaultPath: path.join(store.layout.exports, "vhostra-backup.json"), filters: [{ name: "Vhostra backup manifest", extensions: ["json"] }] });
+        const result = await saveFileDialog({ title: "Export full Vhostra backup", defaultPath: path.join(store.layout.exports, "vhostra-backup.json"), filters: [{ name: "Vhostra backup manifest", extensions: ["json"] }] });
         return result.canceled || !result.filePath ? null : { path: await exportFullBackup(store, services, result.filePath, backupProgress) };
     });
     handle("vhostra:consume-quit-request", () => { const pending = pendingExplicitQuitRequest; pendingExplicitQuitRequest = false; return pending; });
@@ -384,7 +392,7 @@ function registerIpc() {
     handle("vhostra:edit-hosts", (_event, contents: string, expected: string, reviewId: string) => hosts.edit(contents, expected, reviewId));
     handle("vhostra:preview-backup", async () => {
         pendingBackup = null;
-        const choice = await dialog.showOpenDialog({ title: "Import existing Vhostra backup", properties: ["openFile"], filters: [{ name: "Vhostra configuration backup", extensions: ["json"] }] });
+        const choice = await openFileDialog({ title: "Import existing Vhostra backup", properties: ["openFile"], filters: [{ name: "Vhostra configuration backup", extensions: ["json"] }] });
         if (choice.canceled || !choice.filePaths[0]) return null;
         return previewBackupFile(choice.filePaths[0]);
     });
@@ -459,7 +467,7 @@ function registerIpc() {
     });
     handle("vhostra:preview-native-import", async (_event, hint?: SourceServer) => {
         pendingNativeImport = null;
-        const result = await dialog.showOpenDialog({ title: 'Import server configuration (source stays unchanged)', properties: ['openFile'], filters: [{ name: 'Server configuration', extensions: ['conf', 'config', 'txt', 'xml'] }, { name: 'All files', extensions: ['*'] }] });
+        const result = await openFileDialog({ title: 'Import Site or server configuration (source stays unchanged)', properties: ['openFile', 'openDirectory'], filters: [{ name: 'Site and server configuration', extensions: ['json', 'conf', 'config', 'txt', 'xml'] }, { name: 'All files', extensions: ['*'] }] });
         if (result.canceled) return null;
         pendingNativeImport = await readNativeConfiguration(result.filePaths[0], hint);
         pendingNativePlans = Object.fromEntries(pendingNativeImport.hosts.map(host => [host.hostname, randomUUID()]));
@@ -617,19 +625,20 @@ function registerIpc() {
         },
     );
     handle("vhostra:choose-document-root", async (event) => {
-        const result = await dialog.showOpenDialog(
-            BrowserWindow.fromWebContents(event.sender)!,
+        const result = await openFileDialog(
             { properties: ["openDirectory", "createDirectory"] },
+            BrowserWindow.fromWebContents(event.sender)!,
         );
         return result.canceled ? null : (result.filePaths[0] ?? null);
     });
     handle("vhostra:choose-configuration-location", async (event) => {
-        const result = await dialog.showOpenDialog(
-            BrowserWindow.fromWebContents(event.sender)!,
+        const result = await openFileDialog(
             {
                 title: "Choose Vhostra configuration destination",
+                defaultPath: store.layout.root,
                 properties: ["openDirectory", "createDirectory"],
             },
+            BrowserWindow.fromWebContents(event.sender)!, true,
         );
         return result.canceled ? null : (result.filePaths[0] ?? null);
     });
@@ -742,10 +751,18 @@ function registerIpc() {
         const state = await store.getState(); const site = state.sites.find(site => site.id === id);
         if (!site) throw new Error("Site not found.");
         const host = state.virtualHosts.find(host => host.id === site.vhostId)!;
-        const filename = `${state.settings.selectedWebServer}-vhosts.conf`;
-        const file = path.join(store.layout.configuration.generated, filename);
-        let native = "No generated configuration yet. Start Services to generate and validate it.";
-        try { if (includeNative) { const details = await fs.stat(file); if (details.size > 1024 * 1024) native = "Generated configuration exceeds the 1 MiB preview limit."; else native = await fs.readFile(file, "utf8"); } } catch { /* no generated runtime yet */ }
+        const file = path.join(store.layout.sites, `${site.id}.json`);
+        let native = "Open this section to generate a preview for the selected server.";
+        if (includeNative) {
+            if (host.builtIn) {
+                const generated = path.join(store.layout.configuration.generated, `${state.settings.selectedWebServer}-vhosts.conf`);
+                const size = await fs.stat(generated).catch(() => null);
+                native = size && size.size <= 1024 * 1024 ? await fs.readFile(generated, 'utf8') : 'Start Services to generate and validate the localhost configuration.';
+            } else if (state.settings.selectedWebServer === 'openlitespeed') {
+                const fragments = services.exportOpenLiteSpeedFiles(host);
+                native = `OpenLiteSpeed generated runtime for this Site\n\nListener and domain mapping\n${fragments.main}\nVirtual host\n${fragments.vhost}`;
+            } else native = services.exportSiteConfiguration(host, state.settings.selectedWebServer);
+        }
         return { host: { ...host, source: host.source ? { ...host.source, raw: undefined } : undefined }, native, nativePath: file, logs: { access: path.join(store.layout.logs, "sites", host.id, "access.log"), error: path.join(store.layout.logs, "sites", host.id, "error.log") } };
     });
     handle("vhostra:export-site-configuration", async (_event, id: string, server: WebServer) => {
@@ -754,10 +771,12 @@ function registerIpc() {
         const site = state.sites.find(item => item.id === id);
         const host = state.virtualHosts.find(item => item.id === site?.vhostId);
         if (!site || !host) throw new Error('Site not found.');
-        const result = await dialog.showSaveDialog({ title: `Export ${server} configuration`, defaultPath: `${host.hostname}-${server}.conf`, filters: [{ name: 'Server configuration', extensions: ['conf'] }] });
+        const result = await saveFileDialog({ title: `Export ${server} configuration`, defaultPath: `${host.hostname}-${server}${server === 'openlitespeed' ? '.json' : '.conf'}`, filters: [{ name: server === 'openlitespeed' ? 'Vhostra Site configuration' : 'Server configuration', extensions: [server === 'openlitespeed' ? 'json' : 'conf'] }] });
         if (result.canceled || !result.filePath) return null;
         await assertExportDestination(result.filePath);
-        const content = services.exportSiteConfiguration(host, server);
+        const content = server === 'openlitespeed'
+            ? `${JSON.stringify({ format: 'vhostra/site', schemaVersion: 1, targetServer: server, site: { ...site, screenshot: undefined }, virtualHost: { ...host, source: host.source ? { ...host.source, raw: undefined } : undefined } }, null, 2)}\n`
+            : services.exportSiteConfiguration(host, server);
         const temporary = `${result.filePath}.vhostra-${randomUUID()}.tmp`;
         try { await fs.writeFile(temporary, content, { mode: 0o600, flag: 'wx' }); await fs.rename(temporary, result.filePath); }
         finally { await fs.rm(temporary, { force: true }); }
@@ -775,7 +794,7 @@ function registerIpc() {
         return { ...tail, text: await services.redactLocalLog(tail.text) };
     });
     handle("vhostra:export-configuration", async () => {
-        const result = await dialog.showSaveDialog({
+        const result = await saveFileDialog({
             title: "Export Vhostra configuration",
             defaultPath: path.join(
                 store.layout.exports,
@@ -789,7 +808,7 @@ function registerIpc() {
     });
     handle("vhostra:preview-configuration-import", async () => {
         pendingBackup = null;
-        const result = await dialog.showOpenDialog({ title: "Preview Vhostra configuration import", properties: ["openFile"], filters: [{ name: "Vhostra configuration", extensions: ["json"] }] });
+        const result = await openFileDialog({ title: "Preview Vhostra configuration import", properties: ["openFile"], filters: [{ name: "Vhostra configuration", extensions: ["json"] }] });
         if (result.canceled || !result.filePaths[0]) return null;
         return previewBackupFile(result.filePaths[0]);
     });
@@ -946,7 +965,7 @@ function registerIpc() {
     handle(
         "vhostra:import-database",
         async (_event, database: string) => {
-            const result = await dialog.showOpenDialog({
+            const result = await openFileDialog({
                 title: `Import into ${database}`,
                 properties: ["openFile"],
                 filters: [{ name: "SQL database dump", extensions: ["sql"] }],
@@ -961,7 +980,7 @@ function registerIpc() {
     handle(
         "vhostra:export-database",
         async (_event, database: string) => {
-            const result = await dialog.showSaveDialog({
+            const result = await saveFileDialog({
                 title: `Export ${database}`,
                 defaultPath: `${database}.sql`,
                 filters: [{ name: "SQL database dump", extensions: ["sql"] }],
@@ -978,7 +997,7 @@ function registerIpc() {
         if (url.protocol !== 'https:' && url.protocol !== 'http:' || url.username || url.password || !url.hostname || url.search || url.hash) throw new Error('Enter a production HTTP or HTTPS URL without credentials, query or fragment.');
         if (!productionRoot || !path.isAbsolute(productionRoot) || /[\r\n\0]/.test(productionRoot)) throw new Error('Enter an absolute production root directory.');
         if (!(await services.listDatabases()).includes(database)) throw new Error('Choose an existing database.');
-        const result = await dialog.showSaveDialog({ title: `Export ${database} for production`, defaultPath: `${database}-production.sql`, filters: [{ name: 'SQL database dump', extensions: ['sql'] }] });
+        const result = await saveFileDialog({ title: `Export ${database} for production`, defaultPath: `${database}-production.sql`, filters: [{ name: 'SQL database dump', extensions: ['sql'] }] });
         if (result.canceled || !result.filePath) return null;
         await assertExportDestination(result.filePath);
         const exported = await services.exportDatabase(database, result.filePath);

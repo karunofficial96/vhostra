@@ -1469,7 +1469,19 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
             return generatedMarker + warning + config + secure;
         }
         if (server === 'nginx') return generatedMarker + warning + nginxConfig(mounts, host.https.enabled);
-        return generatedMarker + warning + `# OpenLiteSpeed virtual-host file for ${host.hostname}.\n# Register this file in the server's virtualHost and listener map separately.\n` + openLiteSpeedSiteConfig(host, container);
+        const files = this.exportOpenLiteSpeedFiles(host);
+        return `${generatedMarker}${warning}# httpd_config.conf\n${files.main}\n# vhosts/${host.id}/vhconf.conf\n${files.vhost}`;
+    }
+    /** A native OpenLiteSpeed export has a listener map and a separate vhconf. */
+    exportOpenLiteSpeedFiles(host: AppState['virtualHosts'][number]) {
+        const container = runtimeDocumentRoot(host);
+        const mounts = [{ host, container }];
+        const maps = openLiteSpeedConfig(mounts);
+        const mapping = maps.split('\n').filter(Boolean).map(line => `  ${line}`).join('\n');
+        const http = `listener VhostraHTTP {\n  address *:8088\n  secure 0\n${mapping}\n}\n`;
+        const tls = host.https.enabled ? `listener VhostraTLS {\n  address *:8443\n  secure 1\n  keyFile /etc/vhostra/certificates/private/localhost.key\n  certFile /etc/vhostra/certificates/public/localhost.pem\n${mapping}\n}\n` : '';
+        const main = `${generatedMarker}# Add these listener and virtualHost blocks to the OpenLiteSpeed server configuration.\n${http}${tls}${openLiteSpeedVirtualHosts(mounts).replace(`/usr/local/lsws/conf/vhostra-sites/${host.id}.conf`, `$SERVER_ROOT/conf/vhosts/${host.id}/vhconf.conf`)}`;
+        return { main, vhost: generatedMarker + openLiteSpeedSiteConfig(host, container) };
     }
     async repairDatabase(name: string) {
         const database = sqlIdentifier(name, "database name");

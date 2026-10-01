@@ -17,8 +17,8 @@ export interface OnboardingState { themeSaved?: boolean; restoredServices?: { re
 export interface Screenshot { url?: string; identity?: string; cacheFile: string; capturedAt: string; source: 'automatic' | 'manual' }
 export const runtimeDocumentRoot = (host: Pick<VirtualHost, 'id' | 'builtIn'>) => host.builtIn === 'localhost' ? '/var/www/html' : `/var/www/vhostra/${host.id}`
 export const siteLogPaths = (layout: StoreLayout, id: string) => ({ access: path.join(layout.logs, 'sites', id, 'access.log'), error: path.join(layout.logs, 'sites', id, 'error.log') })
-export interface Site { id: string; name: string; documentRoot: string; url: string; vhostId: string; framework?: string; database?: { name: string; importExpected: boolean; ready: boolean }; screenshot?: Screenshot; builtIn?: 'localhost'; createdAt: string; updatedAt: string }
-export interface VirtualHost { id: string; hostname: string; aliases: string[]; /** Absolute HOST document root; never container storage. */ documentRoot: string; runtimeDocumentRoot?: string; https: { enabled: boolean }; rewriteEnabled: boolean; redirects: []; rewrites: []; headers: []; logs: { access: boolean; error: boolean; paths?: { access: string; error: string } }; indexFiles?: string[]; source?: { server: WebServer | 'litespeed-enterprise'; path: string; importedAt: string; raw: string; status: string; warnings: string[] }; preservedDirectives?: string[]; builtIn?: 'localhost' }
+export interface Site { id: string; name: string; documentRoot: string; url: string; vhostId: string; configuration?: VirtualHost; framework?: string; database?: { name: string; importExpected: boolean; ready: boolean }; screenshot?: Screenshot; builtIn?: 'localhost'; createdAt: string; updatedAt: string }
+export interface VirtualHost { id: string; hostname: string; aliases: string[]; /** Absolute HOST document root; never container storage. */ documentRoot: string; runtimeDocumentRoot?: string; https: { enabled: boolean }; rewriteEnabled: boolean; redirects: []; rewrites: []; headers: []; logs: { access: boolean; error: boolean; paths?: { access: string; error: string } }; indexFiles?: string[]; source?: { server: WebServer | 'litespeed-enterprise'; path: string; importedAt: string; raw?: string; status: string; warnings: string[] }; preservedDirectives?: string[]; builtIn?: 'localhost' }
 export interface AppState { settings: Settings; sites: Site[]; virtualHosts: VirtualHost[] }
 
 export interface StoreLayout {
@@ -37,6 +37,7 @@ const validPhp = new Set<PhpVersion>(['8.1', '8.2', '8.3', '8.4', '8.5'])
 
 export class VhostraStore {
   layout: StoreLayout
+  didMigrateUnifiedSites = false
   private mutation: Promise<unknown> = Promise.resolve()
   private serialize<T>(task: () => Promise<T>): Promise<T> {
     const result = this.mutation.then(task, task)
@@ -111,6 +112,7 @@ export class VhostraStore {
           const record = JSON.parse(await fs.readFile(file, 'utf8'))
           if (typeof record.documentRoot === 'string' && record.documentRoot.startsWith(`${oldLayout.sites}${path.sep}`)) {
             record.documentRoot = path.join(this.layout.sites, path.relative(oldLayout.sites, record.documentRoot))
+            if (record.configuration) record.configuration.documentRoot = record.documentRoot
             await this.writeJson(file, record)
           }
         }
@@ -150,17 +152,29 @@ export class VhostraStore {
     await this.initialize(); input = { ...input, themeSaved: true }; await this.writeJson(path.join(this.layout.root, 'onboarding.json'), input); await this.writeLocalhostWelcome(); return input
   }
   async updateLocalhostWelcome(runtimeMessage: string) { await this.initialize(); await this.writeLocalhostWelcome(runtimeMessage) }
-  async getState(): Promise<AppState> { await this.initialize(); return { settings: await this.readSettings(), sites: await this.readRecords<Site>(this.layout.sites), virtualHosts: await this.readRecords<VirtualHost>(this.layout.virtualHosts) } }
+  async getState(): Promise<AppState> { await this.initialize(); const sites = await this.readRecords<Site>(this.layout.sites); return { settings: await this.readSettings(), sites: sites.map(({ configuration: _configuration, ...site }) => site), virtualHosts: sites.map(site => site.configuration).filter((host): host is VirtualHost => Boolean(host)) } }
+  private async writeSite(site: Site, host?: VirtualHost) {
+    const file = this.recordPath(this.layout.sites, site.id)
+    const previous = await fs.readFile(file, 'utf8').then(value => JSON.parse(value) as Site, () => null)
+    const configuration = host ?? previous?.configuration
+    if (!configuration || configuration.id !== site.vhostId || configuration.documentRoot !== site.documentRoot) throw new Error('Site and canonical configuration disagree.')
+    await this.writeJson(file, { ...site, configuration })
+  }
+  private async writeHost(host: VirtualHost) {
+    const sites = await this.readRecords<Site>(this.layout.sites)
+    const site = sites.find(item => item.vhostId === host.id)
+    if (!site) throw new Error('Canonical Site not found.')
+    await this.writeSite(site, host)
+  }
   restoreBackupConfiguration(original: AppState, preferences: OnboardingState) { return this.serialize(async () => {
     for (const site of (await this.getState()).sites.filter(site => !site.builtIn && !original.sites.some(item => item.id === site.id))) await this.removeSiteRecord(site.id)
-    for (const site of original.sites) await this.writeJson(this.recordPath(this.layout.sites, site.id), site)
-    for (const host of original.virtualHosts) await this.writeJson(this.recordPath(this.layout.virtualHosts, host.id), host)
+    for (const site of original.sites) await this.writeSite(site, original.virtualHosts.find(host => host.id === site.vhostId))
     await this.saveSettings(original.settings); await this.saveOnboarding(preferences)
   }) }
   async getLocalhostUrl() { return localUrl((await this.readSettings()).ports.http) }
   markDatabaseImported(name: string) { return this.serialize(async () => {
     const sites = (await this.getState()).sites.filter(site => site.database?.name === name && site.database.importExpected && !site.database.ready)
-    for (const site of sites) await this.writeJson(this.recordPath(this.layout.sites, site.id), { ...site, database: { ...site.database!, ready: true } })
+    for (const site of sites) await this.writeSite({ ...site, database: { ...site.database!, ready: true } })
     return sites.map(site => site.id)
   }) }
   async saveSettings(settings: Settings) { const normalized = this.normalizeSettings(settings); this.validateSettings(normalized); await this.initialize(); await this.writeJson(this.layout.settings, normalized); await this.updateDefaultSiteUrls(normalized.ports.http); await this.invalidatePreviews(); await this.writeLocalhostWelcome(); return normalized }
@@ -172,7 +186,7 @@ export class VhostraStore {
     const now = new Date().toISOString(); const id = randomUUID(); const vhostId = input.vhostId ?? randomUUID(); const hostname = new URL(input.url).hostname
     const site: Site = { id, vhostId, name: input.name.trim(), documentRoot: input.documentRoot, url: input.url, ...(input.framework?.trim() ? { framework: input.framework.trim() } : {}), ...(input.database?.name ? { database: { name: input.database.name, importExpected: input.database.importExpected, ready: !input.database.importExpected } } : {}), createdAt: now, updatedAt: now }
     const vhost: VirtualHost = { id: vhostId, hostname, aliases: this.validateAliases(input.aliases ?? []), documentRoot: input.documentRoot, https: { enabled: new URL(input.url).protocol === 'https:' }, rewriteEnabled: true, redirects: [], rewrites: [], headers: [], logs: { access: true, error: true, paths: siteLogPaths(this.layout, vhostId) }, runtimeDocumentRoot: `/var/www/vhostra/${vhostId}` }
-    await Promise.all([this.writeJson(this.recordPath(this.layout.sites, id), site), this.writeJson(this.recordPath(this.layout.virtualHosts, vhostId), vhost)])
+    await this.writeSite(site, vhost)
     await this.writeLocalhostWelcome(); return this.getState()
   }
   updateSite(input: Pick<Site, 'id' | 'name' | 'documentRoot' | 'url' | 'framework'> & { database?: { name: string; importExpected: boolean }; aliases?: string[] }) { return this.serialize(() => this.updateSiteRecord(input)) }
@@ -184,7 +198,7 @@ export class VhostraStore {
     const database = input.database?.name ? { name: input.database.name, importExpected: input.database.importExpected, ready: !input.database.importExpected || Boolean(current.database?.ready && current.database.name === input.database.name && current.database.importExpected) } : undefined
     const updated: Site = { ...current, name: input.name.trim(), documentRoot: input.documentRoot, url: input.url, database, ...(input.framework?.trim() ? { framework: input.framework.trim() } : { framework: undefined }), updatedAt: new Date().toISOString(), ...(input.url !== current.url || input.documentRoot !== current.documentRoot || JSON.stringify(database) !== JSON.stringify(current.database) ? { screenshot: undefined } : {}) }
     const vhost = state.virtualHosts.find(host => host.id === current.vhostId); if (!vhost) throw new Error('Related virtual-host definition not found.')
-    await Promise.all([this.writeJson(this.recordPath(this.layout.sites, current.id), updated), this.writeJson(this.recordPath(this.layout.virtualHosts, vhost.id), { ...vhost, hostname: new URL(input.url).hostname, aliases: input.aliases === undefined ? vhost.aliases : this.validateAliases(input.aliases), documentRoot: input.documentRoot, https: { enabled: new URL(input.url).protocol === 'https:' } })])
+    await this.writeSite(updated, { ...vhost, hostname: new URL(input.url).hostname, aliases: input.aliases === undefined ? vhost.aliases : this.validateAliases(input.aliases), documentRoot: input.documentRoot, https: { enabled: new URL(input.url).protocol === 'https:' } })
     await this.invalidatePreviews();
     if (!updated.screenshot) await fs.rm(path.join(this.layout.screenshots, `${current.id}.jpg`), { force: true })
     await this.writeLocalhostWelcome(); return this.getState()
@@ -192,8 +206,7 @@ export class VhostraStore {
   restoreSiteDefinition(site: Site, host: VirtualHost) { return this.serialize(async () => {
     const current = (await this.getState()).sites.find(item => item.id === site.id)
     if (!current || current.builtIn || current.vhostId !== host.id || site.vhostId !== host.id) throw new Error('Invalid Site recovery records.')
-    await this.writeJson(this.recordPath(this.layout.sites, site.id), site)
-    await this.writeJson(this.recordPath(this.layout.virtualHosts, host.id), host)
+    await this.writeSite(site, host)
     await this.writeLocalhostWelcome()
   }) }
   private async assertExternalRoot(directory: string) {
@@ -205,7 +218,7 @@ export class VhostraStore {
   removeSite(id: string) { return this.serialize(() => this.removeSiteRecord(id)) }
   private async removeSiteRecord(id: string) {
     const state = await this.getState(); const site = state.sites.find(item => item.id === id); if (!site) throw new Error('Site definition not found.'); if (site.builtIn === 'localhost') throw new Error('The built-in localhost vhost is protected. Its document root and configuration remain inspectable.')
-    await Promise.all([fs.rm(this.recordPath(this.layout.sites, site.id), { force: true }), fs.rm(this.recordPath(this.layout.virtualHosts, site.vhostId), { force: true })])
+    await fs.rm(this.recordPath(this.layout.sites, site.id), { force: true })
     await fs.rm(path.join(this.layout.screenshots, `${site.id}.jpg`), { force: true })
     await this.writeLocalhostWelcome(); return this.getState()
   }
@@ -213,13 +226,13 @@ export class VhostraStore {
     if (typeof enabled !== 'boolean') throw new Error('Invalid rewrite setting.')
     const state = await this.getState(); const host = state.virtualHosts.find(item => item.id === id)
     if (!host) throw new Error('Virtual-host definition not found.')
-    await this.writeJson(this.recordPath(this.layout.virtualHosts, id), { ...host, rewriteEnabled: enabled })
+    await this.writeHost({ ...host, rewriteEnabled: enabled })
     return this.getState()
   }
   importNative(preview: NativeImportPreview, plans: Record<string, string> = {}) { return this.serialize(async () => {
     if (preview.status === 'Invalid' || !preview.hosts.length) throw new Error('Invalid configuration cannot be imported.')
     for (const host of preview.hosts) {
-      this.validateSiteInput({ name: host.hostname, documentRoot: host.documentRoot, url: `http://${host.hostname}`, aliases: host.aliases }); await this.assertExternalRoot(host.documentRoot)
+      this.validateSiteInput({ name: host.portableSite?.name ?? host.hostname, documentRoot: host.documentRoot, url: host.portableSite?.url ?? `http://${host.hostname}`, aliases: host.aliases }); await this.assertExternalRoot(host.documentRoot)
       await this.assertAvailableHostnames([host.hostname, ...host.aliases])
     }
     const snapshot = path.join(this.layout.backups, `before-import-${new Date().toISOString().replace(/[:.]/g, '-')}.json`)
@@ -230,10 +243,11 @@ export class VhostraStore {
       const ports = (await this.getState()).settings.ports
       for (const host of preview.hosts) {
         const protocol = host.https.enabled ? 'https' : 'http'; const port = host.https.enabled ? ports.https : ports.http
-        const state = await this.addSiteRecord({ name: host.hostname, documentRoot: host.documentRoot, url: `${protocol}://${host.hostname}${port === (host.https.enabled ? 443 : 80) ? '' : `:${port}`}/`, aliases: host.aliases, vhostId: plans[host.hostname] })
-        const site = state.sites.find(site => site.name === host.hostname)!; created.push(site)
+        const state = await this.addSiteRecord({ name: host.portableSite?.name ?? host.hostname, documentRoot: host.documentRoot, url: host.portableSite?.url ?? `${protocol}://${host.hostname}${port === (host.https.enabled ? 443 : 80) ? '' : `:${port}`}/`, aliases: host.aliases, framework: host.portableSite?.framework, database: host.portableSite?.database ? { name: host.portableSite.database.name, importExpected: true } : undefined, vhostId: plans[host.hostname] })
+        const site = state.sites.find(site => new URL(site.url).hostname === host.hostname)!; created.push(site)
         const canonical = state.virtualHosts.find(item => item.id === site.vhostId)!
-        await this.writeJson(this.recordPath(this.layout.virtualHosts, canonical.id), { ...canonical, rewriteEnabled: host.rewriteEnabled, indexFiles: host.indexFiles, ...importedMetadata(preview) })
+        const imported = host.canonical
+        await this.writeHost({ ...canonical, ...(imported ? { ...imported, id: canonical.id, documentRoot: host.documentRoot, runtimeDocumentRoot: runtimeDocumentRoot(canonical), logs: { ...imported.logs, paths: siteLogPaths(this.layout, canonical.id) } } : { rewriteEnabled: host.rewriteEnabled, indexFiles: host.indexFiles, ...importedMetadata(preview) }) })
       }
       recovery.manifest.automaticRecovery.state = 'completed'; await this.writeJson(snapshot, recovery)
       await this.retainCompletedImportSnapshots().catch(error => console.error('Import snapshot cleanup deferred:', error.message))
@@ -246,7 +260,7 @@ export class VhostraStore {
   private async invalidatePreviews() {
     const state = await this.getState()
     for (const site of state.sites) if (site.screenshot && !previewMatches(state, site)) {
-      await this.writeJson(this.recordPath(this.layout.sites, site.id), { ...site, screenshot: undefined })
+      await this.writeSite({ ...site, screenshot: undefined })
       await fs.rm(path.join(this.layout.screenshots, `${site.id}.jpg`), { force: true })
     }
   }
@@ -278,7 +292,7 @@ export class VhostraStore {
     const temporary = path.join(cacheRoot, `${id}.${randomUUID()}.tmp`)
     try { await fs.writeFile(temporary, bytes, { mode: 0o600, flag: 'wx' }); await fs.rename(temporary, path.join(cacheRoot, cacheFile)) }
     finally { await fs.rm(temporary, { force: true }) }
-    await this.writeJson(this.recordPath(this.layout.sites, id), { ...site, screenshot: { cacheFile, capturedAt: new Date().toISOString(), source, ...resolved } })
+    await this.writeSite({ ...site, screenshot: { cacheFile, capturedAt: new Date().toISOString(), source, ...resolved } })
     // Only exact Vhostra UUID preview files lacking a live Site are obsolete.
     const ids = new Set((await this.getState()).sites.map(site => `${site.id}.jpg`))
     for (const file of await fs.readdir(this.layout.screenshots)) if ((/^[a-f0-9-]{36}\.jpg$/i.test(file) || file === `${localhostSiteId}.jpg`) && !ids.has(file)) await fs.rm(path.join(this.layout.screenshots, file), { force: true })
@@ -413,16 +427,14 @@ export class VhostraStore {
       }
       const siteId = localSite?.id ?? created.at(-1)!
       const currentSite = (await this.getState()).sites.find(site => site.id === siteId)!
-      await this.writeJson(this.recordPath(this.layout.sites, siteId), { ...currentSite, name: incoming.name, framework: incoming.framework, documentRoot: incoming.documentRoot, url: incoming.url, screenshot: undefined, updatedAt: new Date().toISOString() })
-      await this.writeJson(this.recordPath(this.layout.virtualHosts, saved.id), { ...host, id: saved.id, documentRoot: incoming.documentRoot, runtimeDocumentRoot: runtimeDocumentRoot(saved), logs: { ...host.logs, paths: siteLogPaths(this.layout, saved.id) } })
+      await this.writeSite({ ...currentSite, name: incoming.name, framework: incoming.framework, documentRoot: incoming.documentRoot, url: incoming.url, screenshot: undefined, updatedAt: new Date().toISOString() }, { ...host, id: saved.id, documentRoot: incoming.documentRoot, runtimeDocumentRoot: runtimeDocumentRoot(saved), logs: { ...host.logs, paths: siteLogPaths(this.layout, saved.id) } })
       imported.push({ name: incoming.name, hostname: host.hostname, aliases: host.aliases })
       if (localSite) summary.replaced++; else summary.imported++
     }
       await this.writeLocalhostWelcome()
     } catch (error) {
       for (const id of created) await this.removeSiteRecord(id)
-      for (const site of existing.sites) await this.writeJson(this.recordPath(this.layout.sites, site.id), site)
-      for (const host of existing.virtualHosts) await this.writeJson(this.recordPath(this.layout.virtualHosts, host.id), host)
+      for (const site of existing.sites) await this.writeSite(site, existing.virtualHosts.find(host => host.id === site.vhostId))
       recovery.manifest.automaticRecovery.state = 'failed'; await this.writeJson(snapshot, recovery)
       await this.writeLocalhostWelcome()
       throw new Error(`Restore failed; original Site definitions recovered. Recovery snapshot: ${snapshot}. ${error instanceof Error ? error.message : 'Unknown error'}`)
@@ -453,7 +465,7 @@ export class VhostraStore {
     // Records only. Never remove the sites directory or document roots.
     if (!keepSites) {
       for (const site of (await this.getState()).sites.filter(site => !site.builtIn)) await this.removeSiteRecord(site.id)
-      for (const host of (await this.getState()).virtualHosts.filter(host => !host.builtIn)) await fs.rm(this.recordPath(this.layout.virtualHosts, host.id), { force: true })
+      // Canonical virtual hosts are embedded in Site records.
     }
     const runtimeRoot = path.dirname(this.layout.runtime.apache)
     for (const entry of await fs.readdir(runtimeRoot, { withFileTypes: true })) {
@@ -503,16 +515,61 @@ export class VhostraStore {
       await this.writeJson(onboardingFile, { completed: existing, theme: 'system', server: defaults.selectedWebServer, php: defaults.selectedPhpVersion, cache: 'none' })
     }
     await this.readSettings()
+    await this.migrateUnifiedSites()
     await this.ensureLocalhostDefinition()
-    for (const host of await this.readRecords<VirtualHost>(this.layout.virtualHosts)) {
+    for (const host of (await this.readRecords<Site>(this.layout.sites)).map(site => site.configuration).filter((host): host is VirtualHost => Boolean(host))) {
       const paths = siteLogPaths(this.layout, host.id)
-      if (JSON.stringify(host.logs?.paths) !== JSON.stringify(paths) || host.runtimeDocumentRoot !== runtimeDocumentRoot(host)) await this.writeJson(this.recordPath(this.layout.virtualHosts, host.id), { ...host, logs: { ...host.logs, access: host.logs?.access ?? true, error: host.logs?.error ?? true, paths }, runtimeDocumentRoot: runtimeDocumentRoot(host) })
+      if (JSON.stringify(host.logs?.paths) !== JSON.stringify(paths) || host.runtimeDocumentRoot !== runtimeDocumentRoot(host)) await this.writeHost({ ...host, logs: { ...host.logs, access: host.logs?.access ?? true, error: host.logs?.error ?? true, paths }, runtimeDocumentRoot: runtimeDocumentRoot(host) })
     }
     await this.writeLocalhostWelcome()
   }
   private directories() {
     const { configuration, runtime, certificates } = this.layout
     return { root: this.layout.root, sites: this.layout.sites, virtualHosts: this.layout.virtualHosts, screenshots: this.layout.screenshots, exports: this.layout.exports, backups: this.layout.backups, logs: this.layout.logs, ...configuration, ...runtime, certificates: certificates.directory, publicCertificates: certificates.public, privateCertificates: certificates.private, mariaDbData: this.layout.persistentData.mariaDb }
+  }
+  private async migrateUnifiedSites() {
+    const legacyFiles = (await fs.readdir(this.layout.virtualHosts)).filter(name => name.endsWith('.json'))
+    const sites = await this.readRecords<Site>(this.layout.sites)
+    if (!legacyFiles.length && sites.every(site => Boolean(site.configuration))) return
+    const legacy = await this.readRecords<VirtualHost>(this.layout.virtualHosts)
+    const hosts = new Map(legacy.map(host => [host.id, host]))
+    const merged = sites.map(site => {
+      const host = site.configuration ?? hosts.get(site.vhostId)
+      if (!host || host.id !== site.vhostId || host.documentRoot !== site.documentRoot || new URL(site.url).hostname !== host.hostname) throw new Error(`Cannot safely consolidate Site ${site.id}: its configuration disagrees.`)
+      return { ...site, configuration: host }
+    })
+    if (new Set(merged.map(site => site.id)).size !== merged.length || new Set(merged.map(site => site.vhostId)).size !== merged.length) throw new Error('Duplicate Site identity prevents safe consolidation.')
+    const names = merged.flatMap(site => [site.configuration.hostname, ...site.configuration.aliases].map(name => name.toLowerCase()))
+    if (new Set(names).size !== names.length) throw new Error('Duplicate Site hostname or alias prevents safe consolidation.')
+    const backup = path.join(this.layout.backups, `before-unified-sites-${randomUUID()}`)
+    await fs.mkdir(backup, { recursive: true })
+    try {
+      for (const directory of [this.layout.sites, this.layout.virtualHosts]) {
+        const destination = path.join(backup, path.basename(directory))
+        await fs.mkdir(destination)
+        for (const name of (await fs.readdir(directory)).filter(name => name.endsWith('.json'))) {
+          const file = path.join(directory, name)
+          if (!(await fs.lstat(file)).isFile()) throw new Error('Site migration requires regular configuration files.')
+          await fs.copyFile(file, path.join(destination, name))
+        }
+      }
+    }
+    catch (error) { await fs.rm(backup, { recursive: true, force: true }); throw error }
+    try {
+      for (const site of merged) await this.writeJson(this.recordPath(this.layout.sites, site.id), site)
+      for (const site of merged) {
+        const saved = JSON.parse(await fs.readFile(this.recordPath(this.layout.sites, site.id), 'utf8')) as Site
+        if (!saved.configuration || saved.configuration.id !== site.vhostId || saved.configuration.hostname !== site.configuration.hostname) throw new Error('Unified Site verification failed.')
+      }
+      for (const filename of legacyFiles) await fs.rm(path.join(this.layout.virtualHosts, filename))
+      const completed = (await fs.readdir(this.layout.backups)).filter(name => /^before-unified-sites-[a-f0-9-]{36}$/.test(name)).sort()
+      for (const old of completed.slice(0, -2)) await fs.rm(path.join(this.layout.backups, old), { recursive: true, force: true })
+      this.didMigrateUnifiedSites = true
+    } catch (error) {
+      await fs.cp(path.join(backup, 'sites'), this.layout.sites, { recursive: true, force: true })
+      await fs.cp(path.join(backup, 'virtual-hosts'), this.layout.virtualHosts, { recursive: true, force: true })
+      throw error
+    }
   }
   private recordPath(directory: string, id: string) { if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(id) && ![localhostSiteId, localhostVhostId].includes(id)) throw new Error('Invalid Site identifier.'); return path.join(directory, `${id}.json`) }
   private async readSettings() { try { const value = JSON.parse(await fs.readFile(this.layout.settings, 'utf8')) as Partial<Settings>; const normalized = this.normalizeSettings(value); this.validateSettings(normalized); if (!value.ports || !value.php || !value.php.disabledExtensions || !value.startup || !value.startup.closeBehavior) await this.writeJson(this.layout.settings, normalized); return normalized } catch { await this.writeJson(this.layout.settings, defaults); return { ...defaults, optionalServices: { ...defaults.optionalServices }, php: { ...defaults.php, extensions: [...defaults.php.extensions], disabledExtensions: [...defaults.php.disabledExtensions] }, startup: { ...defaults.startup }, ports: { ...defaultServicePorts } } } }
@@ -521,8 +578,7 @@ export class VhostraStore {
   private async ensureLocalhostDefinition() {
     const documentRoot = path.join(this.layout.sites, 'localhost', 'public'); const now = new Date().toISOString()
     await fs.mkdir(documentRoot, { recursive: true })
-    try { await fs.access(this.recordPath(this.layout.sites, localhostSiteId)) } catch { await this.writeJson(this.recordPath(this.layout.sites, localhostSiteId), { id: localhostSiteId, name: 'Vhostra Localhost', documentRoot, url: 'http://localhost/', vhostId: localhostVhostId, builtIn: 'localhost', createdAt: now, updatedAt: now } satisfies Site) }
-    try { await fs.access(this.recordPath(this.layout.virtualHosts, localhostVhostId)) } catch { await this.writeJson(this.recordPath(this.layout.virtualHosts, localhostVhostId), { id: localhostVhostId, hostname: 'localhost', aliases: [], documentRoot, https: { enabled: false }, rewriteEnabled: true, redirects: [], rewrites: [], headers: [], logs: { access: true, error: true }, builtIn: 'localhost' } satisfies VirtualHost) }
+    try { await fs.access(this.recordPath(this.layout.sites, localhostSiteId)) } catch { await this.writeSite({ id: localhostSiteId, name: 'Vhostra Localhost', documentRoot, url: 'http://localhost/', vhostId: localhostVhostId, builtIn: 'localhost', createdAt: now, updatedAt: now }, { id: localhostVhostId, hostname: 'localhost', aliases: [], documentRoot, https: { enabled: false }, rewriteEnabled: true, redirects: [], rewrites: [], headers: [], logs: { access: true, error: true }, builtIn: 'localhost' }) }
   }
   private async writeLocalhostWelcome(runtimeMessage = 'Runtime has not been created.') {
     const root = path.join(this.layout.sites, 'localhost', 'public'); const template = this.welcomeTemplateDirectory ? path.join(this.welcomeTemplateDirectory, 'index.html') : ''
@@ -538,7 +594,7 @@ export class VhostraStore {
       await fs.writeFile(path.join(root, 'index.html'), html, { mode: 0o600 })
     } catch { /* A missing development template must not prevent persistent settings/site setup. */ }
   }
-  private async updateDefaultSiteUrls(httpPort: number) { const sites = await this.readRecords<Site>(this.layout.sites); await Promise.all(sites.filter(site => site.builtIn === 'localhost').map(site => this.writeJson(this.recordPath(this.layout.sites, site.id), { ...site, url: localUrl(httpPort), updatedAt: new Date().toISOString() }))) }
+  private async updateDefaultSiteUrls(httpPort: number) { const sites = await this.readRecords<Site>(this.layout.sites); await Promise.all(sites.filter(site => site.builtIn === 'localhost').map(site => this.writeSite({ ...site, url: localUrl(httpPort), updatedAt: new Date().toISOString() }))) }
   private normalizeSettings(settings: Partial<Settings>) { return { ...defaults, ...settings, optionalServices: { ...defaults.optionalServices, ...settings.optionalServices }, php: { ...defaults.php, ...settings.php, extensions: [...(settings.php?.extensions ?? defaults.php.extensions)], disabledExtensions: [...(settings.php?.disabledExtensions ?? defaults.php.disabledExtensions)] }, startup: { ...defaults.startup, ...settings.startup }, ports: { ...defaultServicePorts, ...settings.ports } } as Settings }
   private validateSettings(settings: Settings) {
     if (new Set(Object.values(settings.ports)).size !== Object.values(settings.ports).length) throw new Error('Each Vhostra service must use a distinct host port.')

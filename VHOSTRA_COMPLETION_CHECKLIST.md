@@ -298,8 +298,27 @@ Detailed evidence and diagnosis: `docs/site-previews.md`. Original database/runt
 - [x] Add Site no longer shows Framework or Associated database. Native UI verified the remaining form and read-only Site config export; Site save and native-vhost import show the database reminder through their success notice paths.
 - [x] Apache, Nginx and OpenLiteSpeed per-Site exports use the canonical host and existing generators on demand; the isolated runtime fixture checked each structure and unchanged canonical state. Unsupported imported directives are marked Requires review and left inactive.
 - [x] Generic local production database export uses the existing streamed MariaDB dump, validates destination inputs and exports SQL unchanged. Native UI verified the form and local save. No WordPress-specific conversion or raw SQL replacement is performed.
+
 - [x] README states local development only, explains production hosting/SSL limits, and preserves the no-Vhostra-license notice.
 - [x] Isolated native UI created a Site, imported an Apache vhost, displayed both database reminders at the top of the scrolled content pane, preserved the source, and did not fabricate databases.
 - [x] Isolated MariaDB exported over 1 MiB of SQL with serialized-style content unchanged and rejected an invalid destination. Native UI cancellation performed no dump; an invalid destination and a Save target inside active Vhostra configuration were rejected before writing.
 - [x] Optional-service state contract confirms Starting before enable, Stopping during disable even after the setting changes, and Disabled after completion; disabled caches do not appear Restarting in the full runtime fixture.
 - [ ] WordPress-aware conversion, actual optional cache/web/phpMyAdmin failure transitions, and matched post-change CPU/RAM/peak-dump-memory measurements remain to be verified. Production export intentionally leaves WordPress data unchanged until a serialization-safe conversion strategy exists.
+
+## Vhost identity and Database UI continuation — 2026-10-01
+
+- [x] The canonical `VirtualHost.hostname` and `aliases[]` persist through Add/Edit and a fresh store load. Site details and the Add/Edit form display the canonical primary value; Site URL candidates continue to try that value first. Hosts reconciliation and preview routing consume the same canonical fields.
+- [x] Apache `ServerName`/`ServerAlias`, Nginx `server_name`, OpenLiteSpeed listener `map` entries and supported Enterprise text import preserve a primary name plus multiple aliases. Conversion tests cover every imported source to all three export targets. OpenLiteSpeed folder export contains a real listener, virtual-host declaration and separate vhconf, and was reimported both directly and through the Electron export handler.
+- [x] Live isolated Docker requests for the canonical name and both aliases reached the same Site under OpenLiteSpeed, Apache and Nginx. The existing sequential server acceptance also passed server switches, PHP replacement and rollback with canonical JSON unchanged. The focused test cleaned its own Docker containers.
+- [x] Removed Database Access from database cards. The production export form retains an explicit required selector and clears a stale choice when the database list changes. Electron UI assertions and light/dark screenshots verified actions below short and long names, with no card shortcut or dead action gap.
+- [x] No new telemetry, hostname upload, background conversion, polling loop or export cache was introduced. Import reads only a selected LiteSpeed main file and its referenced local vhconf files; export runs on demand. Measured bounded in-process conversion and limitations are recorded in PERFORMANCE.md.
+- [ ] Validate the exported OpenLiteSpeed folder with a separate native OpenLiteSpeed installation outside Vhostra after adapting runtime mount/certificate paths; the in-app native server and folder round trip are verified. Existing unrelated completion gaps remain pending.
+
+## Unified Site files and dialog location — 2026-10-01
+
+- [x] One authoritative managed Site JSON embeds hostname, aliases, root, supported settings and import metadata; native server files remain derived.
+- [x] Legacy Apache, Nginx, OpenLiteSpeed and Enterprise imported split records consolidate with identity/root/alias checks and an owned recovery copy; startup is idempotent.
+- [x] OpenLiteSpeed exports one portable Site file, and Site import accepts it; Apache/Nginx native exports remain single files.
+- [x] All main-process native file/save/folder dialogs use one local last-directory preference with cancellation and missing-directory fallback.
+- [x] Native restart/fallback dialog acceptance and migrated OpenLiteSpeed routing under all three servers on this Mac.
+- [ ] Windows/Linux native dialog and release-package acceptance.

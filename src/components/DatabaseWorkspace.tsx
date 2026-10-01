@@ -46,6 +46,7 @@ export function DatabaseWorkspace({ running, applicationRunning, port }: { runni
   const refresh = async () => {
     const [databaseRows, accountRows] = await Promise.all([window.vhostra!.listDatabases(), window.vhostra!.listDatabaseUsers()])
     setDatabases(databaseRows); setUsers(accountRows)
+    setExportDatabaseName(current => databaseRows.includes(current) ? current : '')
   }
   useEffect(() => { if (running) void refresh().catch(setError); else { setDatabases([]); setUsers([]) } }, [running])
   useEffect(() => { if (!success) return; const timer = setTimeout(() => setSuccess(null), 6000); return () => clearTimeout(timer) }, [success])
@@ -102,7 +103,6 @@ export function DatabaseWorkspace({ running, applicationRunning, port }: { runni
       </form>
       <div className="mt-6 flex items-center justify-between gap-4"><h2 className="text-xl font-medium">Databases</h2><button disabled={busy} onClick={() => void refresh().catch(setError)} className={actionClass}>Refresh</button></div>
       <div className="mt-4 divide-y divide-[#E5E5E5] border-y border-[#E5E5E5]">{databases.map(database => <div key={database} data-database={database} className="min-w-0 py-4"><p className="selectable min-w-0 break-all font-mono text-sm leading-5">{database}</p><div className="mt-4 flex flex-wrap items-center gap-3">
-        <button disabled={busy} className={actionClass} onClick={() => { setAccessDatabase(database); setSelected(users[0] ? key(users[0]) : 'custom'); setPassword(''); setResetPassword(false) }}>Database Access</button>
         <button disabled={busy} className={actionClass} onClick={() => void window.vhostra!.openPhpMyAdmin(database).catch(setError)}>Manage with phpMyAdmin</button>
         <button disabled={busy} className={actionClass} onClick={() => void perform(() => window.vhostra!.importDatabase(database), 'Database imported successfully.')}>Import</button>
         <button disabled={busy} className={actionClass} onClick={() => void perform(() => window.vhostra!.exportDatabase(database), 'Database exported successfully.')}>Export</button>

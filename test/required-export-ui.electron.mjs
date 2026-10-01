@@ -15,7 +15,7 @@ app.whenReady().then(async () => {
     const { VhostraStore } = await import('../dist-electron/store.js')
     const store = new VhostraStore(profile, path.resolve('dist-welcome'))
     const root = path.join(profile, 'site'); await mkdir(root)
-    const state = await store.addSite({ name: 'Export Site', url: 'http://export.test/', documentRoot: root })
+    const state = await store.addSite({ name: 'Export Site', url: 'http://export.test/', documentRoot: root, aliases: ['www.export.test', 'dev.export.test'] })
     const site = state.sites.find(item => item.name === 'Export Site')
     await store.saveOnboarding({ ...await store.getOnboarding(), completed: true, themeSaved: true, theme: 'light' })
     const { applicationSession } = await import('../dist-electron/main.js')
@@ -24,7 +24,8 @@ app.whenReady().then(async () => {
     const native = applicationSession()
     runtime.scope = `vhostra-export-ui-${process.pid}`
     runtime.listManagedServices = async () => [{ id: 'web', label: 'Nginx', enabled: true, state: 'running' }, { id: 'mariadb', label: 'MariaDB', enabled: true, state: 'running' }]
-    runtime.listDatabases = async () => ['export_db']
+    let databaseRows = ['export_db', 'a_very_long_database_name_that_wraps_on_narrow_screens_and_keeps_its_actions_below']
+    runtime.listDatabases = async () => databaseRows
     runtime.listDatabaseUsers = async () => []
     let dumpCalls = 0
     runtime.exportDatabase = async (_database, destination) => { dumpCalls++; await writeFile(destination, 'CREATE DATABASE export_db;\n'); return { database: 'export_db', message: 'Exported.' } }
@@ -44,12 +45,27 @@ app.whenReady().then(async () => {
     await click('Export'); await waitFor('document.body.textContent.includes("Configuration exported successfully.")')
     assert.match(await readFile(config, 'utf8'), /<VirtualHost/)
     assert.match(await readFile(config, 'utf8'), /export\.test/)
+    const olsFile = path.join(profile, 'exported-openlitespeed.json')
+    dialog.showSaveDialog = async () => ({ canceled: false, filePath: olsFile })
+    const olsExport = await evaluate(`window.vhostra.exportSiteConfiguration(${JSON.stringify(site.id)},'openlitespeed')`)
+    assert.equal(olsExport.path, olsFile)
+    const exportedSite = JSON.parse(await readFile(olsFile, 'utf8'))
+    const hostId = state.virtualHosts.find(host => host.id === site.vhostId).id
+    assert.equal(exportedSite.format, 'vhostra/site')
+    assert.equal(exportedSite.virtualHost.id, hostId)
+    assert.deepEqual([exportedSite.virtualHost.hostname, ...exportedSite.virtualHost.aliases], ['export.test', 'www.export.test', 'dev.export.test'])
+    const { readNativeConfiguration } = await import('../dist-electron/config-import.js')
+    const olsRoundTrip = await readNativeConfiguration(olsFile, 'openlitespeed')
+    assert.deepEqual([olsRoundTrip.hosts[0].hostname, ...olsRoundTrip.hosts[0].aliases], ['export.test', 'www.export.test', 'dev.export.test'])
     assert.equal((await store.getState()).settings.selectedWebServer, 'openlitespeed')
     assert.equal((await store.getState()).sites.find(item => item.id === site.id).url, site.url)
     await mkdir(store.layout.configuration.generated, { recursive: true })
     dialog.showSaveDialog = async () => ({ canceled: false, filePath: path.join(store.layout.configuration.generated, 'unsafe.conf') })
     await assert.rejects(evaluate(`window.vhostra.exportSiteConfiguration(${JSON.stringify(site.id)},'apache')`), /outside Vhostra active configuration/)
     await nav('Database'); await waitFor('document.body.textContent.includes("Export Database for Production")')
+    assert.equal(await evaluate("[...document.querySelectorAll('[data-database] button')].some(button => button.textContent.trim()==='Database Access')"), false)
+    assert.ok(await evaluate("[...document.querySelectorAll('[data-database]')].every(card => { const name=card.querySelector('p'); const actions=card.querySelector('div'); return name && actions && name.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING && actions.querySelectorAll('button').length===5 })"))
+    assert.equal(await evaluate("document.querySelector('select:has(option[value=export_db])').value"), '', 'Production export requires explicit database selection')
     const fill = (selector, value) => evaluate(`(()=>{const input=document.querySelector(${JSON.stringify(selector)});const descriptor=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');descriptor.set.call(input,${JSON.stringify(value)});input.dispatchEvent(new Event('input',{bubbles:true}))})()`)
     await evaluate("(()=>{const input=document.querySelector('select:has(option[value=export_db])');input.value='export_db';input.dispatchEvent(new Event('change',{bubbles:true}))})()")
     await fill('input[placeholder="https://example.com"]', 'https://example.com')
@@ -82,6 +98,10 @@ app.whenReady().then(async () => {
     dialog.showSaveDialog = async () => ({ canceled: false, filePath: path.join(profile, 'missing-directory', 'invalid.sql') })
     await evaluate(`${exportFormButton}.click()`); await waitFor('!!document.querySelector("[role=alert]")')
     assert.equal(dumpCalls, 1, 'Invalid destination must be rejected before dumping data')
+    databaseRows = databaseRows.filter(name => name !== 'export_db')
+    await click('Refresh')
+    await waitFor("document.querySelector('select:has(option[value=export_db])')===null")
+    assert.equal(await evaluate("[...document.querySelectorAll('form')].find(form=>form.textContent.includes('Export Database for Production')).querySelector('select').value"), '', 'Removed database must clear its export selection')
     const hostsFile = path.join(profile, 'fixture-hosts')
     await writeFile(hostsFile, '127.0.0.1 export.test created.test imported.test\n')
     Object.defineProperty(native.hosts, 'hostsPath', { value: hostsFile, configurable: true })

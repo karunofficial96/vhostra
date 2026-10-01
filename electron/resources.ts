@@ -21,7 +21,7 @@ export async function directoryBytes(root: string, maxEntries = 100000): Promise
 export async function localStorageUsage(layout: StoreLayout, applicationPaths: string[]) {
   const categories = [
     ['Desktop application', applicationPaths], ['Settings', [layout.settings, path.join(layout.root, 'onboarding.json')]],
-    ['Canonical JSON', [layout.virtualHosts]], ['Site records and managed site files', [layout.sites]],
+    ['Canonical Site records and managed Site files', [layout.sites]],
     ['Generated native configuration', [layout.configuration.generated]], ['Runtime configuration and build context', Object.values(layout.runtime)],
     ['Logs', [layout.logs]], ['Recovery backups', [layout.backups]], ['MariaDB persistent data', [layout.persistentData.mariaDb]],
     ['Other managed configuration, certificates, cache and exports', [layout.configuration.source, layout.configuration.custom, layout.configuration.imported, layout.certificates.directory, layout.screenshots, layout.exports]],

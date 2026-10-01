@@ -1,10 +1,10 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import type { VirtualHost, WebServer } from './store.js'
+import type { Site, VirtualHost, WebServer } from './store.js'
 
 export type SourceServer = WebServer | 'litespeed-enterprise'
 export interface ImportedHost {
-  hostname: string; aliases: string[]; documentRoot: string; https: { enabled: boolean }; rewriteEnabled: boolean; indexFiles: string[]
+  hostname: string; aliases: string[]; documentRoot: string; https: { enabled: boolean }; rewriteEnabled: boolean; indexFiles: string[]; canonical?: VirtualHost; portableSite?: Pick<Site, 'name' | 'url' | 'framework' | 'database'>
 }
 export interface NativeImportPreview {
   source: string; server: SourceServer; status: 'Converted' | 'Converted with warnings' | 'Requires review' | 'Invalid'
@@ -113,9 +113,10 @@ export function parseNativeConfiguration(sourceText: string, source: string, hin
         for (const node of sites) {
           const flat = walk(node.children); const root = first(flat, 'docroot')[0]
           if (!root) continue
-          const domain = first(flat, 'vhdomain').join(',') || node.args[0]
-          const aliases = first(flat, 'vhaliases').join(',')
-          const names = `${domain ?? ''},${aliases}`.split(/[\s,]+/).filter(Boolean)
+          const mapped = all.filter(item => item.name === 'map' && item.args[0] === node.args[0]).flatMap(item => item.args.slice(1).join(',').split(/[\s,]+/)).filter(Boolean)
+          const declared = `${first(flat, 'vhdomain').join(',')},${first(flat, 'vhaliases').join(',')}`.split(/[\s,]+/).filter(Boolean)
+          const names = [...new Set([...mapped, ...declared])]
+          if (!names.length) { warnings.push('OpenLiteSpeed virtualHost has no listener map or declared domain; hostname requires review.'); continue }
           add(names, root, false, first(flat, 'enable')[0] !== '0', first(flat, 'indexfiles').join(',').split(',').filter(Boolean))
         }
         for (const item of all) if (!['docroot', 'vhdomain', 'vhaliases', 'indexfiles', 'index', 'virtualhost'].includes(item.name)) preserve(`${item.name} ${item.args.join(' ')}${item.children.length ? ' { … }' : ''}`)
@@ -139,32 +140,52 @@ export async function readNativeConfiguration(source: string, hint?: SourceServe
   if (stat.isSymbolicLink()) throw new Error('Choose the actual source configuration file or directory, rather than a symbolic link.')
   if (stat.isDirectory()) return readLiteSpeedDirectory(source, hint)
   if (!stat.isFile() || stat.size > 1024 * 1024) throw new Error('Select a text configuration file no larger than 1 MiB.')
-  return parseNativeConfiguration(await fs.readFile(source, 'utf8'), source, hint)
+  const sourceText = await fs.readFile(source, 'utf8')
+  if (sourceText.trimStart().startsWith('{')) {
+    const value = JSON.parse(sourceText)
+    if (value.format !== 'vhostra/site' || value.schemaVersion !== 1 || value.targetServer !== 'openlitespeed') throw new Error('Unsupported Vhostra Site file.')
+    const host = value.virtualHost as VirtualHost
+    const site = value.site as Site
+    if (!host || !site || !/^[a-f0-9-]{36}$/i.test(host.id) || host.builtIn || host.id !== site.vhostId || host.documentRoot !== site.documentRoot || !Array.isArray(host.aliases) || !host.https || typeof host.https.enabled !== 'boolean' || typeof host.rewriteEnabled !== 'boolean' || !Array.isArray(host.redirects) || !Array.isArray(host.rewrites) || !Array.isArray(host.headers) || !host.logs || typeof host.logs.access !== 'boolean' || typeof host.logs.error !== 'boolean' || host.indexFiles && (!Array.isArray(host.indexFiles) || host.indexFiles.length > 16 || host.indexFiles.some(index => typeof index !== 'string' || !/^[a-z0-9_.-]+$/i.test(index))) || new URL(site.url).hostname !== host.hostname || (new URL(site.url).protocol === 'https:') !== host.https.enabled) throw new Error('Invalid canonical Site export.')
+    const names = [host.hostname, ...host.aliases]
+    if (names.some(name => typeof name !== 'string' || !hostPattern.test(name)) || new Set(names).size !== names.length || !(path.posix.isAbsolute(host.documentRoot) || path.win32.isAbsolute(host.documentRoot)) || typeof site.name !== 'string' || !site.name.trim() || site.database && (!/^[A-Za-z0-9_]{1,64}$/.test(site.database.name) || typeof site.database.importExpected !== 'boolean')) throw new Error('Invalid canonical Site identity.')
+    return { source, server: 'openlitespeed', status: 'Converted', hosts: [{ hostname: host.hostname, aliases: host.aliases, documentRoot: host.documentRoot, https: host.https, rewriteEnabled: host.rewriteEnabled, indexFiles: host.indexFiles ?? [], canonical: host, portableSite: { name: site.name, url: site.url, framework: site.framework, database: site.database } }], warnings: [], preservedDirectives: [], sourceText }
+  }
+  return parseNativeConfiguration(sourceText, source, hint)
 }
-/** Explicit directory import reads only bounded regular .conf files inside the selected tree. */
+/** Explicit directory import reads the main config and only its referenced vhconf files. */
 async function readLiteSpeedDirectory(directory: string, hint?: SourceServer): Promise<NativeImportPreview> {
   if (hint && !['openlitespeed', 'litespeed-enterprise'].includes(hint)) throw new Error('Directory imports support LiteSpeed configuration trees. Choose a .conf file for Apache or Nginx.')
   const files: Array<{ file: string; text: string }> = []; let total = 0
-  const read = async (root: string, depth: number): Promise<void> => {
-    if (depth > 5) return
-    for (const item of await fs.readdir(root, { withFileTypes: true })) {
-      if (item.isSymbolicLink()) continue
-      const file = path.join(root, item.name)
-      if (item.isDirectory()) await read(file, depth + 1)
-      else if (item.isFile() && item.name.endsWith('.conf')) {
-        const stat = await fs.stat(file); total += stat.size
-        if (files.length >= 64 || total > 2 * 1024 * 1024 || stat.size > 1024 * 1024) throw new Error('LiteSpeed tree exceeds the bounded import size (64 configs / 2 MiB). Choose a smaller configuration directory.')
-        files.push({ file, text: await fs.readFile(file, 'utf8') })
-      }
+  const read = async (file: string) => {
+    const relative = path.relative(directory, file)
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative) || path.extname(file) !== '.conf') return
+    const parts = relative.split(path.sep); let parent = directory
+    for (const part of parts) {
+      parent = path.join(parent, part)
+      if ((await fs.lstat(parent).catch(() => null))?.isSymbolicLink()) return
     }
+    const stat = await fs.lstat(file).catch(() => null)
+    if (!stat?.isFile()) return
+    total += stat.size
+    if (files.length >= 64 || total > 2 * 1024 * 1024 || stat.size > 1024 * 1024) throw new Error('LiteSpeed import exceeds the bounded size (64 configs / 2 MiB). Choose a smaller configuration tree.')
+    files.push({ file, text: await fs.readFile(file, 'utf8') })
   }
-  await read(directory, 0)
+  await read(path.join(directory, 'httpd_config.conf'))
   const main = files.find(item => path.basename(item.file) === 'httpd_config.conf')
   const server = hint ?? 'openlitespeed'
   if (!main) throw new Error('Choose a LiteSpeed configuration directory containing httpd_config.conf, or import a self-contained vhconf file.')
   const all = walk(blocks(stripComments(main.text), false))
   const mapped = all.filter(node => node.name === 'map')
   const hosts: ImportedHost[] = []; const warnings: string[] = []; const preservedDirectives: string[] = []
+  for (const node of all.filter(node => node.name === 'virtualhost')) {
+    const flat = walk(node.children)
+    const configFile = first(flat, 'configfile')[0]
+    const vhRoot = first(flat, 'vhroot')[0] ?? ''
+    if (!configFile) continue
+    const reference = configFile.replace(/\$VH_ROOT/gi, vhRoot).replace(/\$SERVER_ROOT\/conf\//gi, '').replace(/\$SERVER_ROOT\//gi, '')
+    await read(path.resolve(directory, reference))
+  }
   for (const node of all.filter(node => node.name === 'virtualhost')) {
     const name = node.args[0]; const flat = walk(node.children)
     const configFile = first(flat, 'configfile')[0]
@@ -175,7 +196,14 @@ async function readLiteSpeedDirectory(directory: string, hint?: SourceServer): P
     if (!match) { warnings.push(`Virtual host ${name}: configFile is outside the selected tree or unavailable; not read.`); continue }
     const domains = mapped.filter(item => item.args[0] === name).flatMap(item => item.args.slice(1).join(',').split(/[\s,]+/)).filter(Boolean)
     let text = match.text.replace(/\$VH_ROOT/gi, vhRoot)
-    if (domains.length && !/\bvhDomain\s/i.test(text)) text += `\nvhDomain ${domains[0]}\nvhAliases ${domains.slice(1).join(',')}\n`
+    // Listener maps own routing identity. Combine them with any explicit vhconf
+    // domains, keeping the first mapped name canonical and never dropping aliases.
+    if (domains.length) {
+      const declared = walk(blocks(stripComments(text), false))
+      const names = [...new Set([...domains, ...first(declared, 'vhdomain').join(',').split(/[\s,]+/), ...first(declared, 'vhaliases').join(',').split(/[\s,]+/)].filter(Boolean))]
+      text = text.replace(/^\s*vh(?:Domain|Aliases)\s+[^\r\n]*$/gim, '')
+      text += `\nvhDomain ${names[0]}\n${names.length > 1 ? `vhAliases ${names.slice(1).join(',')}\n` : ''}`
+    }
     const preview = parseNativeConfiguration(text, match.file, server)
     if (preview.status === 'Invalid') warnings.push(...preview.warnings.map(warning => `${name}: ${warning}`))
     else hosts.push(...preview.hosts)
