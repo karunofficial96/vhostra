@@ -4,7 +4,7 @@
 
 Vhostra is a lightweight, cross-platform graphical local PHP development environment. It is designed around one shared runtime: many local websites use one selected web server, one selected PHP version, and shared supporting services.
 
-**Local development only.** Vhostra runs on your own computer and is not a production hosting control panel. Its runtime and security model are intended for local development, not an Internet-facing server. It does not provide the hosting or SSL management expected of a production platform. Local database and Site configuration exports can help you move a project to a separate production host.
+**Local development only.** Vhostra runs on your own computer and is not a production hosting control panel. Its runtime and security model are intended for local development, not an Internet-facing server. A Site/vhost configuration export is for local Vhostra configuration; it is not automatically ready for production. If you use one as a starting point on another server, manually review and edit paths, domains, ports, TLS certificates, permissions, logging, security and deployment settings. **Export Database for Production** is a separate SQL database workflow and does not deploy or configure a Site.
 
 ## Source and Licensing
 
@@ -91,7 +91,7 @@ Changing the global server renders a new target-server configuration from the ne
 
 ## Configuration import, export, and recovery
 
-The architecture defines a portable `vhostra/config-bundle` manifest with schema version `1`. The current Export Configuration action writes an all-configuration JSON bundle containing settings, site definitions, and neutral vhost definitions. Preview Import validates a selected bundle; Import Configuration creates a local backup, adds non-conflicting definitions, refreshes runtime configuration, and requests scoped hosts mappings. Each Site can also export on-demand Apache, Nginx, or OpenLiteSpeed virtual-host configuration generated from its canonical definition. OpenLiteSpeed exports one portable Vhostra Site JSON file that preserves the hostname, aliases, root and supported settings. Import the file through Sites to recreate one Site. Vhostra generates OpenLiteSpeed listener/domain mapping and virtual-host configuration separately when applying the Site to its runtime. Native OpenLiteSpeed configuration directories remain supported as import sources. Imported directives requiring review remain inactive in incompatible exports.
+The architecture defines a portable `vhostra/config-bundle` manifest with schema version `1`. The current Export Configuration action writes an all-configuration JSON bundle containing settings, site definitions, and neutral vhost definitions. Preview Import validates a selected bundle; Import Configuration creates a local backup, adds non-conflicting definitions, refreshes runtime configuration, and requests scoped hosts mappings. Each Site can also export on-demand Apache, Nginx, or OpenLiteSpeed virtual-host configuration generated from its canonical definition for local development. These files are not production-ready; adapting one for another server requires manual review and editing. OpenLiteSpeed exports one portable Vhostra Site JSON file that preserves the hostname, aliases, root and supported settings. Import the file through Sites to recreate one Site. Vhostra generates OpenLiteSpeed listener/domain mapping and virtual-host configuration separately when applying the Site to its runtime. Native OpenLiteSpeed configuration directories remain supported as import sources. Imported directives requiring review remain inactive in incompatible exports.
 
 The Database page can save a local MariaDB SQL dump for deployment elsewhere. Production URL and root directory describe the destination; Vhostra leaves application data unchanged because generic SQL replacement can corrupt serialized or application-specific values. Update those values with the application's supported tools after deployment. Exports do not upload or deploy data.
 
@@ -135,43 +135,43 @@ Genuine first launch shows welcome, System/Light/Dark appearance, OpenLiteSpeed/
 
 Resources shows Electron CPU and summed process working sets, exact managed runtime container CPU/RAM, categorized local files, managed Docker images/cache and writable layers. Shared memory/image layers are labeled; totals are logical attributed sizes, not exclusive physical disk consumption. External document roots, other Docker projects and Docker Desktop overhead are excluded. Samples run every eight seconds only while visible; requests coalesce and storage scans are bounded/cached for five minutes with explicit refresh. The localhost page has its own browser-local Light/Dark/System choice and icons, with live OS appearance changes.
 
-Vhostra keeps a native resizable frame with an 860 × 620 minimum. Maximize/zoom and fullscreen are disabled on macOS/Windows using Electron window options. On Linux the maximizable setter is a documented no-op; Vhostra reverses native maximize events when delivered, but window managers may still show an enabled control. No custom maximize button is added. See [Electron BrowserWindow](https://www.electronjs.org/docs/latest/api/browser-window).
+Vhostra's native main window chooses a fixed size that fits the current display work area at launch. Users cannot drag-resize it; maximize/zoom and fullscreen are disabled through Electron where supported. On Linux, Vhostra reverses native maximize events when delivered, though some window managers may still show the control. Minimize, close, tray and restore behavior remain available. Content scrolls inside the window when needed. See [Electron BrowserWindow](https://www.electronjs.org/docs/latest/api/browser-window).
 
 ## CLI commands
 
-After building, run `npm run cli -- help`, or the `vhostra` package executable. All runtime commands share the desktop store/controller and exact managed Compose scope.
+After building, run `npm run cli -- help` from the source checkout. A desktop release launcher is not configured yet. All runtime commands share the desktop store/controller and exact managed Compose scope.
 
 ```sh
-vhostra status [web|apache|nginx|openlitespeed|php|mariadb|phpmyadmin|redis|memcached]
-vhostra start|stop|restart [web|apache|nginx|openlitespeed|mariadb|redis|memcached]
-vhostra sites list
-vhostra sites add /path/site.json
-vhostra sites edit SITE_ID /path/site.json
-vhostra sites remove SITE_ID
-vhostra sites repair [SITE_ID]
-vhostra config export|preview|import /path/backup.json
-vhostra database list
-vhostra database create NAME USER [utf8mb4|utf8|latin1]
-vhostra database import|export NAME /path/database.sql
-vhostra database repair|delete NAME
-vhostra reset
-vhostra runtime status|start|stop|restart
-vhostra service list
-vhostra service web|mariadb|redis|memcached status|start|stop|restart
-vhostra web status|start|stop|restart
-vhostra mariadb status|start|stop|restart
-vhostra php status|versions
-vhostra php select 8.4
-vhostra php extensions list
-vhostra php extension install|remove|enable|disable apcu
-vhostra opcache status|enable|disable
-vhostra redis status|enable|disable|start|stop|restart
-vhostra memcached status|enable|disable|start|stop|restart
-vhostra cwebp status|enable|disable
-vhostra vhost list
-vhostra hosts status|repair [hostname]
-vhostra import preview /path/site.conf nginx
-vhostra import apply /path/site.conf nginx --accept-warnings
+npm run cli -- status [web|apache|nginx|openlitespeed|php|mariadb|phpmyadmin|redis|memcached]
+npm run cli -- start|stop|restart [web|apache|nginx|openlitespeed|mariadb|redis|memcached]
+npm run cli -- sites list
+npm run cli -- sites add /path/site.json
+npm run cli -- sites edit SITE_ID /path/site.json
+npm run cli -- sites remove SITE_ID
+npm run cli -- sites repair [SITE_ID]
+npm run cli -- config export|preview|import /path/backup.json
+npm run cli -- database list
+npm run cli -- database create NAME USER [utf8mb4|utf8|latin1]
+npm run cli -- database import|export NAME /path/database.sql
+npm run cli -- database repair|delete NAME
+npm run cli -- reset
+npm run cli -- runtime status|start|stop|restart
+npm run cli -- service list
+npm run cli -- service web|mariadb|redis|memcached status|start|stop|restart
+npm run cli -- web status|start|stop|restart
+npm run cli -- mariadb status|start|stop|restart
+npm run cli -- php status|versions
+npm run cli -- php select 8.4
+npm run cli -- php extensions list
+npm run cli -- php extension install|remove|enable|disable apcu
+npm run cli -- opcache status|enable|disable
+npm run cli -- redis status|enable|disable|start|stop|restart
+npm run cli -- memcached status|enable|disable|start|stop|restart
+npm run cli -- cwebp status|enable|disable
+npm run cli -- vhost list
+npm run cli -- hosts status|repair [hostname]
+npm run cli -- import preview /path/site.conf nginx
+npm run cli -- import apply /path/site.conf nginx --accept-warnings
 ```
 
 Use one alternative per `|` above. Hosts commands verify canonical ownership and use the same scoped administrative mutation path as the desktop. Before protected writes, Vhostra keeps a private local recovery snapshot; it retains ten completed snapshots. The elevated operation verifies the write before removing only its own transient native backup; failed/ambiguous native and local recovery remain available. Exit 0 indicates success, 1 backend/validation failure, 2 invalid import/unresolved mappings or failed/unavailable status target, and 64 invalid command usage. Cache status reports actual Supervisor state as well as saved enablement. A source import with unsupported directives requires preview/review and `--accept-warnings`; imports do not activate source text. Commands dispose temporary listeners/watchers on exit.
@@ -205,7 +205,7 @@ npm run typecheck
 npm run build
 ```
 
-The build compiles the React renderer and Electron main process. Packaging installers is not configured in this first iteration.
+The build compiles the React renderer and Electron main process. Packaging installers and a system-wide CLI launcher are not configured yet.
 
 ## Project structure
 
@@ -267,45 +267,45 @@ Stopping the web service also stops its associated PHP workers.
 ## Terminal commands
 
 Vhostra also exposes the same local runtime controller through its CLI. From a
-development checkout, use `npm run cli -- …`; after installation the package
-provides the `vhostra` command. The CLI never uses global Docker cleanup and
-only invokes Vhostra's generated, labeled Compose project.
+development checkout, use `npm run cli -- …`. The current desktop packaging does not install a system-wide `vhostra` executable; the `bin` field applies only to npm package installation. The CLI never uses global Docker cleanup and only invokes Vhostra's generated, labeled Compose project.
+
+Normal command output is short text. For example, `npm run cli -- runtime status` lists the runtime and managed services with readable states. Database commands report whether MariaDB is not created, stopped, or unavailable before attempting SQL work. CLI help and status do not open a graphical window.
 
 ```bash
-vhostra status [web|apache|nginx|openlitespeed|php|mariadb|phpmyadmin|redis|memcached]
-vhostra start|stop|restart [web|apache|nginx|openlitespeed|mariadb|redis|memcached]
-vhostra sites list
-vhostra sites add /path/site.json
-vhostra sites edit SITE_ID /path/site.json
-vhostra sites remove SITE_ID
-vhostra sites repair [SITE_ID]
-vhostra config export|preview|import /path/backup.json
-vhostra database list
-vhostra database create NAME USER [utf8mb4|utf8|latin1]
-vhostra database import|export NAME /path/database.sql
-vhostra database repair|delete NAME
-vhostra reset
-vhostra runtime status
-vhostra runtime start
-vhostra runtime stop
-vhostra runtime restart
-vhostra service list
-vhostra service web restart
-vhostra service mariadb restart
-vhostra service redis stop
-vhostra service redis enable
-vhostra service memcached disable
+npm run cli -- status [web|apache|nginx|openlitespeed|php|mariadb|phpmyadmin|redis|memcached]
+npm run cli -- start|stop|restart [web|apache|nginx|openlitespeed|mariadb|redis|memcached]
+npm run cli -- sites list
+npm run cli -- sites add /path/site.json
+npm run cli -- sites edit SITE_ID /path/site.json
+npm run cli -- sites remove SITE_ID
+npm run cli -- sites repair [SITE_ID]
+npm run cli -- config export|preview|import /path/backup.json
+npm run cli -- database list
+npm run cli -- database create NAME USER [utf8mb4|utf8|latin1]
+npm run cli -- database import|export NAME /path/database.sql
+npm run cli -- database repair|delete NAME
+npm run cli -- reset
+npm run cli -- runtime status
+npm run cli -- runtime start
+npm run cli -- runtime stop
+npm run cli -- runtime restart
+npm run cli -- service list
+npm run cli -- service web restart
+npm run cli -- service mariadb restart
+npm run cli -- service redis stop
+npm run cli -- service redis enable
+npm run cli -- service memcached disable
 
-vhostra php extensions list
-vhostra php extension enable imagick
-vhostra php extension disable imagick
-vhostra opcache status
-vhostra opcache enable
-vhostra cwebp status
-vhostra cwebp disable
-vhostra redis status
-vhostra redis enable
-vhostra memcached restart
+npm run cli -- php extensions list
+npm run cli -- php extension enable imagick
+npm run cli -- php extension disable imagick
+npm run cli -- opcache status
+npm run cli -- opcache enable
+npm run cli -- cwebp status
+npm run cli -- cwebp disable
+npm run cli -- redis status
+npm run cli -- redis enable
+npm run cli -- memcached restart
 ```
 
 Commands return non-zero for invalid syntax, unavailable Docker, failed health

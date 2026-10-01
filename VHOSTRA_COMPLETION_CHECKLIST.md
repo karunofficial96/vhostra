@@ -329,3 +329,17 @@ Detailed evidence and diagnosis: `docs/site-previews.md`. Original database/runt
 - [x] Help title/description, all headings, topic navigation and controls remain unselectable. Documentation prose and command/output examples use explicit selectable semantics. Each CLI code block has Copy/Copied feedback.
 - [x] Existing local search retained; static topic text and command names are searched while Help is mounted. Empty query shows navigation, no match shows a simple message, and Clear resets the query. No search persistence, request or indexing process was added.
 - [x] Build and 116/116 repository tests passed with local loopback permission. An isolated `npm run cli -- help` matched the documented syntax. An isolated Electron fixture verified computed text-selection styles, search terms/empty/clear behavior, zero Help search requests, Copy/clipboard, focus and light/dark and 860px-width visuals.
+
+## Help tabs, fixed window and CLI correction — 2026-10-01
+
+The command coverage and remaining live cases are recorded in [VHOSTRA_CLI_TEST_MATRIX.md](VHOSTRA_CLI_TEST_MATRIX.md).
+
+- [x] Help renders one horizontal, keyboard-accessible tab panel at a time. Search ranks local matches across all topics, selects a category and offers other matching categories. Body and code remain selectable; headings and controls remain unselectable.
+- [x] README and Help distinguish local Site/vhost configuration export from separate SQL Database Production Export, including manual production adaptation.
+- [x] The main window selects a fixed size within its display work area and disables manual resize, maximize and fullscreen. Narrow content can scroll and the sidebar condenses below 720px.
+- [x] Build and sequential 119/119 unit tests passed. CLI parser families received explicit syntax validation and local help; default output uses readable text. Database commands check MariaDB state before SQL, and a missing container is Not Created. Isolated tests cover all six database verbs with MariaDB absent, family help, invalid syntax, formatter and redaction.
+- [x] README and Help no longer claim that desktop packaging installs a system-wide CLI launcher.
+- [x] Isolated macOS Electron fixture verified all 11 tabs, one panel, arrow-key navigation, MariaDB search selecting Databases, local-only search, selection/copy, themes and fixed-window flags/bounds after a sandboxed LaunchServices abort was resolved by running the fixture outside the command sandbox.
+- [ ] Windows/Linux window-manager and small-display native acceptance.
+- [ ] Full live Docker CLI success/failure matrix for every mutating command, including running/stopped MariaDB, disabled caches, real errors and clean exit. A sequential isolated MariaDB fixture now verifies real CLI database list/status while Running and a clear nonzero database-list error while Stopped, plus exact Docker inventory cleanup. Other live paths remain unverified.
+- [ ] Release packaging and a cross-platform installed CLI launcher. The npm bin mapping is not an installed desktop command.

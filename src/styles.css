@@ -56,3 +56,10 @@ h1, h2, h3, h4, h5, h6, summary, dt, button, nav, label, select, .ui-label { -we
 
 /* Help opts in by content role while its titles, navigation and controls stay chrome. */
 .help-copyable, .help-copyable * { -webkit-user-select: text; user-select: text; }
+.help-tab[aria-selected="true"] { background: var(--v-text); color: var(--v-bg); }
+.help-heading:focus { outline: none; }
+@media (max-width: 720px) {
+  .app-sidebar { width: 72px !important; }
+  .app-sidebar img, .app-sidebar nav span, .app-sidebar > div:last-child span { display: none; }
+  .app-sidebar nav button, .app-sidebar > div:last-child button { justify-content: center; padding-left: 0; padding-right: 0; }
+}

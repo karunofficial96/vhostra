@@ -43,6 +43,7 @@ export interface ManagedServiceStatus {
     state:
         | "running"
         | "stopped"
+        | "not-created"
         | "starting"
         | "stopping"
         | "restarting"
@@ -665,6 +666,8 @@ export class DockerRuntimeController {
                     state: this.restartingServices.has('web') ? 'restarting' : this.stoppingServices.has('web') ? 'stopping' : this.startingServices.has('web') ? 'starting' : this.failedServices.has('web') ? 'failed' :
                         this.snapshot.state === "unavailable"
                             ? "unavailable"
+                            : this.snapshot.state === "not-created"
+                            ? "not-created"
                             : "stopped",
                 },
                 {
@@ -678,7 +681,7 @@ export class DockerRuntimeController {
                     label: "Redis",
                     enabled: state.settings.optionalServices.redis,
                     state: this.restartingServices.has('redis') ? 'restarting' : this.stoppingServices.has('redis') ? 'stopping' : this.startingServices.has('redis') ? 'starting' : state.settings.optionalServices.redis
-                        ? this.failedServices.has('redis') ? 'failed' : "stopped"
+                        ? this.failedServices.has('redis') ? 'failed' : this.snapshot.state === 'not-created' ? 'not-created' : "stopped"
                         : "disabled",
                 },
                 {
@@ -686,7 +689,7 @@ export class DockerRuntimeController {
                     label: "Memcached",
                     enabled: state.settings.optionalServices.memcached,
                     state: this.restartingServices.has('memcached') ? 'restarting' : this.stoppingServices.has('memcached') ? 'stopping' : this.startingServices.has('memcached') ? 'starting' : state.settings.optionalServices.memcached
-                        ? this.failedServices.has('memcached') ? 'failed' : "stopped"
+                        ? this.failedServices.has('memcached') ? 'failed' : this.snapshot.state === 'not-created' ? 'not-created' : "stopped"
                         : "disabled",
                 },
             ];
@@ -1966,7 +1969,7 @@ foreach (['localhost', '127.0.0.1'] as $host) {
         await fs.writeFile(this.environmentFile, contents.split(/\r?\n/).filter(line => line.startsWith("VHOSTRA_PMA_")).join("\n") + "\n", { mode: 0o600 });
     }
     private async provisionPhpMyAdmin() {
-        if (await this.databaseStatus() === "stopped") return;
+        if (["stopped", "not-created"].includes(await this.databaseStatus())) return;
         const contents = await fs.readFile(this.environmentFile, "utf8");
         const password = contents
             .match(/^VHOSTRA_PMA_PASSWORD=(.+)$/m)?.[1]
@@ -2236,7 +2239,7 @@ foreach (['localhost', '127.0.0.1'] as $host) {
             throw new Error(
                 `The ${server} frontend did not invoke selected LSPHP ${state.settings.selectedPhpVersion}. Health response: ${php.slice(0, 300)}`,
             );
-        if (await this.databaseStatus() !== "stopped") await this.databaseCompose([
+        if (!["stopped", "not-created"].includes(await this.databaseStatus())) await this.databaseCompose([
             "exec",
             "-T",
             "mariadb",
@@ -2304,7 +2307,7 @@ foreach (['localhost', '127.0.0.1'] as $host) {
             ]);
         this.appendProgress("✓ Required extensions and optional services healthy");
         this.appendProgress("Checking phpMyAdmin HTTP health…");
-        if (await this.databaseStatus() !== "stopped" && !(await ready(ports.phpMyAdmin, "/phpmyadmin/index.php")))
+        if (!["stopped", "not-created"].includes(await this.databaseStatus()) && !(await ready(ports.phpMyAdmin, "/phpmyadmin/index.php")))
             throw new Error(
                 "phpMyAdmin did not pass its shared-runtime health check.",
             );
@@ -2488,7 +2491,7 @@ foreach (['localhost', '127.0.0.1'] as $host) {
     private async databaseStatus(): Promise<ManagedServiceStatus["state"]> {
         try {
             const ids = await this.databaseContainerIds(true);
-            if (!ids.length) { this.databaseReadyStartedAt = undefined; return "stopped"; }
+            if (!ids.length) { this.databaseReadyStartedAt = undefined; return "not-created"; }
             const [row] = JSON.parse(await this.docker(["inspect", ...ids]));
             if (row.State.Status === "restarting" || row.State.Status === "created") return "starting";
             if (!row.State.Running) { this.databaseReadyStartedAt = undefined; return row.State.OOMKilled || row.State.Error || (row.State.ExitCode && ![137, 143].includes(row.State.ExitCode)) ? "failed" : "stopped"; }
@@ -2574,7 +2577,7 @@ networks:
         if (await fs.readFile(target, "utf8").catch(() => "") !== file) await fs.writeFile(target, file, { mode: 0o600 });
     }
     private async startDatabase() {
-        if (this.databaseOwner) { if (await this.databaseStatus() === "stopped") return; await this.waitForDatabase(); return; }
+        if (this.databaseOwner) { if (["stopped", "not-created"].includes(await this.databaseStatus())) return; await this.waitForDatabase(); return; }
         // One-time handover: never allow two servers to open the same datadir.
         const all = (await this.docker(["ps", "--all", "--quiet"])).trim().split(/\s+/).filter(Boolean);
         if (all.length) for (const row of JSON.parse(await this.docker(["inspect", ...all]))) {
@@ -3049,8 +3052,10 @@ async function executeSql(args: string[], statement: string): Promise<string> {
 
 /** SQL clients can echo entire failed statements containing imported secrets. */
 function databaseErrorMessage(stderr: string) {
+    if (/service ["']?mariadb["']? is not running/i.test(stderr)) return 'MariaDB is stopped. Start MariaDB before using this database command.';
     const errors = stderr.split(/\r?\n/).filter(line => /^ERROR\s+\d+/i.test(line.trim()));
-    return (errors.length ? errors.join("\n") : stderr.replace(/--------------[\s\S]*?--------------/g, "[SQL statement omitted]"))
+    if (!errors.length) return 'MariaDB command could not run. Check Docker and the MariaDB service.';
+    return errors.join("\n")
         .replace(/near\s+[\s\S]*$/i, "near [SQL fragment omitted]")
         .replace(/'[^']*'|"[^"]*"/g, "[SQL value omitted]").slice(-2000);
 }

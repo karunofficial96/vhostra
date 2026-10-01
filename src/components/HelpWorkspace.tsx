@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState, type KeyboardEvent } from 'react'
 
 type Entry = { title: string; text: string; command?: string; output?: string }
 type Topic = { title: string; intro: string[]; entries?: Entry[]; note?: string }
@@ -22,7 +22,7 @@ const topics: Topic[] = [
     'Adding or importing a Site does not import its database. For WordPress or any other database-backed app, open Databases and create or import the database separately. Set the app’s own database connection settings as needed.'
   ], entries: [
     { title: 'Import a Site', text: 'Sites can preview and import Vhostra Site JSON, Apache or Nginx vhost files, OpenLiteSpeed configuration, and supported LiteSpeed Enterprise text. Review any unsupported directives before applying. Enterprise configuration is converted for a supported Vhostra server; Enterprise is not a runtime option.' },
-    { title: 'Export a Site', text: 'Export a selected Site to a local file. Apache and Nginx use native configuration; the OpenLiteSpeed choice writes a portable Vhostra Site JSON file. Exporting does not change the running Site.' }
+    { title: 'Export a Site', text: 'Export a selected Site to a local file for Vhostra and local development. Apache and Nginx use native configuration; the OpenLiteSpeed choice writes a portable Vhostra Site JSON file. Exporting does not change the running Site. This file is not automatically ready for production hosting. If you use it as a starting point elsewhere, review and edit paths, domains, ports, TLS certificates, permissions, logging, security and server-specific settings for that server. Export Database for Production is a separate SQL database workflow.' }
   ] },
   { title: 'Databases', intro: [
     'MariaDB stores data for local projects. In Databases, create a database and user, import an SQL file, export an SQL file, check or repair a database, or delete one after confirmation. Importing a Site configuration alone never imports SQL data.',
@@ -49,9 +49,9 @@ const topics: Topic[] = [
     'Reset Keep resets settings and runtime while preserving Site definitions and MariaDB data and accounts. Reset Remove also removes Vhostra definitions and database state after final confirmation. External website files stay untouched. Back up important data first.'
   ] },
   { title: 'CLI', intro: [
-    'The CLI controls the same local Vhostra environment as the graphical app. From a built repository checkout, run npm run cli -- followed by a command. An installed vhostra executable uses the same command words. Run help, --help or -h for the full syntax.',
-    'Commands print text or JSON. A successful command exits with code 0; invalid syntax uses 64, reported errors use 1, and certain unhealthy or conflicted status results use 2. Status words come from the same managed service state as the graphical app.',
-    'The examples below use npm run cli --. Replace <...> placeholders with your own local values. Commands that change services, files or databases act on the current Vhostra data directory. Use VHOSTRA_USER_DATA only for a deliberately separate Electron data directory.'
+    'The CLI uses the same local Vhostra environment as the graphical app. In a built source checkout, run npm run cli -- followed by a command. The installed desktop package does not yet install a system-wide vhostra command. Run help, --help or -h for the full syntax.',
+    'Commands show short, readable results. Success exits with code 0; invalid syntax uses 64, errors use 1, and unhealthy or conflicted status uses 2. Status words come from the managed service state.',
+    'The examples below use the source checkout. Replace <...> placeholders with your own local values. Commands that change services, files or databases act on the current Vhostra data directory. Use VHOSTRA_USER_DATA only for a deliberately separate data directory.'
   ], entries: [
     { title: 'Help and status', text: 'Show syntax, all service states, or one service. Status targets are apache, nginx, openlitespeed, web, php, mariadb, phpmyadmin, redis and memcached. An inactive web server can be reported as inactive because only the selected server runs.', command: 'npm run cli -- help\nnpm run cli -- status\nnpm run cli -- status mariadb', output: 'Vhostra CLI (local-only)\n\nUsage:' },
     { title: 'Runtime and services', text: 'Start, stop or restart the full environment. Target one service with start/stop/restart and a target, or use the service and runtime forms. PHP and phpMyAdmin share the selected web service lifecycle.', command: 'npm run cli -- start\nnpm run cli -- restart web\nnpm run cli -- runtime status\nnpm run cli -- service list\nnpm run cli -- service mariadb status\nnpm run cli -- web status\nnpm run cli -- mariadb status' },
@@ -76,6 +76,14 @@ const topics: Topic[] = [
 ]
 
 const indexed = topics.map(topic => ({ topic, search: [topic.title, ...topic.intro, topic.note ?? '', ...(topic.entries ?? []).flatMap(entry => [entry.title, entry.text, entry.command ?? '', entry.output ?? ''])].join(' ').toLocaleLowerCase() }))
+const count = (text: string, term: string) => text.toLocaleLowerCase().split(term).length - 1
+const rankMatches = (term: string) => indexed.map((item, index) => {
+  const score = count(item.topic.title, term) * 20
+    + item.topic.intro.reduce((total, paragraph) => total + count(paragraph, term) * 2, 0)
+    + count(item.topic.note ?? '', term) * 2
+    + (item.topic.entries ?? []).reduce((total, entry) => total + count(entry.title, term) * 8 + count(entry.text, term) * 2 + count(entry.command ?? '', term) * 0.25 + count(entry.output ?? '', term) * 0.25, 0)
+  return { ...item, index, score }
+}).filter(item => item.score > 0).sort((a, b) => b.score - a.score || a.index - b.index)
 
 function CommandBlock({ value, kind = 'command' }: { value: string; kind?: 'command' | 'output' }) {
   const [copied, setCopied] = useState(false)
@@ -87,14 +95,45 @@ function CommandBlock({ value, kind = 'command' }: { value: string; kind?: 'comm
 
 export function HelpWorkspace() {
   const [query, setQuery] = useState('')
+  const [active, setActive] = useState(0)
+  const [selectedEntry, setSelectedEntry] = useState<string | null>(null)
+  const tabs = useRef<Array<HTMLButtonElement | null>>([])
   const normalized = query.trim().toLocaleLowerCase()
-  const visible = normalized ? indexed.filter(item => item.search.includes(normalized)).map(item => item.topic) : topics
+  const matches = normalized ? rankMatches(normalized) : []
+  const topic = topics[active]
+  const choose = (index: number, entry: string | null = null, reveal = false) => {
+    if (normalized && !matches.some(match => match.index === index)) setQuery('')
+    setActive(index); setSelectedEntry(entry)
+    tabs.current[index]?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    if (reveal) window.requestAnimationFrame(() => {
+      const heading = entry
+        ? Array.from(document.querySelectorAll<HTMLElement>('[data-help-entry]')).find(item => item.dataset.helpEntry === entry)
+        : document.querySelector<HTMLElement>('#help-panel h2')
+      heading?.scrollIntoView({ block: 'nearest' })
+      heading?.focus({ preventScroll: true })
+    })
+  }
+  const search = (value: string) => {
+    setQuery(value)
+    const term = value.trim().toLocaleLowerCase()
+    if (!term) { setSelectedEntry(null); return }
+    const first = rankMatches(term)[0]?.index ?? -1
+    if (first >= 0) {
+      const entry = topics[first].entries?.find(item => [item.title, item.text, item.command ?? '', item.output ?? ''].join(' ').toLocaleLowerCase().includes(term))
+      setActive(first); setSelectedEntry(entry?.title ?? null)
+    }
+  }
+  const onTabKey = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    const next = event.key === 'ArrowRight' ? (index + 1) % topics.length : event.key === 'ArrowLeft' ? (index - 1 + topics.length) % topics.length : event.key === 'Home' ? 0 : event.key === 'End' ? topics.length - 1 : -1
+    if (next >= 0) { event.preventDefault(); choose(next); tabs.current[next]?.focus() }
+  }
   return <div className="mx-auto max-w-[1000px] px-6 py-6 lg:px-8">
     <p className="text-xs font-medium uppercase tracking-[.12em] text-[#606060]">Offline documentation</p>
     <h1 className="mt-1 text-2xl font-bold">Help &amp; Documentation</h1>
     <p className="mt-3 max-w-2xl text-sm leading-5 text-[#606060]">Simple guides for Vhostra’s local development tools. Search stays on this computer.</p>
-    <div className="mt-6 flex max-w-md items-center gap-2"><input aria-label="Search local help" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search local help" className="input"/>{query && <button type="button" aria-label="Clear help search" onClick={() => setQuery('')} className="h-9 rounded-full border border-[#E5E5E5] px-3 text-sm font-medium">Clear</button>}</div>
-    {!normalized && <nav aria-label="Help topics" className="mt-6 flex flex-wrap gap-2">{topics.map((topic, index) => <a key={topic.title} href={`#help-${index}`} className="rounded-full bg-[#F2F2F2] px-3 py-2 text-sm font-medium text-[#0F0F0F] hover:underline">{topic.title}</a>)}</nav>}
-    <div className="mt-6 space-y-8">{visible.map(topic => <section key={topic.title} id={`help-${topics.indexOf(topic)}`} className="border-b border-[#E5E5E5] pb-6"><h2 className="text-xl font-medium leading-7">{topic.title}</h2><div className="mt-4 space-y-3">{topic.intro.map(paragraph => <p key={paragraph} className="help-copyable max-w-[75ch] text-sm leading-5 text-[#606060]">{paragraph}</p>)}</div>{topic.entries?.map(entry => <div key={entry.title} className="mt-6"><h3 className="text-sm font-medium leading-5">{entry.title}</h3><p className="help-copyable mt-2 max-w-[75ch] text-sm leading-5 text-[#606060]">{entry.text}</p>{entry.command && <CommandBlock value={entry.command}/>}{entry.output && <><p className="mt-3 text-xs font-medium text-[#606060]">Example output</p><CommandBlock value={entry.output} kind="output"/></>}</div>)}{topic.note && <p className="help-copyable mt-4 rounded-lg bg-[#F2F2F2] p-4 text-sm leading-5">{topic.note}</p>}</section>)}{visible.length === 0 && <p className="text-sm text-[#606060]">No documentation found for this search.</p>}</div>
+    <div className="mt-6 flex max-w-md items-center gap-2"><input aria-label="Search local help" value={query} onChange={event => search(event.target.value)} placeholder="Search local help" className="input"/>{query && <button type="button" aria-label="Clear help search" onClick={() => search('')} className="h-9 rounded-full border border-[#E5E5E5] px-3 text-sm font-medium">Clear</button>}</div>
+    <nav aria-label="Help topics" role="tablist" className="mt-6 flex max-w-full gap-2 overflow-x-auto whitespace-nowrap pb-2">{topics.map((item, index) => <button key={item.title} ref={element => { tabs.current[index] = element }} type="button" role="tab" id={`help-tab-${index}`} aria-controls="help-panel" aria-selected={active === index} tabIndex={active === index ? 0 : -1} onKeyDown={event => onTabKey(event, index)} onClick={() => choose(index)} className={`help-tab shrink-0 rounded-full px-3 py-2 text-sm font-medium ${active === index ? 'bg-[#0F0F0F] text-white' : 'bg-[#F2F2F2] text-[#0F0F0F] hover:bg-[#E5E5E5]'}`}>{item.title}{normalized && matches.some(match => match.index === index) ? <span className="ml-1" aria-label="Search match">•</span> : null}</button>)}</nav>
+    {normalized && <div aria-label="Help search results" className="mt-4"><p className="text-xs text-[#606060]">{matches.length ? `${matches.length} matching ${matches.length === 1 ? 'topic' : 'topics'}` : 'No documentation found for this search.'}</p>{matches.length > 0 && <div className="mt-2 flex flex-wrap gap-2">{matches.map(match => <button key={match.index} type="button" onClick={() => choose(match.index, match.topic.entries?.find(entry => [entry.title, entry.text, entry.command ?? ''].join(' ').toLocaleLowerCase().includes(normalized))?.title ?? null, true)} className={`rounded-full border px-3 py-1 text-xs font-medium ${active === match.index ? 'border-[#FF0000] text-[#FF0000]' : 'border-[#E5E5E5]'}`}>{match.topic.title}</button>)}</div>}</div>}
+    {(!normalized || matches.length > 0) && <section key={active} id="help-panel" role="tabpanel" aria-labelledby={`help-tab-${active}`} className="mt-6 border-b border-[#E5E5E5] pb-6"><h2 tabIndex={-1} className="help-heading text-xl font-medium leading-7">{topic.title}</h2><div className="mt-4 space-y-3">{topic.intro.map(paragraph => <p key={paragraph} className="help-copyable max-w-[75ch] text-sm leading-5 text-[#606060]">{paragraph}</p>)}</div>{topic.entries?.map(entry => <div key={entry.title} className={`mt-6 ${selectedEntry === entry.title ? 'border-l-2 border-[#FF0000] pl-3' : ''}`}><h3 tabIndex={-1} data-help-entry={entry.title} className="help-heading text-sm font-medium leading-5">{entry.title}</h3><p className="help-copyable mt-2 max-w-[75ch] text-sm leading-5 text-[#606060]">{entry.text}</p>{entry.command && <CommandBlock value={entry.command}/>}{entry.output && <><p className="mt-3 text-xs font-medium text-[#606060]">Example output</p><CommandBlock value={entry.output} kind="output"/></>}</div>)}{topic.note && <p className="help-copyable mt-4 rounded-lg bg-[#F2F2F2] p-4 text-sm leading-5">{topic.note}</p>}</section>}
   </div>
 }

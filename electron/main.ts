@@ -4,6 +4,7 @@ import type { RestoreChoices } from './reconciliation.js';
 import {
     app,
     BrowserWindow,
+    screen,
     dialog,
     ipcMain,
     Menu,
@@ -182,15 +183,18 @@ const createWindow = () => {
         console.error(
             `[Vhostra] Preload script is missing: ${preloadPath}. Run the Electron build before starting the app.`,
         );
+    const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+    const width = Math.min(1280, area.width);
+    const height = Math.min(820, area.height);
     const window = new BrowserWindow({
-        width: 1280,
-        height: 820,
-        minWidth: 860,
-        minHeight: 620,
+        width,
+        height,
+        x: area.x + Math.floor((area.width - width) / 2),
+        y: area.y + Math.floor((area.height - height) / 2),
         title: "Vhostra",
         maximizable: false,
         fullscreenable: false,
-        resizable: true,
+        resizable: false,
         icon: applicationIcon,
         webPreferences: {
             contextIsolation: true,
@@ -205,9 +209,10 @@ const createWindow = () => {
     window.setMenuBarVisibility(false);
     window.setAutoHideMenuBar(true);
     if (process.platform !== "darwin") window.removeMenu();
-    // Electron's Linux maximizable setter is a documented no-op. Honor the
-    // policy when the window manager emits the native event; some managers may
-    // still display their maximize control. Manual resizing remains available.
+    window.setResizable(false);
+    window.setMaximizable(false);
+    window.setFullScreenable(false);
+    // Some Linux window managers ignore Electron's maximize setting.
     if (process.platform === "linux") window.on("maximize", () => window.unmaximize());
     const refreshVisibleRuntime = () => {
         publishRuntimeStatus();

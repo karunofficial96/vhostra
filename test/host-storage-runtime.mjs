@@ -46,11 +46,11 @@ for (const keep of [true, false]) {
     await updateManagedSite(store, hosts, runtime, { id: site.id, name: site.name, documentRoot: project, url: `http://${newHostname}:31580`, aliases: [`www.${newHostname}`] })
     assert.equal((await request(31580, newHostname)).text, 'host-root:after'); const mapped = await readFile(tempHosts, 'utf8'); assert.match(mapped, new RegExp(newHostname.replaceAll('.', '\\.'))); assert.doesNotMatch(mapped, new RegExp(hostname.replaceAll('.', '\\.')))
     const environment = { ...process.env, VHOSTRA_USER_DATA: profile, VHOSTRA_RUNTIME_PROJECT: scope }
-    const cli = args => JSON.parse(execFileSync(process.execPath, ['scripts/vhostra.mjs', ...args], { encoding: 'utf8', env: environment }))
-    assert.equal(cli(['status', 'php']).state, 'running'); assert.equal(cli(['status', 'mariadb']).state, 'running'); assert.equal(cli(['status', 'redis']).state, 'disabled'); assert.equal(cli(['status', keep ? 'nginx' : 'apache']).state, 'inactive')
-    assert.equal(cli(['status']).services.length, 6)
-    cli(['stop', 'mariadb']); assert.equal(cli(['status', 'mariadb']).state, 'stopped'); cli(['start', 'mariadb']); cli(['restart', 'mariadb'])
-    cli(['stop']); assert.equal(cli(['status']).runtime.state, 'stopped'); cli(['start']); cli(['restart']); await runtime.refresh(); assert.ok((await runtime.listDatabases()).includes('host_reset_probe'))
+    const cli = args => execFileSync(process.execPath, ['scripts/vhostra.mjs', ...args], { encoding: 'utf8', env: environment })
+    assert.match(cli(['status', 'php']), /PHP \/ LSPHP .*: Running/); assert.match(cli(['status', 'mariadb']), /MariaDB: Running/); assert.match(cli(['status', 'redis']), /Redis: Disabled/); assert.match(cli(['status', keep ? 'nginx' : 'apache']), /Status: Inactive/)
+    const status = cli(['status']); for (const label of ['OpenLiteSpeed','MariaDB','Redis','Memcached','PHP / LSPHP','phpMyAdmin']) assert.match(status, new RegExp(label))
+    cli(['stop', 'mariadb']); assert.match(cli(['status', 'mariadb']), /MariaDB: Stopped/); cli(['start', 'mariadb']); cli(['restart', 'mariadb'])
+    cli(['stop']); assert.match(cli(['status']), /Status: Stopped/); cli(['start']); cli(['restart']); await runtime.refresh(); assert.ok((await runtime.listDatabases()).includes('host_reset_probe'))
     // Container writable layer is disposable. Reconstruct from the same host state.
     await runtime.compose(['rm', '--force', '--stop', 'runtime']); await runtime.start(); assert.ok((await runtime.listDatabases()).includes('host_reset_probe')); assert.equal((await request(31580, newHostname)).text, 'host-root:after')
     const logBeforeReset = await readFile(host.logs.paths.access, 'utf8'); assert.ok(logBeforeReset.length)

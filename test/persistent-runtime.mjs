@@ -101,7 +101,7 @@ try {
   for (const [label, server, php] of [['PHP switch','nginx','8.5'], ['server switch','apache','8.5'], ['combined switch','openlitespeed','8.4']]) {
     const state = await store.getState(); await store.saveSettings({ ...state.settings, selectedWebServer: server, selectedPhpVersion: php }); await runtime.applyConfiguration(); await verify(label)
   }
-  for (const action of ['stop','start','restart']) { cli(action,'mariadb'); const row=JSON.parse(cli('status','mariadb')); assert.equal(row.state, action==='stop'?'stopped':'running') }
+  for (const action of ['stop','start','restart']) { cli(action,'mariadb'); assert.match(cli('status','mariadb'), new RegExp(`MariaDB: ${action === 'stop' ? 'Stopped' : 'Running'}`)) }
   for (const action of ['stop','start','restart']) { cli(action); if (action === 'stop') assert.equal(await runtime.allServicesStopped(), true); else assert.match(cli('status'), /mariadb/) }
   assert.equal(await sql('SELECT value FROM wp_fixture.identity_probe'), 'preserved\n')
   await runtime.resetRuntime(true); await runtime.pauseBackgroundWork(); runtime.dispose(); await store.resetConfiguration(true)

@@ -4,7 +4,7 @@ import { mkdtemp, rm, readFile, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import net from 'node:net'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { VhostraStore } from '../dist-electron/store.js'
 import { DockerRuntimeController } from '../dist-electron/runtime.js'
 
@@ -14,6 +14,7 @@ const inventory = () => execFileSync('docker', ['ps', '-a', '--format', '{{.ID}}
 const original = inventory()
 const store = new VhostraStore(profile, path.resolve('dist-welcome'))
 const runtime = new DockerRuntimeController(store.layout, () => store.getState(), undefined, scope)
+const cli = args => spawnSync(process.execPath, ['scripts/vhostra.mjs', ...args], { encoding: 'utf8', timeout: 15000, env: { ...process.env, VHOSTRA_USER_DATA: profile, VHOSTRA_RUNTIME_PROJECT: scope } })
 let passed = false
 const observed = []
 const checks = []
@@ -22,14 +23,22 @@ runtime.subscribe(() => { const revision = runtime.current().serviceRevision ?? 
 try {
   const state = await store.getState()
   await store.saveSettings({ ...state.settings, ports: { ...state.settings.ports, mariadb: 35306 } })
-  assert.equal((await runtime.listManagedServices()).find(row => row.id === 'mariadb').state, 'stopped')
+  assert.equal((await runtime.listManagedServices()).find(row => row.id === 'mariadb').state, 'not-created')
   await runtime.controlManagedService('mariadb', 'start')
   await Promise.all(checks); assert.ok(observed.includes('starting'), `MariaDB did not publish Starting: ${observed.join(', ')}`)
   const independent = await runtime.listManagedServices()
   assert.equal(independent.find(row => row.id === 'mariadb').state, 'running')
-  assert.equal(independent.find(row => row.id === 'web').state, 'stopped')
+  assert.equal(independent.find(row => row.id === 'web').state, 'not-created')
   const sql = statement => runtime.databaseCompose(['exec', '-T', 'mariadb', 'mariadb', '-uroot', '-N', '-e', statement])
   await sql("CREATE DATABASE export_fixture; CREATE TABLE export_fixture.payload (id INT PRIMARY KEY AUTO_INCREMENT, body MEDIUMTEXT); INSERT INTO export_fixture.payload(body) VALUES ('a:1:{s:4:\"home\";s:17:\"http://local.test\";}'); INSERT INTO export_fixture.payload(body) SELECT REPEAT('X', 10000) FROM information_schema.COLUMNS LIMIT 150")
+  let running
+  for (let attempt = 0; attempt < 35; attempt++) {
+    running = cli(['status', 'mariadb'])
+    if (/MariaDB: Running/.test(running.stdout)) break
+    await new Promise(resolve => setTimeout(resolve, 1000))
+  }
+  assert.equal(running.status, 0, running.stderr); assert.match(running.stdout, /MariaDB: Running/)
+  const listed = cli(['database', 'list']); assert.equal(listed.status, 0, listed.stderr); assert.match(listed.stdout, /export_fixture/); assert.doesNotMatch(listed.stdout, /[{}]|serviceRevision/)
   const dump = path.join(profile, 'large-export.sql')
   await runtime.exportDatabase('export_fixture', dump)
   assert.ok((await stat(dump)).size > 1000000, 'Large-enough streamed dump fixture missing')
@@ -48,6 +57,7 @@ try {
   await runtime.controlManagedService('mariadb', 'stop')
   await Promise.all(checks); assert.ok(observed.includes('stopping'), `MariaDB did not publish Stopping: ${observed.join(', ')}`)
   assert.equal((await runtime.listManagedServices()).find(row => row.id === 'mariadb').state, 'stopped')
+  const stopped = cli(['database', 'list']); assert.equal(stopped.status, 1); assert.match(stopped.stderr, /MariaDB is Stopped.*npm run cli -- mariadb start/); assert.doesNotMatch(stopped.stderr, /SQL value omitted|at .*\.mjs:\d+/)
   const occupiedPort = net.createServer()
   await new Promise((resolve, reject) => occupiedPort.once('error', reject).listen(35306, '127.0.0.1', resolve))
   try {
