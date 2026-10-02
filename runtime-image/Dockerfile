@@ -1,12 +1,13 @@
 # Generated Vhostra builds pass LSPHP_VERSION as 81, 82, 83, 84, or 85.
 # The base image's bundled LSPHP must never decide the selected runtime.
-FROM litespeedtech/openlitespeed:latest
+FROM litespeedtech/openlitespeed:1.8.4-lsphp81
 
 # LiteSpeed's repository is required because the upstream OLS image only bundles
 # one LSPHP version. Fail the build if the requested package cannot be resolved.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates openssl curl gnupg supervisor logrotate apache2 nginx mariadb-client socat redis-server memcached netcat-openbsd \
- && curl -fsSL https://repo.litespeed.sh | bash \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates openssl curl gnupg software-properties-common supervisor logrotate apache2 nginx mariadb-client socat redis-server memcached netcat-openbsd \
+ && add-apt-repository -y ppa:ondrej/php \
+ && DEBIAN_FRONTEND=noninteractive apt-get purge -y software-properties-common \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
@@ -21,13 +22,15 @@ ARG LSPHP_VERSION
 ARG LSPHP_EXTENSIONS=""
 ARG VHOSTRA_CWEBP=true
 RUN test -n "$LSPHP_VERSION" && case "$LSPHP_VERSION" in 81|82|83|84|85) ;; *) echo "Unsupported Vhostra LSPHP version: $LSPHP_VERSION" >&2; exit 64 ;; esac \
+ && PHP_VERSION="${LSPHP_VERSION%?}.${LSPHP_VERSION#?}" \
  && apt-get update \
  && apt-cache show "lsphp${LSPHP_VERSION}" >/dev/null \
+ && apt-cache show "php${PHP_VERSION}-fpm" >/dev/null \
  && for package in redis memcached curl; do apt-cache show "lsphp${LSPHP_VERSION}-${package}" >/dev/null || { echo "Vhostra build error: LSPHP ${LSPHP_VERSION} does not provide ${package}" >&2; exit 65; }; done \
  && extension_packages='' \
  && for extension in $(printf '%s' "$LSPHP_EXTENSIONS" | tr ',' ' '); do \
       case "$extension" in '' ) ;; *[!a-z0-9-]* ) echo "Invalid Vhostra LSPHP extension: $extension" >&2; exit 66 ;; \
-        *) package="lsphp${LSPHP_VERSION}-${extension}"; apt-cache show "$package" >/dev/null || { echo "Vhostra build error: LSPHP ${LSPHP_VERSION} does not provide ${extension}" >&2; exit 65; }; extension_packages="$extension_packages $package" ;; esac; \
+        *) package="lsphp${LSPHP_VERSION}-${extension}"; fpm_package="php${PHP_VERSION}-${extension}"; apt-cache show "$package" >/dev/null && apt-cache show "$fpm_package" >/dev/null || { echo "Vhostra build error: selected PHP ${PHP_VERSION} extension ${extension} is unavailable for both servers" >&2; exit 65; }; extension_packages="$extension_packages $package $fpm_package" ;; esac; \
     done \
  && opcache_package='' \
  && if apt-cache show "lsphp${LSPHP_VERSION}-opcache" >/dev/null 2>&1; then opcache_package="lsphp${LSPHP_VERSION}-opcache"; fi \
@@ -35,9 +38,12 @@ RUN test -n "$LSPHP_VERSION" && case "$LSPHP_VERSION" in 81|82|83|84|85) ;; *) e
  && if [ "$VHOSTRA_CWEBP" = true ]; then apt-cache show webp >/dev/null || { echo 'Vhostra build error: the webp package is unavailable' >&2; exit 67; }; cwebp_package='webp'; fi \
  && apt-get install -y --no-install-recommends \
       "lsphp${LSPHP_VERSION}" "lsphp${LSPHP_VERSION}-mysql" "lsphp${LSPHP_VERSION}-curl" "lsphp${LSPHP_VERSION}-redis" "lsphp${LSPHP_VERSION}-memcached" \
+      "php${PHP_VERSION}-fpm" "php${PHP_VERSION}-mysql" "php${PHP_VERSION}-curl" "php${PHP_VERSION}-redis" "php${PHP_VERSION}-memcached" \
       $extension_packages $opcache_package $cwebp_package \
  && test -x "/usr/local/lsws/lsphp${LSPHP_VERSION}/bin/lsphp" \
+ && test -x "/usr/sbin/php-fpm${PHP_VERSION}" \
  && apt-cache search "^lsphp${LSPHP_VERSION}-" | awk -F ' - ' '$2 !~ /(Common files|Debug symbols|development|runtime|PEAR|source package)/ {print $1}' | sed "s/^lsphp${LSPHP_VERSION}-//" | sort -u > /usr/local/share/vhostra-php-catalog \
+ && apt-cache search "^php${PHP_VERSION}-" | awk -F ' - ' '$2 !~ /(Common files|Debug symbols|development|runtime|PEAR|source package)/ {print $1}' | sed "s/^php${PHP_VERSION}-//" | sort -u > /usr/local/share/vhostra-fpm-catalog \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/* /tmp/lshttpd/*
 
@@ -53,11 +59,10 @@ RUN chmod 0755 /usr/local/bin/vhostra-entrypoint \
 ENTRYPOINT ["/usr/local/bin/vhostra-entrypoint"]
 
 COPY php-backend.sh /usr/local/bin/vhostra-php-backend
-COPY php-router.php /usr/local/share/vhostra/php-router.php
 RUN chmod 0755 /usr/local/bin/vhostra-php-backend
 
 COPY web-server.sh /usr/local/bin/vhostra-web-server
-RUN chmod 0755 /usr/local/bin/vhostra-web-server && a2enmod rewrite proxy proxy_http ssl headers && a2dissite 000-default
+RUN chmod 0755 /usr/local/bin/vhostra-web-server && a2enmod rewrite proxy proxy_fcgi ssl headers && a2dissite 000-default
 
 COPY mysql-forward.sh /usr/local/bin/vhostra-mysql-forward
 RUN chmod 0755 /usr/local/bin/vhostra-mysql-forward

@@ -33,13 +33,14 @@ const managedLines = (contents: string) => contents.split(/\r?\n/).flatMap((text
 const changedExternally = () => new Error('Hosts file changed externally. Reload the current file and review your edits again; no newer contents were overwritten.')
 
 export class HostsFileManager {
-  readonly hostsPath = systemHostsPath()
+  readonly hostsPath: string
+  private readonly localFixture: boolean
   private platform: NodeJS.Platform = process.platform
   private execute = execute
   private issues = new Map<string, string>()
   private mutation: Promise<unknown> = Promise.resolve()
   private review: { id: string; source: string; proposed: string; expires: number } | undefined
-  constructor(private readonly temporaryDirectory: string, private readonly recoveryDirectory = path.join(temporaryDirectory, 'hosts-backups')) {}
+  constructor(private readonly temporaryDirectory: string, private readonly recoveryDirectory = path.join(temporaryDirectory, 'hosts-backups'), hostsPath?: string) { this.hostsPath = hostsPath ?? systemHostsPath(); this.localFixture = hostsPath !== undefined }
   private serialize<T>(task: () => Promise<T>): Promise<T> {
     const next = this.mutation.then(task, task)
     this.mutation = next.catch(() => undefined)
@@ -219,7 +220,8 @@ export class HostsFileManager {
         // after preparing a metadata-preserving sibling, then rename atomically.
         const lock = shellQuote(`${this.hostsPath}.vhostra-lock`)
         const command = `set -eu; mkdir ${lock} || exit 1; written=0; cleanup() { result=$?; trap - EXIT; if [ "$result" -ne 0 ] && [ "$written" -eq 1 ] && cmp -s ${shellQuote(temporary)} ${target}; then if cp -p ${shellQuote(backup)} ${stage} && cmp -s ${shellQuote(temporary)} ${target} && mv -f ${stage} ${target} && cmp -s ${shellQuote(expected)} ${target}; then echo "Hosts write failed; original restored" >&2; else echo "Hosts recovery needs review; backup retained" >&2; fi; fi; rm -f ${stage}; rmdir ${lock}; exit "$result"; }; trap cleanup EXIT; cmp -s ${shellQuote(expected)} ${target} || { echo "Hosts file changed externally; reload and review" >&2; exit 1; }; cp -p ${target} ${shellQuote(backup)}; cp -p ${target} ${stage}; cat ${shellQuote(temporary)} > ${stage}; cmp -s ${shellQuote(expected)} ${target} || { echo "Hosts file changed externally; reload and review" >&2; exit 1; }; mv -f ${stage} ${target}; written=1; cmp -s ${shellQuote(temporary)} ${target} || { echo "Hosts write verification failed; backup retained for review" >&2; exit 1; }; rm -f ${shellQuote(backup)}`
-        if (this.platform === 'darwin') await this.execute('osascript', ['-e', `do shell script ${appleScriptString(command)} with administrator privileges`])
+        if (this.localFixture) await this.execute('/bin/sh', ['-c', command])
+        else if (this.platform === 'darwin') await this.execute('osascript', ['-e', `do shell script ${appleScriptString(command)} with administrator privileges`])
         else await this.execute('pkexec', ['/bin/sh', '-c', command])
       }
       if (await fs.readFile(this.hostsPath, 'utf8') !== contents) throw new Error('The protected hosts-file write could not be verified; retry repair.')

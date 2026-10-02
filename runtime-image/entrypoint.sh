@@ -96,7 +96,37 @@ for extension in $(printf '%s' "$extensions" | tr ',' '\n' | sort -u); do
   [ "$extension" = memcached ] && [ "${VHOSTRA_MEMCACHED:-false}" = true ] && enabled=true
   case ",${VHOSTRA_PHP_DISABLED_EXTENSIONS:-}," in *",${extension},"*) enabled=false;; esac
   configure_extension "$extension" "$enabled"
+  # Normal PHP-FPM keeps its own versioned SAPI module links. A module enabled
+  # only for LSPHP must never appear active under Apache or Nginx.
+  if [ "$enabled" = true ]; then
+    phpenmod -v "$PHP_VERSION" -s fpm "$extension"
+  else
+    phpdismod -v "$PHP_VERSION" -s fpm "$extension"
+  fi
 done
+
+FPM_INI="/etc/php/${PHP_VERSION}/fpm/php.ini"
+sed -i '/; Vhostra PHP policy begin/,/; Vhostra PHP policy end/d' "$FPM_INI"
+{
+  printf '\n; Vhostra PHP policy begin\nexpose_php=Off\nopcache.enable=%s\nopcache.memory_consumption=64\nupload_max_filesize=64M\npost_max_size=65M\n' "$OPCACHE_ENABLED"
+  cat /etc/vhostra/php/vhostra.ini
+  printf '; Vhostra PHP policy end\n'
+} >> "$FPM_INI"
+rm -f "/etc/php/${PHP_VERSION}/fpm/pool.d/www.conf"
+cat > "/etc/php/${PHP_VERSION}/fpm/pool.d/vhostra.conf" <<'FPM_POOL'
+[vhostra]
+user = nobody
+group = nogroup
+listen = 127.0.0.1:8089
+listen.allowed_clients = 127.0.0.1
+pm = ondemand
+pm.max_children = 2
+pm.process_idle_timeout = 30s
+pm.max_requests = 500
+clear_env = no
+security.limit_extensions = .php
+php_admin_flag[log_errors] = on
+FPM_POOL
 
 # The built-in vhost is the same one used by the mounted Vhostra localhost
 # page. Keep WordPress-style `.htaccess` permalinks available by default.

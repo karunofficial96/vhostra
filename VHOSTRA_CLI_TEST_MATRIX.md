@@ -1,6 +1,28 @@
-# CLI test matrix — 2026-10-01
+# CLI test matrix — 2026-10-02
 
-This lists every route in `scripts/vhostra.mjs`. `Verified` means an automated test or the isolated live fixture exercised that behavior. `Pending` means the parser route exists but this phase did not exercise the complete live outcome. The common `--help` path passed for every command family; the parser rejects malformed arity before backend work. The common formatter and secret redactor have focused tests. Each route still needs its own live success, failure and exit-code checks before the CLI audit can be called complete.
+## Current isolated live acceptance
+
+`test/cli-live-matrix.mjs`, `test/cli-sites-live.mjs`, `test/cli-php-switch-live.mjs`, and `test/cli-server-aliases-live.mjs` ran sequentially with separate temporary `VHOSTRA_USER_DATA` and `VHOSTRA_RUNTIME_PROJECT` values. They removed their exact containers and networks. Site/Hosts mutation used a private temporary Hosts file; the real `/etc/hosts` was not changed.
+
+| Routes | Live result |
+| --- | --- |
+| Help and syntax | All command families returned local help; malformed arity exited 64. |
+| `status [target]`, `runtime status`, `service list`, individual status aliases | Running, inactive, disabled and Not Created text/exit behavior exercised; packaged launcher returned readable status outside the checkout. |
+| Full `start`, `stop`, `restart`; `runtime` aliases | All three actions passed against one isolated running project. |
+| `web`, `mariadb`, `service web`, `service mariadb` lifecycle aliases | Stop, Start, Restart and status passed; MariaDB was also Stopped for a nonzero `database list` prerequisite check. |
+| Active `openlitespeed`, `apache`, `nginx` targets | Each selected server passed status, Stop, Start and Restart. An inactive Apache start returned nonzero. |
+| `redis`, `memcached`, `service` cache aliases | Enable, status, Stop, Start, Restart and Disable passed. Start while disabled returned nonzero. Actual PHP localhost connectivity is covered by the three-server HTTP fixture. |
+| `sites list/add/edit/remove/repair`, `vhost list`, `hosts status/repair` | Live add/edit/repair/remove and actual Site HTTP routing passed with a private Hosts file; interactive removal kept the external document root. An unowned hostname was rejected. |
+| `config export/preview/import`, `import preview/apply` | Portable configuration round trip and native Apache Site import passed in the isolated profile. Invalid native preview and syntax paths have separate tests. |
+| `database list/create/import/export/repair/delete` | All six live routes passed, including hidden TTY password and confirmed deletion. Stopped/Not Created prerequisites returned nonzero; invalid SQL handling is covered by the controller fixture. |
+| `php status/versions/select`, extensions, OPcache, `cwebp` | CLI PHP 8.5→8.4→8.5 returned the selected version through Nginx PHP-FPM HTTP. APCu install/disable/enable/remove, OPcache and `cwebp` toggles passed. Invalid version returned nonzero. Apache/Nginx extension lifecycles passed through HTTP inventory in the controller fixture. |
+| `reset` | Earlier isolated live `test/persistent-controls-runtime.mjs` passed both exact interactive Keep and Remove confirmations and database preservation/removal; cancellation and destructive-flag rejection have focused CLI tests. |
+
+The remaining external CLI acceptance is protected real Hosts-file approval/cancellation, installed PATH integration on Windows/Linux, and signed release launchers. This matrix does not treat parser inspection as a live mutation result. The older table below records what was pending on 2026-10-01 and is superseded by the current results above.
+
+## Historical baseline — 2026-10-01
+
+This was the 2026-10-01 route inventory. `Verified` meant a test or isolated live fixture exercised that behavior at that date; `Pending` identified live outcomes still open then. The current acceptance table above supersedes those pending labels.
 
 | Command routes (prefix `vhostra`) | Verified in this phase | Remaining live checks |
 | --- | --- | --- |
@@ -26,4 +48,4 @@ All CLI tests use isolated `VHOSTRA_USER_DATA` and `VHOSTRA_RUNTIME_PROJECT`. Th
 
 ## Runtime/settings follow-up — 2026-10-01
 
-A local unsigned macOS desktop package now includes `Vhostra.app/Contents/Resources/bin/vhostra`; `test/packaged-cli.mjs` invokes it as `vhostra` through a temporary PATH symlink from outside the checkout. Help, overall and individual human service status, MariaDB Not Created, and syntax/exit-code paths passed without npm or manually invoked Node. The package does not install a global PATH entry automatically. Linux and Windows launchers are included in packaging configuration but have not been built or verified natively. Existing pending live mutation rows above remain pending; they have not been converted to verified merely because their parser and launcher work.
+A local unsigned macOS desktop package now includes `Vhostra.app/Contents/Resources/bin/vhostra`; `test/packaged-cli.mjs` invokes it as `vhostra` through a temporary PATH symlink from outside the checkout. Help, overall and individual human service status, MariaDB Not Created, and syntax/exit-code paths passed without npm or manually invoked Node. The package does not install a global PATH entry automatically. Linux and Windows launchers are included in packaging configuration but have not been built or verified natively. The old pending labels above record the baseline before the current live fixtures.

@@ -17,6 +17,7 @@ import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { checkDocker, dockerMessage as prerequisiteMessage, resolveDockerExecutable, type DockerCheck } from './docker-prerequisite.js';
 import type { AppState, PhpVersion, StoreLayout, WebServer } from "./store.js";
 
 export type RuntimeState =
@@ -91,6 +92,14 @@ export class DockerRuntimeController {
     private fullRestart = false;
     private serviceRevision = 0;
     private counters = { dockerCalls: 0, composeCalls: 0, refreshes: 0, builds: 0, operations: 0 };
+    private dockerCheck: DockerCheck = { state: 'missing' };
+    private dockerCommand() {
+        const command = resolveDockerExecutable(this.layout.root);
+        if (!command) throw new Error(prerequisiteMessage({ state: 'missing' }));
+        return command;
+    }
+    prerequisite() { return this.dockerCheck; }
+    async checkPrerequisite() { this.dockerCheck = await checkDocker(this.layout.root); return this.dockerCheck; }
     private imageName = "";
     private htaccessWatchers = new Map<string, FSWatcher>();
     private htaccessRoots = new Map<string, string>();
@@ -178,7 +187,8 @@ export class DockerRuntimeController {
     private async refreshInternal() {
         this.counters.refreshes++;
         try {
-            await this.docker(["info"]);
+            const docker = await this.checkPrerequisite();
+            if (docker.state !== 'ready') throw new Error(prerequisiteMessage(docker));
             await this.checkOptionalHttpsPort(true);
             if (!existsSync(this.composeFile))
                 return this.set({
@@ -213,7 +223,7 @@ export class DockerRuntimeController {
         } catch (error) {
             return this.set({
                 state: "unavailable",
-                message: dockerMessage(error),
+                message: this.dockerCheck.state !== 'ready' ? prerequisiteMessage(this.dockerCheck) : dockerMessage(error),
                 services: [],
             });
         }
@@ -314,7 +324,7 @@ export class DockerRuntimeController {
             requestLocalHttp(settings.ports.http, "/vhostra-health.php", 2000),
             requestLocalHttp(settings.ports.phpMyAdmin, "/phpmyadmin/index.php", 2000),
         ]) : ["", ""];
-        rows.push({ id: "php", label: `PHP / LSPHP ${settings.selectedPhpVersion}`, enabled: true, state: available ? (php.includes(`vhostra-lsphp:${settings.selectedPhpVersion}`) ? "running" : "failed") : inactiveState });
+        rows.push({ id: "php", label: `${settings.selectedWebServer === "openlitespeed" ? "LSPHP" : "PHP-FPM"} ${settings.selectedPhpVersion}`, enabled: true, state: available ? (php.includes(`${settings.selectedWebServer === "openlitespeed" ? "vhostra-lsphp" : "vhostra-php-fpm"}:${settings.selectedPhpVersion}`) ? "running" : "failed") : inactiveState });
         const databaseRunning = rows.find(row => row.id === "mariadb")?.state === "running";
         rows.push({ id: "phpmyadmin", label: "phpMyAdmin", enabled: true, state: available && databaseRunning ? (/^HTTP\/\d(?:\.\d)? 200/.test(pma) ? "running" : "failed") : databaseRunning ? inactiveState : rows.find(row => row.id === "mariadb")?.state ?? "stopped" });
         return rows;
@@ -567,10 +577,13 @@ export class DockerRuntimeController {
                 } finally {
                     candidate?.dispose();
                     if (recoveredOrPromoted && candidateRemoved) {
-                        try { await fs.rm(backup, { recursive: true, force: true });
-                        if (previousImage) await this.docker(["image", "rm", recoveryTag]);
-                        await this.cleanupImages();
-                        } catch (error) { console.error(`Vhostra recovery cleanup deferred at ${backup}: ${error instanceof Error ? error.message : String(error)}`); }
+                        try {
+                            if (previousImage) await this.docker(["image", "rm", recoveryTag]);
+                            await fs.rm(backup, { recursive: true, force: true });
+                        } catch (error) {
+                            console.error(`Vhostra recovery cleanup deferred at ${backup}: ${error instanceof Error ? error.message : String(error)}`);
+                        }
+                        await this.cleanupImages().catch(error => console.error("Vhostra image cache cleanup deferred:", error instanceof Error ? error.message : String(error)));
                     }
                     else
                         console.error(`Vhostra retained runtime recovery files at ${backup}; recovery or candidate removal was incomplete.`);
@@ -591,7 +604,7 @@ export class DockerRuntimeController {
             return { port, available: true, owner: null as string | null };
         if (await this.vhostraOwnsPort(port))
             return { port, available: false, owner: "Vhostra" };
-        return { port, available: false, owner: await describePort(port) };
+        return { port, available: false, owner: await describePort(port, resolveDockerExecutable(this.layout.root) ?? 'docker') };
     }
     async findAvailablePort(start: number) {
         validatePort(start);
@@ -937,7 +950,7 @@ export class DockerRuntimeController {
                         : dependency || id === "redis" || id === "memcached"
                           ? `Managed with the matching service in Services — ${actual ? "enabled" : "disabled"}`
                           : !supported
-                            ? "Unsupported or unavailable for the selected LSPHP version"
+                            ? "Unsupported or unavailable for the selected PHP version"
                             : actual && !managedPackage
                               ? "Built-in/Core"
                               : actual
@@ -948,7 +961,7 @@ export class DockerRuntimeController {
                 };
             });
     }
-    /** Installs or removes one catalogued optional LSPHP package in the running
+    /** Installs or removes one catalogued optional selected-SAPI package in the running
      * Vhostra container, then verifies the package/module state before returning.
      * Core, required, and dependency-managed entries are deliberately protected. */
     async managePhpExtension(
@@ -979,11 +992,12 @@ export class DockerRuntimeController {
         const available = new Set(await this.availablePhpPackages());
         if (!available.has(extension))
             throw new Error(
-                `${extensionLabel(extension)} is not an installable extension package for the selected LSPHP version.`,
+                `${extensionLabel(extension)} is not an installable extension package for both selected PHP servers.`,
             );
         const state = await this.getState();
         const php = state.settings.selectedPhpVersion.replace(".", "");
-        const packageName = `lsphp${php}-${extension}`;
+        const packageName = state.settings.selectedWebServer === 'openlitespeed'
+            ? `lsphp${php}-${extension}` : `php${state.settings.selectedPhpVersion}-${extension}`;
         return this.runExclusive(
             "starting",
             `${actionLabel(action)} PHP extension ${extensionLabel(extension)}…`,
@@ -1011,7 +1025,9 @@ export class DockerRuntimeController {
                         "runtime",
                         "/bin/sh",
                         "-lc",
-                        `find /usr/local/lsws/lsphp${php} -path '*/mods-available/*${extension}*.ini' -type f -print -quit`,
+                        state.settings.selectedWebServer === 'openlitespeed'
+                            ? `find /usr/local/lsws/lsphp${php} -path '*/mods-available/*${extension}*.ini' -type f -print -quit`
+                            : `find /etc/php/${state.settings.selectedPhpVersion}/mods-available -maxdepth 1 -name '*${extension}*.ini' -print -quit`,
                     ]);
                     if (!output.trim())
                         throw new Error(
@@ -1083,14 +1099,14 @@ export class DockerRuntimeController {
                     !loaded.has(extension)
                 )
                     throw new Error(
-                        `${extensionLabel(extension)} package changed, but the selected LSPHP web runtime did not load it.`,
+                        `${extensionLabel(extension)} package changed, but the selected PHP web runtime did not load it.`,
                     );
                 if (
                     (action === "disable" || action === "remove") &&
                     loaded.has(extension)
                 )
                     throw new Error(
-                        `${extensionLabel(extension)} is still loaded by the selected LSPHP web runtime.`,
+                        `${extensionLabel(extension)} is still loaded by the selected PHP web runtime.`,
                     );
                 await this.refresh();
                 return this.listPhpExtensions();
@@ -1244,7 +1260,10 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
  }} echo json_encode(['ok'=>true,'identity'=>$identity]);
 } catch (Throwable $e) { echo json_encode(['error'=>'Database connection rejected','code'=>$e instanceof PDOException ? ($e->errorInfo[1]??$e->getCode()) : $e->getCode(),'message'=>$e->getMessage()]); }
 `;
-        const output = await executePrivateInput(this.composeArguments(['exec','-T','runtime',`/usr/local/lsws/lsphp${php}/bin/lsphp`, '-q', '/dev/stdin']), script);
+        const selectedPhp = state.settings.selectedWebServer === 'openlitespeed'
+            ? `/usr/local/lsws/lsphp${php}/bin/lsphp`
+            : `/usr/bin/php${state.settings.selectedPhpVersion}`;
+        const output = await executePrivateInput(this.dockerCommand(), this.composeArguments(['exec','-T','runtime', selectedPhp, '-q', '/dev/stdin']), script);
         let result: { ok?: boolean; error?: string; code?: number | string; message?: string; identity?: string };
         try { result = JSON.parse(output.trim()); } catch { throw new Error('PHP could not complete the database access check. Check that mysqli and PDO MySQL are enabled.'); }
         const technical = result.message ? ` Technical message: ${redactProgress(result.message, [input.password])}` : '';
@@ -1407,7 +1426,7 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
         await fs.access(source);
         return this.runDatabaseOperation(`Importing ${database}…`, async () => {
             await executeWithInput(
-                "docker",
+                this.dockerCommand(),
                 this.databaseComposeArguments([
                     "exec",
                     "-T",
@@ -1431,7 +1450,7 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
         return this.runDatabaseOperation(`Exporting ${database}…`, async () => {
             const temporary = `${destination}.vhostra-${randomBytes(8).toString("hex")}.tmp`;
             try { await executeWithOutput(
-                "docker",
+                this.dockerCommand(),
                 this.databaseComposeArguments([
                     "exec",
                     "-T",
@@ -1592,7 +1611,7 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
         }, 50);
     }
     private set(next: Omit<RuntimeSnapshot, "updatedAt">) {
-        const message = this.httpsWarning
+        const message = this.httpsWarning && !next.message.includes('HTTPS is unavailable:')
             ? `${next.message} HTTPS is unavailable: ${this.httpsWarning}`
             : next.message;
         this.appendProgress(message, false);
@@ -1770,7 +1789,8 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
         await this.compose(["up", "--detach", "--no-build", "--pull", "never", ...(forceRecreate ? ["--force-recreate"] : []), "--no-deps", "runtime"]);
     }
     private async requireDocker() {
-        await this.docker(["info"]);
+        const check = await this.checkPrerequisite();
+        if (check.state !== "ready") throw new Error(prerequisiteMessage(check));
         this.appendProgress("✓ Docker runtime available");
     }
     private async generate(state: AppState) {
@@ -1810,7 +1830,7 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
                     "public",
                     "vhostra-health.php",
                 ),
-                '<?php echo "vhostra-lsphp:" . PHP_VERSION;\n',
+                '<?php echo (PHP_SAPI === "litespeed" ? "vhostra-lsphp:" : "vhostra-php-fpm:") . PHP_VERSION;\n',
                 { mode: 0o600 },
             ),
             fs.writeFile(
@@ -1894,8 +1914,7 @@ foreach (['localhost', '127.0.0.1'] as $host) {
         const memcachedPort = `-p ${state.settings.ports.memcached}`;
         const memcachedConfigured = /(?:^|\s)-p\s+\d+/.test(memcachedDefaults) ? memcachedDefaults.replace(/(^|\s)-p\s+\d+/g, `$1${memcachedPort}`) : `${memcachedDefaults}\n${memcachedPort}\n`;
         if (memcachedConfigured !== memcachedSource) await fs.writeFile(memcachedFile, memcachedConfigured, { mode: 0o600 });
-        await fs.writeFile(path.join(this.layout.runtime.php, "roots.json"), JSON.stringify(Object.fromEntries(
-            mounts.flatMap(({ host, container }) => [host.hostname, ...host.aliases].map(name => [name.toLowerCase(), container])))), { mode: 0o644 });
+        await fs.rm(path.join(this.layout.runtime.php, "roots.json"), { force: true }); // Obsolete CLI-development-server router map.
         await fs.writeFile(path.join(this.layout.runtime.php, "site-logrotate.conf"),
             mounts.flatMap(({ host }) => ["access", "error"].map(kind => `/var/log/vhostra/sites/${host.id}/${kind}.log`)).join(" ") + " {\n  size 5M\n  rotate 3\n  copytruncate\n  missingok\n  notifempty\n  su root root\n}\n", { mode: 0o644 });
         await this.writeServerConfiguration(
@@ -2169,10 +2188,11 @@ foreach (['localhost', '127.0.0.1'] as $host) {
         ports: number[],
         allowProjectPorts = false,
     ) {
+        this.httpsWarning = '';
         const conflicts = await this.portConflicts(ports, allowProjectPorts);
         if (conflicts.length)
             throw new Error(
-                `Vhostra cannot bind required host ports:\n${conflicts.join("\n")}\nStop or reconfigure the owning application yourself; Vhostra will not stop unrelated processes or containers.`,
+                `Vhostra cannot start because required ports are already in use.\n${conflicts.join("\n")}\nVhostra did not stop or modify the owner. Choose available ports in Settings or close the owning application.`,
             );
     }
     private async checkOptionalHttpsPort(allowProjectPorts = false) {
@@ -2182,7 +2202,7 @@ foreach (['localhost', '127.0.0.1'] as $host) {
             allowProjectPorts,
         );
         this.httpsWarning = conflicts.length
-            ? `${conflicts.join("; ")}. Vhostra will continue with HTTP on port ${state.settings.ports.http} and will not alter the owner.`
+            ? `${conflicts.join("; ")}. HTTPS is disabled while this port is in use. Vhostra did not modify the owner.`
             : "";
     }
     private async portConflicts(ports: number[], allowProjectPorts: boolean) {
@@ -2192,7 +2212,7 @@ foreach (['localhost', '127.0.0.1'] as $host) {
             if (!occupied) { this.appendProgress(`✓ localhost:${port} available`); continue; }
             const ownedByVhostra =
                 allowProjectPorts && (await this.vhostraOwnsPort(port));
-            if (!ownedByVhostra) conflicts.push(await describePort(port));
+            if (!ownedByVhostra) conflicts.push(await describePort(port, resolveDockerExecutable(this.layout.root) ?? 'docker'));
             else this.appendProgress(`✓ localhost:${port} belongs to the current managed runtime`);
         }
         return conflicts;
@@ -2239,9 +2259,9 @@ foreach (['localhost', '127.0.0.1'] as $host) {
         this.appendProgress(`✓ ${server} HTTP healthy`);
         this.appendProgress("Checking selected PHP runtime…");
         const php = await ready(ports.http, "/vhostra-health.php");
-        if (!php.includes(`vhostra-lsphp:${state.settings.selectedPhpVersion}`))
+        if (!php.includes(`${server === "openlitespeed" ? "vhostra-lsphp" : "vhostra-php-fpm"}:${state.settings.selectedPhpVersion}`))
             throw new Error(
-                `The ${server} frontend did not invoke selected LSPHP ${state.settings.selectedPhpVersion}. Health response: ${php.slice(0, 300)}`,
+                `The ${server} frontend did not invoke selected PHP ${state.settings.selectedPhpVersion}. Health response: ${php.slice(0, 300)}`,
             );
         if (!["stopped", "not-created"].includes(await this.databaseStatus())) await this.databaseCompose([
             "exec",
@@ -2261,7 +2281,7 @@ foreach (['localhost', '127.0.0.1'] as $host) {
         const expectExtension = (extension: string, enabled: boolean) => {
             if (enabled && !extensionHealth.includes(`${extension}:1`))
                 throw new Error(
-                    `The required PHP extension “${extension}” is not enabled in the selected LSPHP runtime.`,
+                    `The required PHP extension “${extension}” is not enabled in the selected PHP runtime.`,
                 );
         };
         expectExtension("mysqli", true);
@@ -2333,18 +2353,15 @@ foreach (['localhost', '127.0.0.1'] as $host) {
     }
     private async availablePhpPackages() {
         const state = await this.getState();
-        const php = state.settings.selectedPhpVersion.replace(".", "");
-        // Discover directly from the selected LiteSpeed repository. Repository
-        // descriptions identify development/runtime/meta artifacts generically;
-        // all remaining versioned packages are module candidates and are still
-        // verified against the loaded PHP runtime after every mutation.
+        // Only offer package names present for both SAPIs. A selection must
+        // remain installable when the user switches among all three frontends.
         const output = await this.compose([
             "exec",
             "-T",
             "runtime",
             "/bin/sh",
             "-lc",
-            "cat /usr/local/share/vhostra-php-catalog",
+            "comm -12 /usr/local/share/vhostra-php-catalog /usr/local/share/vhostra-fpm-catalog",
         ]);
         return output
             .split("\n")
@@ -2354,6 +2371,7 @@ foreach (['localhost', '127.0.0.1'] as $host) {
     private async installedPhpPackages() {
         const state = await this.getState();
         const php = state.settings.selectedPhpVersion.replace(".", "");
+        const prefix = state.settings.selectedWebServer === 'openlitespeed' ? `lsphp${php}` : `php${state.settings.selectedPhpVersion}`;
         const output = await this.compose(
             [
                 "exec",
@@ -2361,7 +2379,7 @@ foreach (['localhost', '127.0.0.1'] as $host) {
                 "runtime",
                 "/bin/sh",
                 "-lc",
-                `dpkg-query -W -f='${"${db:Status-Status}"} ${"${binary:Package}"}\\n' 'lsphp${php}-*' 2>/dev/null | awk '$1 == "installed" { print $2 }' | sed 's/^lsphp${php}-//' | sed 's/:.*$//' | sort -u`,
+                `dpkg-query -W -f='${"${db:Status-Status}"} ${"${binary:Package}"}\\n' '${prefix}-*' 2>/dev/null | awk '$1 == "installed" { print $2 }' | sed 's/^${prefix}-//' | sed 's/:.*$//' | sort -u`,
             ],
             true,
         );
@@ -2375,6 +2393,12 @@ foreach (['localhost', '127.0.0.1'] as $host) {
         extension: string,
         enabled: boolean,
     ) {
+        const state = await this.getState();
+        if (state.settings.selectedWebServer !== 'openlitespeed') {
+            const minor = state.settings.selectedPhpVersion;
+            await this.compose(['exec', '-T', 'runtime', '/bin/sh', '-lc', `${enabled ? 'phpenmod' : 'phpdismod'} -v ${minor} -s fpm ${extension}`]);
+            return;
+        }
         // LiteSpeed scans mods-available directly. Toggle the exact package INI
         // atomically so a disabled extension cannot stay loaded through that scan.
         const command = `ini=/usr/local/lsws/lsphp${php}/etc/php/${php.slice(0, 1)}.${php.slice(1)}/litespeed/php.ini; sed -i '/; Vhostra extension ${extension}$/d' "$ini"; dir=/usr/local/lsws/lsphp${php}/etc/php/${php.slice(0, 1)}.${php.slice(1)}/mods-available; source=$(find "$dir" -maxdepth 1 -type f -name '*${extension}*.ini' -print -quit); disabled=$(find "$dir" -maxdepth 1 -type f -name '*${extension}*.ini.disabled' -print -quit); if [ ${enabled ? "true" : "false"} = true ]; then if [ -n "$disabled" ]; then mv "$disabled" "${"${disabled%.disabled}"}"; elif [ -z "$source" ]; then exit 65; fi; else if [ -n "$source" ]; then mv "$source" "$source.disabled"; elif [ -z "$disabled" ]; then exit 65; fi; fi`;
@@ -2476,9 +2500,9 @@ foreach (['localhost', '127.0.0.1'] as $host) {
         const sqlIndex = args.indexOf("-e");
         if (sqlIndex !== -1) {
             const statement = args[sqlIndex + 1];
-            return executeSql(this.databaseComposeArguments(args.slice(0, sqlIndex)), statement);
+            return executeSql(this.dockerCommand(), this.databaseComposeArguments(args.slice(0, sqlIndex)), statement);
         }
-        return execute("docker", this.databaseComposeArguments(args), allowFailure, undefined, ["up", "build"].includes(args[0]) ? 900000 : 120000);
+        return execute(this.dockerCommand(), this.databaseComposeArguments(args), allowFailure, undefined, ["up", "build"].includes(args[0]) ? 900000 : 120000);
     }
     private async databaseContainerIds(all = false): Promise<string[]> {
         if (!this.databaseLayout.runtime.mariaDb || !existsSync(path.join(this.databaseRoot, "compose.yml"))) return [];
@@ -2617,7 +2641,7 @@ networks:
             if (row.State.Running) {
                 try {
                     this.counters.dockerCalls++;
-                    await execute('docker', ['exec', ids[0], '/bin/sh', '-lc', "mariadb --protocol=socket -uroot -N -e 'SELECT 1' >/dev/null && pgrep -x socat >/dev/null"], false, undefined, Math.min(5000, Math.max(1000, deadline - Date.now())));
+                    await execute(this.dockerCommand(), ['exec', ids[0], '/bin/sh', '-lc', "mariadb --protocol=socket -uroot -N -e 'SELECT 1' >/dev/null && pgrep -x socat >/dev/null"], false, undefined, Math.min(5000, Math.max(1000, deadline - Date.now())));
                     this.databaseReadyStartedAt = row.State.StartedAt;
                     return;
                 } catch { /* Active startup probe; Docker health remains the fallback. */ }
@@ -2637,7 +2661,11 @@ networks:
     }
     private async docker(args: string[]) {
         this.counters.dockerCalls++;
-        return execute("docker", args, false, undefined, 30000);
+        try { return await execute(this.dockerCommand(), args, false, undefined, 60000); }
+        catch (error) {
+            if (error instanceof Error && /operation timed out/.test(error.message)) throw new Error('Docker did not respond in time. Check Docker and try again.');
+            throw error;
+        }
     }
     private async compose(args: string[], allowFailure = false) {
         this.counters.composeCalls++;
@@ -2645,7 +2673,7 @@ networks:
         const safeExec = action === "exec" && (args.includes("supervisorctl") || args.includes("redis-cli") || args.some(arg => /^DEBIAN_FRONTEND=noninteractive apt-get (?:update|purge)/.test(arg)));
         const streamable = safeExec || ["up", "build", "pull", "stop", "down", "restart", "start"].includes(action);
         if (this.progress && streamable) this.appendProgress(`Docker Compose: ${action} (${this.scope})`);
-        const result = await execute("docker", this.composeArguments(args), allowFailure,
+        const result = await execute(this.dockerCommand(), this.composeArguments(args), allowFailure,
             streamable ? text => this.appendProgress(text) : undefined, ["up", "build", "pull"].includes(action) || safeExec && args.some(arg => arg.startsWith("DEBIAN_FRONTEND=noninteractive apt-get")) ? 15 * 60_000 : 120_000);
         if (this.progress && streamable) this.appendProgress(`✓ Docker Compose ${action} completed`);
         return result;
@@ -2878,7 +2906,7 @@ const requestLocalHttp = (port: number, requestPath = "/", timeout = 8000) =>
         });
         socket.on("close", () => resolve(output));
     });
-async function describePort(port: number) {
+async function describePort(port: number, dockerCommand: string) {
     const owners: string[] = [];
     try {
         const output = await execute(
@@ -2887,25 +2915,28 @@ async function describePort(port: number) {
             true,
         );
         const lines = output.trim().split("\n");
-        if (lines.length > 1)
-            owners.push(`process ${lines.slice(1).join("; ")}`);
+        if (lines.length > 1) {
+            const fields = lines[1].trim().split(/\s+/);
+            if (fields[0] && fields[1]) owners.push(`process ${fields[0]} (PID ${fields[1]})`);
+        }
     } catch {
         /* Windows/Linux fall back below. */
     }
     try {
         const output = await execute(
-            "docker",
+            dockerCommand,
             ["ps", "--format", "{{.Names}} {{.Ports}}"],
             true,
         );
         const line = output
             .split("\n")
             .find((value) => value.includes(`:${port}->`));
-        if (line) owners.push(`Docker container ${line}`);
+        if (line) owners.unshift(`Docker container ${line.split(/\s+/)[0]}`);
     } catch {
         /* Docker may be unavailable. */
     }
-    return `localhost:${port} is already in use${owners.length ? ` by ${owners.join(" and ")}` : " (owner could not be identified)"}`;
+    const label = port === 80 ? 'HTTP 80' : port === 443 ? 'HTTPS 443' : port === 9080 ? 'Admin 9080' : `Port ${port}`;
+    return `${label}: ${owners[0] ?? 'Already in use (owner unknown)'}`;
 }
 const dockerMessage = (error: unknown) =>
     `Docker is unavailable: ${error instanceof Error ? error.message : String(error)}`;
@@ -2916,7 +2947,7 @@ function apacheConfig(
         container: string;
     }>,
 ) {
-    return `ErrorLog /var/log/vhostra/apache-error.log\nServerTokens Prod\nServerSignature Off\nTraceEnable Off\nProxyPreserveHost On\nRequestHeader set X-Forwarded-Proto http\nRequestHeader set X-Vhostra-Request-Line "expr=%{THE_REQUEST}"\nDirectoryIndex index.php index.html\n${[...mounts].sort((a, b) => Number(Boolean(b.host.builtIn)) - Number(Boolean(a.host.builtIn))).map(({ host, container }) => `<VirtualHost *:8088>\n  ServerName ${host.hostname}\n  Header always set X-Vhostra-Site "${host.id}"\n  ${host.aliases.map((alias) => `ServerAlias ${alias}`).join("\n  ")}\n  DocumentRoot ${container}\n  DirectoryIndex ${host.builtIn === "localhost" ? "index.html" : (host.indexFiles ?? ["index.php", "index.html"]).join(" ")}\n  # Proxy only existing PHP entry points; nonexistent index.php must not shadow index.html.\n  RewriteEngine On\n  RewriteCond %{DOCUMENT_ROOT}/$1 -f\n  RewriteRule "^/(.*?\\.php)(/.*)?$" "http://127.0.0.1:8089/$1$2" [P,L]\n  <Directory ${container}>\n    Options FollowSymLinks\n    AllowOverride ${host.rewriteEnabled === false ? "None" : "FileInfo"}\n    Require all granted\n  </Directory>\n  ErrorLog /var/log/vhostra/sites/${host.id}/error.log\n  CustomLog /var/log/vhostra/sites/${host.id}/access.log combined\n</VirtualHost>`).join("\n\n")}\n`;
+    return `ErrorLog /var/log/vhostra/apache-error.log\nServerTokens Prod\nServerSignature Off\nTraceEnable Off\nProxyPreserveHost On\nRequestHeader set X-Forwarded-Proto http\nRequestHeader set X-Vhostra-Request-Line "expr=%{THE_REQUEST}"\nDirectoryIndex index.php index.html\n${[...mounts].sort((a, b) => Number(Boolean(b.host.builtIn)) - Number(Boolean(a.host.builtIn))).map(({ host, container }) => `<VirtualHost *:8088>\n  ServerName ${host.hostname}\n  Header always set X-Vhostra-Site "${host.id}"\n  ${host.aliases.map((alias) => `ServerAlias ${alias}`).join("\n  ")}\n  DocumentRoot ${container}\n  DirectoryIndex ${host.builtIn === "localhost" ? "index.html" : (host.indexFiles ?? ["index.php", "index.html"]).join(" ")}\n  <FilesMatch "\\.php$">\n    SetHandler "proxy:fcgi://127.0.0.1:8089"\n  </FilesMatch>\n  <Directory ${container}>\n    Options FollowSymLinks\n    AllowOverride ${host.rewriteEnabled === false ? "None" : "FileInfo"}\n    Require all granted\n  </Directory>\n  ErrorLog /var/log/vhostra/sites/${host.id}/error.log\n  CustomLog /var/log/vhostra/sites/${host.id}/access.log combined\n</VirtualHost>`).join("\n\n")}\n`;
 }
 function nginxConfig(
     mounts: Array<{
@@ -2925,7 +2956,7 @@ function nginxConfig(
     }>,
     httpsEnabled: boolean,
 ) {
-    return `${mounts.map(({ host, container }) => `server {\n  server_tokens off;\n  listen 8088${host.builtIn ? " default_server" : ""};\n  ${httpsEnabled ? `listen 8443 ssl${host.builtIn ? " default_server" : ""};\n  ssl_certificate /etc/vhostra/certificates/public/localhost.pem;\n  ssl_certificate_key /etc/vhostra/certificates/private/localhost.key;\n  ssl_protocols TLSv1.2 TLSv1.3;` : ""}\n  server_name ${[host.hostname, ...host.aliases].join(" ")};\n  client_max_body_size 65m;\n  add_header X-Vhostra-Site "${host.id}" always;\n  proxy_hide_header X-Vhostra-Site;\n  root ${container};\n  index ${(host.indexFiles ?? ["index.php", "index.html"]).join(" ")};\n  access_log /var/log/vhostra/sites/${host.id}/access.log;\n  error_log /var/log/vhostra/sites/${host.id}/error.log;\n  location ~ /\\. { deny all; }\n  # Vhostra managed WordPress-compatible front controller. Unsupported .htaccess directives remain reported in the neutral model.\n  location / { try_files $uri $uri/ ${host.rewriteEnabled === false ? "=404" : "/index.php?$query_string"}; }\n  location ~ \\.php(?:/|$) { proxy_set_header Host $http_host; proxy_set_header X-Forwarded-Proto $scheme; proxy_set_header X-Vhostra-Request-Line ""; proxy_set_header X-Vhostra-Request-Uri $request_uri; proxy_pass http://127.0.0.1:8089; }\n}\n`).join("\n")}`;
+    return `${mounts.map(({ host, container }) => `server {\n  server_tokens off;\n  listen 8088${host.builtIn ? " default_server" : ""};\n  ${httpsEnabled ? `listen 8443 ssl${host.builtIn ? " default_server" : ""};\n  ssl_certificate /etc/vhostra/certificates/public/localhost.pem;\n  ssl_certificate_key /etc/vhostra/certificates/private/localhost.key;\n  ssl_protocols TLSv1.2 TLSv1.3;` : ""}\n  server_name ${[host.hostname, ...host.aliases].join(" ")};\n  client_max_body_size 65m;\n  add_header X-Vhostra-Site "${host.id}" always;\n  proxy_hide_header X-Vhostra-Site;\n  root ${container};\n  index ${(host.indexFiles ?? ["index.php", "index.html"]).join(" ")};\n  access_log /var/log/vhostra/sites/${host.id}/access.log;\n  error_log /var/log/vhostra/sites/${host.id}/error.log;\n  location ~ /\\. { deny all; }\n  # Vhostra managed WordPress-compatible front controller. Unsupported .htaccess directives remain reported in the neutral model.\n  location / { try_files $uri $uri/ ${host.rewriteEnabled === false ? "=404" : "/index.php?$query_string"}; }\n  location ~ \\.php(?:/|$) { fastcgi_split_path_info ^(.+?\\.php)(/.*)$; try_files $fastcgi_script_name =404; include fastcgi_params; fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name; fastcgi_param PATH_INFO $fastcgi_path_info; fastcgi_param HTTPS $https; fastcgi_param PHP_VALUE "error_log=/var/log/vhostra/sites/${host.id}/error.log"; fastcgi_pass 127.0.0.1:8089; }\n}\n`).join("\n")}`;
 }
 function openLiteSpeedConfig(
     mounts: Array<{
@@ -3047,9 +3078,9 @@ async function writeIfMissing(file: string, contents: string, options: { mode: n
     try { await fs.writeFile(file, contents, { ...options, flag: "wx" }); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
 }
-async function executeSql(args: string[], statement: string): Promise<string> {
+async function executeSql(command: string, args: string[], statement: string): Promise<string> {
     return new Promise((resolve, reject) => {
-        const child = spawn("docker", args, { stdio: ["pipe", "pipe", "pipe"] });
+        const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
         let output = ""; let errors = "";
         child.stdout.on("data", data => { output = (output + data).slice(-65536); });
         child.stderr.on("data", data => { errors = (errors + data).slice(-65536); });
@@ -3074,9 +3105,9 @@ function databaseErrorMessage(stderr: string) {
 const applicationPrivileges = 'SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, CREATE TEMPORARY TABLES, LOCK TABLES';
 // GRANT treats underscores/percent in database names as patterns even in backticks.
 function grantDatabaseName(name: string) { return '`' + name.replace(/[_%]/g, value => '\\' + value) + '`'; }
-async function executePrivateInput(args: string[], input: string): Promise<string> {
+async function executePrivateInput(command: string, args: string[], input: string): Promise<string> {
     return new Promise((resolve, reject) => {
-        const child = spawn('docker', args, { stdio: ['pipe','pipe','pipe'] });
+        const child = spawn(command, args, { stdio: ['pipe','pipe','pipe'] });
         let output = ''; child.stdout.on('data', data => { output = (output + data).slice(-16384); });
         // Never echo PHP source, credentials, or runtime stderr from this probe.
         child.stderr.resume(); child.stdin.on('error', () => {});

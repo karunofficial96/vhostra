@@ -8,6 +8,7 @@ export interface HostsMappingResult { installed: string[]; alreadyMapped: string
 export interface OnboardingPreferences { themeSaved?: boolean; restoredServices?: { redis: boolean; memcached: boolean }; ready?: boolean; completed: boolean; theme: 'light' | 'dark' | 'system'; server: VhostraSettings['selectedWebServer']; php: VhostraSettings['selectedPhpVersion']; cache: 'none' | 'redis' | 'memcached' }
 export interface NativeImportPreview { plannedLogs?: Record<string, { access: string; error: string }>; source: string; server: string; status: string; hosts: Array<{ hostname: string; aliases: string[]; documentRoot: string; https: { enabled: boolean }; rewriteEnabled: boolean; indexFiles: string[] }>; warnings: string[]; preservedDirectives: string[] }
 export interface RuntimeStatusRow { id: string; label: string; enabled: boolean; state: string }
+export interface DockerPrerequisite { state: 'ready' | 'missing' | 'stopped' | 'broken' | 'timeout'; executable?: string; detail?: string }
 export interface DatabaseBackupItem { key: string; category: 'database' | 'account' | 'role' | 'settings' | 'configuration'; name: string; disposition: 'new' | 'equivalent' | 'conflict' | 'incompatible'; detail: string; local?: unknown; incoming?: unknown }
 export interface BackupPreview { configurationItems?: DatabaseBackupItem[]; databaseItems?: DatabaseBackupItem[]; plannedLogs?: Record<string, { access: string; error: string }>; source: string; checksum: string; sites: Array<{ name: string; hostname: string; documentRoot: string; disposition: string; differences?: string[]; local?: Record<string, unknown>; incoming?: Record<string, unknown> }>; settings: { server?: string; php?: string; optionalServices?: { redis: boolean; memcached: boolean } } | null; missing: string[]; warnings: string[] }
 export interface ResourceReport { statuses: RuntimeStatusRow[]; application: { cpuPercent: number; ramBytes: number; processes: number }; runtime: Array<{ Name?: string; CPUPerc: string; MemUsage: string }> | null; runtimeError: string | null; dockerStorage: { imageBytes: number; writableLayerBytes: number; note: string } | null; storage: { measuredAt: string; categories: Array<{ label: string; bytes: number; partial: boolean }>; localTotalBytes: number; note: string } }
@@ -54,6 +55,11 @@ export interface VhostraDesktopApi {
   previewConfigurationImport(): Promise<BackupPreview | null>
   importConfiguration(roots?: Record<string, string>, choices?: Record<string, 'keep' | 'replace' | 'skip'>): Promise<{ imported: Array<{ name: string; hostname: string; aliases: string[] }>; backup: string; message: string; mapping: HostsMappingResult } | null>
   getRuntimeStatus(): Promise<RuntimeSnapshot>
+  dockerPrerequisite(): Promise<DockerPrerequisite>
+  checkDocker(): Promise<DockerPrerequisite>
+  installDocker(): Promise<void>
+  chooseDocker(): Promise<DockerPrerequisite | null>
+  startDocker(): Promise<DockerPrerequisite>
   startServices(): Promise<void>
   stopServices(): Promise<void>
   restartServices(): Promise<void>

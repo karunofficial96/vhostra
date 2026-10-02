@@ -8,7 +8,7 @@ import path from 'node:path'
 const profile = mkdtempSync(path.join(os.tmpdir(), 'vhostra-onboarding-live-'))
 app.setPath('userData', profile)
 app.whenReady().then(async () => {
-  let runtime; let completed = false; let failure = false
+  let runtime; let failure = false
   const timeout = setTimeout(() => { console.error(`Timed out; diagnostics retained at ${profile}`); app.exit(1) }, 900000)
   try {
     const { applicationSession } = await import('../dist-electron/main.js')
@@ -25,12 +25,12 @@ app.whenReady().then(async () => {
     const resources = await evaluate('window.vhostra.getResources()'); assert.ok(resources.runtime?.length); assert.ok(resources.dockerStorage.imageBytes > 0); assert.ok(resources.application.ramBytes > 0)
     const services = await runtime.listManagedServices(); assert.equal(services.find(service => service.id === 'redis').state, 'disabled'); assert.equal(services.find(service => service.id === 'memcached').state, 'disabled')
     console.log('Actual first-run backend setup passed: real OLS/PHP/MariaDB/phpMyAdmin health, active progress, disabled optional caches, completion only after success, and scoped Docker CPU/RAM/image storage.')
-    completed = true
   } catch (error) { failure = true; console.error(error); console.error(`Diagnostics retained at ${profile}`) }
   finally {
     clearTimeout(timeout)
-    if (runtime) { await runtime.stop().catch(() => undefined); await runtime.compose(['down']).catch(() => undefined); runtime.dispose() }
-    if (completed) await rm(profile, { recursive: true, force: true })
+    let cleaned = !runtime
+    if (runtime) { try { await runtime.resetRuntime(false); cleaned = true } catch (error) { failure = true; console.error('Exact onboarding fixture cleanup failed:', error) } finally { runtime.dispose() } }
+    if (cleaned) await rm(profile, { recursive: true, force: true })
     app.exit(failure ? 1 : 0)
   }
 }).catch(error => { console.error(error); app.exit(1) })

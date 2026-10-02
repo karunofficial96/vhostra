@@ -98,7 +98,15 @@ try {
   const scriptDirectory = path.dirname(fileURLToPath(import.meta.url))
   let hosts
   const store = new VhostraStore(platformDataRoot(), path.join(scriptDirectory, '..', 'dist-welcome'), async names => { const conflicts = (await hosts.mappingStatus(names)).filter(item => item.state === 'conflict'); if (conflicts.length) throw new Error(`Hosts conflicts: ${conflicts.map(item => `${item.hostname}: ${item.address}`).join(', ')}`) })
-  hosts = new HostsFileManager(path.join(store.layout.root, 'temporary'), path.join(store.layout.backups, 'hosts'))
+  const testHosts = process.env.VHOSTRA_TEST_HOSTS_PATH
+  let fixtureHosts
+  if (testHosts) {
+    const profile = process.env.VHOSTRA_USER_DATA && path.resolve(process.env.VHOSTRA_USER_DATA)
+    const relative = profile && path.relative(os.tmpdir(), profile)
+    if (!profile || !relative || relative.startsWith('..') || path.isAbsolute(relative) || !/^vhostra-cli-live-\d+$/.test(process.env.VHOSTRA_RUNTIME_PROJECT ?? '') || path.resolve(testHosts) !== path.join(profile, 'hosts-fixture')) throw new Error('Test Hosts path requires an isolated temporary CLI fixture.')
+    fixtureHosts = path.resolve(testHosts)
+  }
+  hosts = new HostsFileManager(path.join(store.layout.root, 'temporary'), path.join(store.layout.backups, 'hosts'), fixtureHosts)
   if (process.env.VHOSTRA_RUNTIME_PROJECT && !process.env.VHOSTRA_USER_DATA) throw new Error('A custom runtime project requires an explicit isolated VHOSTRA_USER_DATA directory.')
   const runtime = new DockerRuntimeController(store.layout, () => store.getState(), message => store.updateLocalhostWelcome(message), process.env.VHOSTRA_RUNTIME_PROJECT || 'vhostra')
   activeRuntime = runtime
@@ -156,15 +164,15 @@ try {
     await runtime.refresh(); await runtime.applyConfiguration(); print({ sites: state.sites, mapping }); if (mapping.failed || mapping.conflicts?.length) process.exitCode = 2 }
   } else if (subject === 'sites' && action === 'remove' && process.argv[4]) {
     if ((await confirm('Remove this Site configuration? External files stay untouched. Type remove: ')) !== 'remove') print('Cancelled.')
-    else { await store.removeSite(process.argv[4]); const state = await store.getState(); await hosts.reconcileMappings(state.virtualHosts.filter(host => !host.builtIn).flatMap(host => [host.hostname, ...host.aliases])); await runtime.refresh(); await runtime.applyConfiguration(); print('Site configuration removed. External files untouched.') }
+    else { const before = await store.getState(); const site = before.sites.find(item => item.id === process.argv[4]); const host = before.virtualHosts.find(item => item.id === site?.vhostId); await store.removeSite(process.argv[4]); if (host) await hosts.removeVhostraMappings([host.hostname, ...host.aliases]); await runtime.refresh(); await runtime.applyConfiguration(); print('Site configuration removed. External files untouched.') }
   } else if (subject === 'sites' && action === 'repair') {
     const state = await store.getState(); const id = process.argv[4]; const site = id ? state.sites.find(site => site.id === id) : null
     if (id && !site) throw new Error('Site not found.')
     const names = state.virtualHosts.filter(host => !host.builtIn && (!site || host.id === site.vhostId)).flatMap(host => [host.hostname, ...host.aliases])
-    print(id ? await hosts.ensureLocalhostMappings(names) : await hosts.reconcileMappings(names)); await runtime.refresh(); await runtime.applyConfiguration()
+    print(names.length ? await hosts.ensureLocalhostMappings(names) : { installed: [], alreadyMapped: [], conflicts: [], message: 'No Site hostnames to repair.' }); await runtime.refresh(); await runtime.applyConfiguration()
   } else if (subject === 'config' && ['export', 'preview', 'import'].includes(action) && process.argv[4]) {
     const source = path.resolve(process.argv[4]); print(action === 'export' ? await store.exportBundle(source) : action === 'preview' ? await store.previewBundle(source) : await store.importBundle(source))
-    if (action === 'import') { const state = await store.getState(); print(await hosts.reconcileMappings(state.virtualHosts.filter(host => !host.builtIn).flatMap(host => [host.hostname, ...host.aliases]))); await runtime.refresh(); await runtime.applyConfiguration() }
+    if (action === 'import') { const state = await store.getState(); const names = state.virtualHosts.filter(host => !host.builtIn).flatMap(host => [host.hostname, ...host.aliases]); print(names.length ? await hosts.ensureLocalhostMappings(names) : { installed: [], alreadyMapped: [], conflicts: [], message: 'No Site hostnames to repair.' }); await runtime.refresh(); await runtime.applyConfiguration() }
   } else if (subject === 'database' && action === 'list') { await runtime.refresh(); await requireMariaDb(); print(await runtime.listDatabases()) }
   else if (subject === 'database' && action === 'create' && process.argv[4] && process.argv[5]) {
     await runtime.refresh(); await requireMariaDb()
@@ -193,7 +201,7 @@ try {
   else if (subject === 'hosts' && ['status', 'repair'].includes(action)) {
     const state = await store.getState(); const all = state.virtualHosts.filter(host => !host.builtIn).flatMap(host => [host.hostname, ...host.aliases])
     const name = process.argv[4]; if (name && !all.includes(name)) throw new Error('That hostname is not owned by a Vhostra canonical virtual host.')
-    const result = action === 'status' ? await hosts.mappingStatus(name ? [name] : all) : name ? await hosts.ensureLocalhostMappings([name]) : await hosts.reconcileMappings(all)
+    const result = action === 'status' ? await hosts.mappingStatus(name ? [name] : all) : (name || all.length) ? await hosts.ensureLocalhostMappings(name ? [name] : all) : { installed: [], alreadyMapped: [], conflicts: [], message: 'No Site hostnames to repair.' }
     print(result); if (action === 'status' ? result.some(item => item.state !== 'mapped') : result.conflicts.length) process.exitCode = 2
   } else if (subject === 'import' && ['preview', 'apply'].includes(action) && process.argv[4]) {
     const hint = process.argv[5]?.startsWith('--') ? undefined : process.argv[5]

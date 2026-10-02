@@ -34,7 +34,7 @@ try {
  await writeFile(path.join(site,'.htaccess'),'RewriteEngine On\nRewriteCond %{REQUEST_FILENAME} !-f\nRewriteCond %{REQUEST_FILENAME} !-d\nRewriteRule . /index.php [L]\n')
  await store.addSite({name:'Performance route probe',documentRoot:site,url:'http://resource.test:29880/'})
  const nginxOnly = process.argv.includes('--nginx-only')
- for (const server of nginxOnly ? ['nginx'] : ['openlitespeed','apache','nginx']) {
+ for (const server of process.argv.includes('--optional-only') ? [] : nginxOnly ? ['nginx'] : ['openlitespeed','apache','nginx']) {
   const current = await store.getState(); await store.saveSettings({...current.settings, selectedWebServer:server})
   await runtime.start()
   assert.equal(runtime.current().progress,undefined)
@@ -57,7 +57,7 @@ try {
   assert.equal((await fetchSite('/article/example?probe=1','resource.test')).status, 200, 'Enabling Site rewrite must restore permalinks')
   const cache=await fetchSite('/index.php?cache_probe=1','resource.test'); assert.equal(cache.text,'works','APCu must function in the selected PHP SAPI')
   const missing=await fetchSite('/missing.php'); assert.equal(missing.status,404)
-  const secure=await tls(); assert.equal(secure.status,200); assert.match(secure.body,/vhostra-lsphp:8\.5/)
+  const secure=await tls(); assert.equal(secure.status,200); assert.match(secure.body,server === 'openlitespeed' ? /vhostra-lsphp:8\.5/ : /vhostra-php-fpm:8\.5/)
   assert.ok((await runtime.listPhpExtensions()).some(item=>item.category==='available'), 'Offline extension catalog survives apt cleanup')
   if(server==='openlitespeed' || nginxOnly) await runtime.createDatabase({name:'resource_probe',charset:'utf8mb4',username:'resource_user',password:'performance-test-password'})
   assert.ok((await runtime.listDatabases()).includes('resource_probe'))
@@ -78,10 +78,12 @@ try {
   console.log('IMAGE_BYTES',docker(['image','inspect',container.Image,'--format','{{.Size}}']).trim())
   await runtime.stop()
  }
- for (const enabled of [true,false]) {
-  const current=await store.getState(); await store.saveSettings({...current.settings,optionalServices:{redis:enabled,memcached:enabled}})
+ for (const [redis,memcached] of [[false,false],[true,false],[false,true],[true,true]]) {
+  const current=await store.getState(); await store.saveSettings({...current.settings,optionalServices:{redis,memcached}})
   await runtime.start(); const names=processes()
-  assert.equal(names.includes('redis-server'),enabled); assert.equal(names.includes('memcached'),enabled)
+  assert.equal(names.includes('redis-server'),redis); assert.equal(names.includes('memcached'),memcached)
+  await new Promise(resolve=>setTimeout(resolve,10000))
+  console.log('OPTIONAL_MEASUREMENT',JSON.stringify({redis,memcached,stats:await runtime.resourceUsage(),processes:docker(['exec',`${scope}-runtime-1`,'ps','-eo','comm,rss'])}))
   await runtime.stop()
  }
  console.log('All selected-server, PHP, HTTPS, database, cache daemon, catalog, and image-reuse checks passed.')

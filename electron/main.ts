@@ -15,6 +15,8 @@ import {
     type MenuItemConstructorOptions,
 } from "electron";
 import { randomUUID } from "node:crypto";
+import { spawn } from 'node:child_process';
+import os from 'node:os';
 import { existsSync, readFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -34,10 +36,18 @@ import { localStorageUsage } from "./resources.js";
 import { supportedPhpVersions } from "./store.js";
 import { configureStartup } from "./startup.js";
 import { openFileDialog, saveFileDialog } from "./file-dialogs.js";
+import { checkDocker, dockerDesktopApplication, dockerInstallUrl, saveDockerExecutable } from './docker-prerequisite.js';
 
 if (!app.isPackaged && process.env.NODE_ENV === "development" && process.env.VHOSTRA_DEV_PROFILE) {
     if (!path.isAbsolute(process.env.VHOSTRA_DEV_PROFILE)) throw new Error("VHOSTRA_DEV_PROFILE must be an absolute local test directory.");
     app.setPath("userData", process.env.VHOSTRA_DEV_PROFILE);
+}
+// Packaged acceptance uses only an explicit temporary profile and a matching
+// isolated Compose scope. It cannot redirect a normal launch or user profile.
+if (app.isPackaged && process.env.VHOSTRA_TEST_SCOPE && process.env.VHOSTRA_USER_DATA) {
+    const profile = path.resolve(process.env.VHOSTRA_USER_DATA);
+    if (!profile.startsWith(os.tmpdir() + path.sep)) throw new Error('Packaged acceptance profile must be temporary.');
+    app.setPath('userData', profile);
 }
 
 const __filename = fileURLToPath(import.meta.url);
@@ -112,7 +122,7 @@ function createRuntimeController() {
     services?.dispose();
     trayStatusKey = "";
     const testScope = process.env.VHOSTRA_TEST_SCOPE;
-    if (testScope && (app.isPackaged || !/^vhostra-[a-z0-9-]+$/.test(testScope))) throw new Error('Invalid isolated Vhostra test scope.');
+    if (testScope && (!/^vhostra-[a-z0-9-]+$/.test(testScope) || app.isPackaged && !process.env.VHOSTRA_USER_DATA)) throw new Error('Invalid isolated Vhostra test scope.');
     services = new DockerRuntimeController(
         store.layout,
         () => store.getState(),
@@ -857,6 +867,40 @@ function registerIpc() {
         return previews.capture(id, force);
     });
     handle("vhostra:get-runtime-status", desktopRuntimeSnapshot);
+    handle('vhostra:docker-prerequisite', () => services.prerequisite());
+    handle('vhostra:check-docker', async () => { await services.refresh(); return services.prerequisite(); });
+    handle('vhostra:install-docker', () => shell.openExternal(dockerInstallUrl()));
+    handle('vhostra:choose-docker', async () => {
+        const result = await dialog.showOpenDialog(primaryWindow!, { title: 'Choose Docker executable', properties: ['openFile'] });
+        if (result.canceled || !result.filePaths[0]) return null;
+        const file = result.filePaths[0];
+        const checked = await checkDocker(undefined, file);
+        if (checked.state === 'broken' || checked.state === 'timeout' || checked.state === 'missing') throw new Error('The selected file could not run Docker. Choose the Docker command from a Docker installation.');
+        saveDockerExecutable(store.layout.root, file);
+        await services.refresh();
+        return services.prerequisite();
+    });
+    handle('vhostra:start-docker', async () => {
+        const current = await services.checkPrerequisite();
+        if (current.state === 'ready') return current;
+        const application = dockerDesktopApplication();
+        if (!application) throw new Error('Open your Docker application, then select Check Again.');
+        if (process.platform === 'darwin') {
+            if (await shell.openPath(application)) throw new Error('Docker could not be started. Open Docker and select Check Again.');
+        } else if (process.platform === 'win32') {
+            await new Promise<void>((resolve, reject) => {
+                const child = spawn(application, [], { detached: true, stdio: 'ignore' });
+                child.once('spawn', () => { child.unref(); resolve(); });
+                child.once('error', () => reject(new Error('Docker could not be started. Open Docker and select Check Again.')));
+            });
+        }
+        for (const delay of [2000, 3000, 5000, 7000, 10000, 12000]) {
+            await new Promise(resolve => setTimeout(resolve, delay));
+            const state = await services.checkPrerequisite();
+            if (state.state === 'ready') { await services.refresh(); return state; }
+        }
+        throw new Error('Docker could not be started. Open Docker and select Check Again.');
+    });
     handle("vhostra:runtime-statuses", () => services.runtimeStatuses());
     handle("vhostra:start-services", () => services.start());
     handle("vhostra:stop-services", () => services.stop());

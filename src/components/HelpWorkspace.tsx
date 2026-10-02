@@ -64,7 +64,7 @@ const topics: Topic[] = [
     { title: 'Interactive reset', text: 'Reset explains Keep, Remove and Cancel, then requires the exact final confirmation phrase. It cannot be run non-interactively. Back up in the graphical app first; Remove deletes Vhostra database state, while external Site files remain untouched.', command: 'vhostra reset' }
   ] },
   { title: 'Troubleshooting', intro: [
-    'If services will not start, check that Docker is available, then look at the service state and Logs. If a required port is busy, use Settings to choose an available port or resolve the other local process yourself.',
+    'If Docker is missing, use Install Docker to open its official setup guide, then Check Again. If Docker is installed but stopped, use Start Docker or open Docker yourself. Choose Docker lets you select an installed command when automatic discovery fails. Vhostra never installs Docker without your action. If a required port is busy, use Settings to choose an available port or resolve the other local process yourself.',
     'If a Site does not open, confirm services are Running, the Site Root Directory exists, and its Server Name has a local Hosts mapping. Use Sites repair or Hosts status to inspect a missing mapping. A stale preview can be refreshed after the Site becomes ready.',
     'If a database connection fails, confirm MariaDB is Running and check the application’s database name, account, password and host. For an import failure, check the SQL file and error details. If phpMyAdmin is unavailable, check the web service and MariaDB. Use Logs for recent output; avoid sharing secrets from logs.'
   ] },

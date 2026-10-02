@@ -10,6 +10,12 @@ const root = await mkdtemp(path.join(os.tmpdir(), 'vhostra-extensions-'))
 const scope = `vhostra-extensions-${process.pid}`
 const store = new VhostraStore(root, path.resolve('dist-welcome'))
 const runtime = new DockerRuntimeController(store.layout, () => store.getState(), undefined, scope)
+const docker = args => execFileSync('docker', args, { encoding: 'utf8', timeout: 30000 }).trim()
+const inventory = () => Object.fromEntries([scope, `${scope}-database`].flatMap(project => [
+  [`${project}:containers`, docker(['ps', '-a', '--filter', `label=com.docker.compose.project=${project}`, '--format', '{{.ID}}'])],
+  [`${project}:networks`, docker(['network', 'ls', '--filter', `label=com.docker.compose.project=${project}`, '--format', '{{.ID}}'])],
+]))
+const before = inventory()
 let lastMessage = ''
 runtime.subscribe(() => { const message = runtime.current().message; if (message !== lastMessage) { lastMessage = message; console.log(message) } })
 const catalogItem = async id => (await runtime.listPhpExtensions()).find(item => item.id === id)
@@ -43,10 +49,24 @@ try {
   assert.equal((await catalogItem('apcu')).installed, false)
   await runtime.stop(); await runtime.start()
   assert.equal((await catalogItem('apcu')).installed, false)
+  for (const server of ['apache', 'nginx']) {
+    const current = await store.getState()
+    await store.saveSettings({ ...current.settings, selectedWebServer: server })
+    await runtime.restart()
+    await runtime.managePhpExtension('apcu', 'install'); await persist(['apcu'], [])
+    assert.equal((await catalogItem('apcu')).enabled, true, `${server} PHP-FPM APCu install`)
+    await runtime.managePhpExtension('apcu', 'disable'); await persist([], ['apcu'])
+    assert.equal((await catalogItem('apcu')).enabled, false, `${server} PHP-FPM APCu disable`)
+    await runtime.managePhpExtension('apcu', 'enable'); await persist(['apcu'], [])
+    assert.equal((await catalogItem('apcu')).enabled, true, `${server} PHP-FPM APCu enable`)
+    await runtime.managePhpExtension('apcu', 'remove'); await persist([], [])
+    assert.equal((await catalogItem('apcu')).installed, false, `${server} PHP-FPM APCu remove`)
+    console.log(`${server} PHP-FPM APCu install/disable/enable/remove passed through actual HTTP inventory.`)
+  }
   console.log('APCu install/disable/enable/remove, persisted restoration, dynamic catalog and cwebp passed.')
 } finally {
   runtime.dispose()
-  const runtimeRoot = path.dirname(store.layout.runtime.apache)
   try { await runtime.resetRuntime(false); await runtime.pauseBackgroundWork() }
   finally { await rm(root, { recursive: true, force: true }) }
+  assert.deepEqual(inventory(), before, 'Extension fixture containers/networks must be removed exactly')
 }

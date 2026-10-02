@@ -33,7 +33,7 @@ Vhostra's source is publicly viewable, but no software license is currently gran
 - Typed local-first storage layout, configuration ownership, snapshot, and portable bundle models
 - Exact-source macOS, Windows, Linux, window, and favicon application icons
 - Authoritative branding assets derived directly from `logo/logos.png`
-- PHP extension inventory obtained from the selected LSPHP package catalog when the runtime is running; selected optional extensions are installed into the replacement image and checked through the real PHP request path
+- PHP extension inventory obtained from the active PHP implementation when the runtime is running; optional packages are selected only when available for both LSPHP and normal PHP-FPM, and are checked through the real PHP request path
 - Zend OPcache preference and `cwebp` support (enabled by default); `cwebp` is supplied by the runtime’s `webp` package and validated in the runtime health check
 - Hosts-file mappings for virtual-host hostnames and aliases, using a narrow elevation prompt rather than running the app with permanent administrator privileges
 - Three local startup preferences: launch Vhostra on login, start configured services when Vhostra opens, and start them after login; fresh profiles enable service start on open
@@ -54,13 +54,19 @@ Vhostra also creates a protected, server-neutral localhost site definition at `h
 
 ## Docker runtime and ports
 
-Docker Desktop (or a compatible Docker Engine with the Compose plugin) is required. Start Services verifies Docker, checks required host ports, generates and validates the Vhostra-only Compose project, and starts the selected stack.
+Docker Desktop (or a compatible Docker Engine with the Compose plugin) is required. The desktop app and bundled CLI search PATH and bounded platform installation locations, then perform one bounded daemon check when needed. Start Services checks required host ports before creating the Vhostra-only Compose project.
 
 - `http://localhost:9000` is the Vite development UI only.
 - `http://localhost/` is the Vhostra managed local web-server entry point.
 - `http://localhost:9080/` is phpMyAdmin. Its image keeps internal port 80; only the host binding is 9080.
 
-Vhostra checks the configured HTTP, phpMyAdmin, and MariaDB ports before startup (defaults 80, 9080, and 3306). Port 443 is checked only as an optional HTTPS capability: if another application such as Tailscale Serve owns it, Vhostra starts HTTP normally on port 80 and reports HTTPS as unavailable without touching the owner.
+Vhostra checks the configured HTTP, phpMyAdmin, and MariaDB ports before startup (defaults 80, 9080, and 3306). Port 443 is optional: when only HTTPS is occupied, Vhostra can continue on HTTP and reports the owner. Required port conflicts are reported together and startup stops without modifying the owner.
+
+### Docker setup
+
+If Docker is missing, Vhostra opens normally and shows a Docker setup state. **Install Docker** opens the official platform guide; Vhostra does not download or install third-party software automatically. Review Docker’s installer and terms there. **Choose Docker** accepts a locally selected executable after validation and stores that path only in the local configuration. **Check Again** runs one bounded check. If Docker is installed but stopped, **Start Docker** launches the installed desktop application where supported and waits for readiness with a finite timeout. On Linux, start the installed Engine/Desktop service using your distribution’s normal mechanism, then select Check Again. Docker failures do not prevent local documentation and settings from opening.
+
+Official guides: [macOS](https://docs.docker.com/desktop/setup/install/mac-install/), [Windows](https://docs.docker.com/desktop/setup/install/windows-install/), and [Linux Engine](https://docs.docker.com/engine/install/). Vhostra never alters another Docker project or globally prunes Docker resources.
 
 ## Local-first storage and persistence
 
@@ -139,7 +145,7 @@ Vhostra's native main window chooses a fixed size that fits the current display 
 
 ## CLI commands
 
-The packaged desktop app includes a `vhostra` launcher. Put that launcher on your PATH to use the commands below. On macOS it is inside `Vhostra.app/Contents/Resources/bin/vhostra`; on Linux it is beside `VhostraDesktop`, and on Windows use `vhostra.cmd` beside `Vhostra.exe`. A source checkout can use `npm run cli -- help` after `npm run build`. All runtime commands share the desktop store/controller and exact managed Compose scope.
+The packaged desktop app includes a `vhostra` launcher. On macOS, run `/Applications/Vhostra.app/Contents/Resources/bin/vhostra help` if you installed the app in Applications; use the corresponding bundle path if you put it elsewhere. You may add that `bin` folder to your shell PATH yourself. On Linux the launcher is beside `VhostraDesktop`, and on Windows `vhostra.cmd` is beside `Vhostra.exe`. Vhostra does not change your PATH or shell profile. A source checkout can use `npm run cli -- help` after `npm run build`. All runtime commands share the desktop store/controller and exact managed Compose scope.
 
 ```sh
 vhostra status [web|apache|nginx|openlitespeed|php|mariadb|phpmyadmin|redis|memcached]
@@ -234,9 +240,9 @@ Automatic Site management requests elevation to create/remove only its own marke
 
 ## PHP extensions and cwebp
 
-The PHP screen reports the selected LSPHP package catalog from the running Vhostra image and distinguishes required modules, installed/enabled modules, selected modules awaiting a rebuild, and packages available for installation. Core MariaDB modules cannot be disabled. Redis and Memcached PHP modules are dependency-managed when their corresponding Vhostra service is enabled.
+The PHP screen reports package and loaded-module state for the active selected PHP implementation and distinguishes required modules, installed/enabled modules, selected modules awaiting a rebuild, and packages available for installation. Core MariaDB modules cannot be disabled. Redis and Memcached PHP modules are dependency-managed when their corresponding Vhostra service is enabled.
 
-Changing an optional extension, OPcache, or `cwebp` preference persists the desired state and reconciles only the Vhostra runtime when it is currently running. Compatible package images are reused; load-state and OPcache changes do not require an image rebuild. The candidate image fails with an explicit package error if an extension is not offered for the selected LSPHP version. `cwebp` defaults to enabled and is provided by Debian/Ubuntu’s `webp` package inside the disposable runtime image.
+Changing an optional extension, OPcache, or `cwebp` preference persists the desired state and reconciles only the Vhostra runtime when it is currently running. Compatible package images are reused; load-state and OPcache changes do not require an image rebuild. The candidate image fails with an explicit package error if an extension is not available for both the selected LSPHP and normal PHP-FPM versions. `cwebp` defaults to enabled and is provided by Debian/Ubuntu’s `webp` package inside the disposable runtime image.
 
 ## Startup
 
@@ -335,7 +341,7 @@ user-managed trust for these local certificates. An occupied HTTPS port disables
 only the TLS listener and reports its owner while HTTP continues.
 
 Apache and Nginx now handle the selected public HTTP listener inside the same
-runtime. PHP requests use the selected LSPHP backend over an internal listener.
+runtime. OpenLiteSpeed uses the selected LSPHP through LSAPI. Apache and Nginx use the matching normal PHP-FPM package over a container-loopback FastCGI listener. Each implementation loads its own selected-version extensions; a module active in one SAPI is not reported as active in another.
 Apache applies .htaccess rewrite rules; Nginx uses the generated front-controller
 routing and does not execute arbitrary .htaccess directives.
 

@@ -6,6 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 const profile = mkdtempSync(path.join(os.tmpdir(), 'vhostra-help-ui-'))
+process.env.VHOSTRA_TEST_SCOPE = `vhostra-help-ui-${process.pid}`
 app.setPath('userData', profile)
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
 const deadline = setTimeout(() => app.exit(1), 60000)
@@ -15,6 +16,8 @@ app.whenReady().then(async () => {
     const { VhostraStore } = await import('../dist-electron/store.js')
     const store = new VhostraStore(profile, path.resolve('dist-welcome'))
     await store.saveOnboarding({ ...await store.getOnboarding(), completed: true, themeSaved: true, theme: 'light' })
+    const settings = await store.getState()
+    await store.saveSettings({ ...settings.settings, startup: { ...settings.settings.startup, startServicesOnLaunch: false } })
     const { applicationSession } = await import('../dist-electron/main.js')
     await pause(600)
     ;({ window, runtime } = applicationSession())
@@ -24,7 +27,6 @@ app.whenReady().then(async () => {
     const area = screen.getDisplayNearestPoint(window.getBounds()).workArea
     const bounds = window.getBounds()
     assert.ok(bounds.x >= area.x && bounds.y >= area.y && bounds.x + bounds.width <= area.x + area.width && bounds.y + bounds.height <= area.y + area.height)
-    runtime.scope = `vhostra-help-ui-${process.pid}`
     runtime.set({ state: 'stopped', message: 'Fixture stopped.', services: [] })
     const evaluate = code => window.webContents.executeJavaScript(code)
     window.webContents.on('console-message', event => console.error('RENDERER', event.message))
@@ -87,5 +89,5 @@ app.whenReady().then(async () => {
     console.log('PASS Help selection, search, copy, local requests and light/dark rendering')
     passed = true
   } catch (error) { console.error(error) }
-  finally { clearTimeout(deadline); await runtime?.pauseBackgroundWork(); runtime?.dispose(); window?.destroy(); await (await import('../dist-electron/logs.js')).drainApplicationLogs(); if (passed) await rm(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); else console.error('Retained isolated Help UI fixture:', profile); app.exit(passed ? 0 : 1) }
+  finally { clearTimeout(deadline); await runtime?.pauseBackgroundWork(); await runtime?.resetRuntime(false).catch(error => { passed = false; console.error('Help fixture Docker cleanup failed:', error) }); runtime?.dispose(); window?.destroy(); await (await import('../dist-electron/logs.js')).drainApplicationLogs(); await rm(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); app.exit(passed ? 0 : 1) }
 })

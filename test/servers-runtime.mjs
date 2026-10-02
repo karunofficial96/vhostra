@@ -65,7 +65,7 @@ try {
 
   const requiredOwner = net.createServer(socket => socket.destroy())
   await listen(requiredOwner, settings.ports.http)
-  try { await assert.rejects(runtime.start(), /cannot bind required host ports/) }
+  try { await assert.rejects(runtime.start(), /required ports are already in use/) }
   finally { await close(requiredOwner) }
   httpsOwner = net.createServer(socket => socket.destroy())
   await listen(httpsOwner, settings.ports.https)
@@ -85,7 +85,7 @@ try {
     } else await runtime.restart()
     const tls = await tlsProbe(settings.ports.https)
     assert.equal(tls.status, 200)
-    assert.match(tls.body, /vhostra-lsphp:8\.3/)
+    assert.match(tls.body, new RegExp(`vhostra-${server === 'openlitespeed' ? 'lsphp' : 'php-fpm'}:8\\.3`))
     assert.doesNotMatch(runtime.current().message, /HTTPS is unavailable/)
     const response = await fetchHost('http://127.0.0.1:29180/article/example?probe=1', { headers: { Host: 'permalink.test' } })
     const html = await response.text()
@@ -111,7 +111,7 @@ try {
   await store.saveSettings({ ...phpBefore.settings, selectedPhpVersion: '8.4' })
   await runtime.restart()
   const phpResponse = await fetchHost('http://127.0.0.1:29180/vhostra-health.php', { headers: { Host: 'localhost' } })
-  assert.match(await phpResponse.text(), /vhostra-lsphp:8\.4/)
+  assert.match(await phpResponse.text(), /vhostra-php-fpm:8\.4/)
   assert.ok((await runtime.listDatabases()).includes('server_probe'))
   console.log('PHP 8.3 to 8.4 candidate promotion preserved the existing database.')
   const cliEnvironment = { ...process.env, VHOSTRA_USER_DATA: root, VHOSTRA_RUNTIME_PROJECT: scope }
@@ -164,5 +164,5 @@ try {
   const runtimeRoot = path.dirname(store.layout.runtime.apache)
   if (!completed) { console.error(`Failure diagnostics retained at ${root}`); try { console.error(execFileSync('docker', ['logs', '--tail', '100', `${scope}-runtime-1`], { encoding: 'utf8' })) } catch {} }
   try { await runtime.resetRuntime(false); await runtime.pauseBackgroundWork() }
-  finally { if (completed) await Promise.all([root, siteRoot].map(directory => rm(directory, { recursive: true, force: true }))) }
+  finally { await Promise.all([root, siteRoot].map(directory => rm(directory, { recursive: true, force: true }))) }
 }

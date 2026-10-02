@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, access, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, access, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { VhostraStore } from '../dist-electron/store.js';
@@ -20,6 +20,7 @@ for (const recoveryFails of [false, true]) test(`replacement recovery ${recovery
         await writeFile(path.join(store.layout.configuration.generated, 'apache-vhosts.conf'), '# Vhostra generated configuration; owner=vhostra; schema=1\nverified-host-config');
         runtime.prepareDatabase = runtime.startDatabase = runtime.requireDocker = runtime.ensurePortsAvailable = runtime.checkOptionalHttpsPort = runtime.provisionPhpMyAdmin = async () => {};
         runtime.docker = async () => '';
+        if (!recoveryFails) runtime.cleanupImages = async () => { throw new Error('cache cleanup unavailable'); };
         runtime.compose = async (args) => {
             if (args[0] === 'images') return 'immutable-image-id';
             if (args[0] === 'build') throw new Error('promotion failed');
@@ -41,7 +42,7 @@ for (const recoveryFails of [false, true]) test(`replacement recovery ${recovery
         if (backup) {
             await access(path.join(backup, 'runtime/healthy-state.json'));
             assert.equal(await readFile(path.join(backup, 'runtime/compose.yml'), 'utf8'), 'verified-original');
-        }
+        } else assert.deepEqual((await readdir(store.layout.backups)).filter(name => name.startsWith('runtime-recovery-')), []);
     } finally {
         runtime?.dispose();
         if (backup) await rm(backup, { recursive: true, force: true });
