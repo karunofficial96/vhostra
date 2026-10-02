@@ -392,5 +392,18 @@ Final phase validation: `npm run build` passed, `node --test test/*.test.mjs` pa
 ## Pending configuration and Runtime Status spacing — 2026-10-02
 
 - [x] Settings and Services now share one transient requested configuration through a runtime change. Old state reads and progress events cannot replace the displayed PHP, server, icon, Ports & Services labels, Redis or Memcached request. A final backend state read commits success or verified rollback; overlapping configuration changes are refused.
-- [x] Shared Runtime Progress uses the existing 16px section gap above its details control and terminal. The native Settings/Services fixture measured the metadata-to-control gap at 16px and captured collapsed and expanded cards.
+- [x] The earlier Runtime Progress used a 16px gap above its details control; that spacing was subsequently reported as too tight and is superseded by the action-row correction below.
 - [x] The isolated native fixture exercised intermediate progress, requested values, success, final failure, navigation between Settings and Services, cache enable/disable, and no completion scroll. Production build passed; the full source suite passed 122/122 with loopback permitted. No polling, telemetry, history storage, Docker matrix or commit was added.
+
+## Generic pending-state correction — 2026-10-02
+
+- [x] A stale final settings read could return the previous value after backend success and clear the pending request. Success now commits the acknowledged requested configuration in the same state transition that clears the request; final failure uses the backend state after rollback. Settings and Services use one presentation selector.
+- [x] Data-driven state tests cover every supported PHP A → B pair, all six server transitions, and both Redis/Memcached enable and disable directions against old observations, success and final rollback. The native fixture covers PHP 8.1 → 8.3 with a deliberately stale final read, its reverse, a server switch, cache controls, and no completion scroll.
+- [x] Runtime Progress now places its disclosure in a 24px action row shared by Settings and Services, using the DESIGN.md major-section spacing. The native fixture measures the metadata-to-action-row gap in both cards, with collapsed and expanded details.
+- [x] Final focused native fixture and generic state tests passed; the full source unit suite passed **125/125** and `npm run build` passed. No commit was made in this phase.
+
+## Runtime Status semantics and disclosure spacing — 2026-10-02
+
+- [x] Settings and Services derive the primary configuration-operation message from transient verified source and requested target values. PHP and server replacements retain both identities; Redis and Memcached retain the requested enable/disable direction through normal backend phases. Low-level progress remains in bounded, redacted runtime details.
+- [x] The shared disclosure action row now has 32px top separation from status metadata, using the DESIGN.md scale; card bottom padding remains 16px. No completion scrolling, polling, persistence, telemetry, or new dependency was added.
+- [x] Focused operation/requested-state tests passed; the isolated native Settings/Services fixture passed with measured 32px top and unchanged 16px bottom spacing, and collapsed/expanded captures were inspected. Full source suite passed 128/128; one production build passed. No Git commit.
