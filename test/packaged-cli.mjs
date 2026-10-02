@@ -30,7 +30,8 @@ try {
     const result = run(args)
     assert.ok([0, 1, 2].includes(result.status), `${args.join(' ')}: ${result.stderr}`)
     assert.doesNotMatch(result.stdout + result.stderr, /\bat .*\.mjs:\d+/)
-    if (['php', 'redis', 'memcached'].includes(args[0]) && args[1] === 'status') assert.match(result.stdout, /Configured: (?:Enabled|Disabled) · Status:/)
+    if (args[0] === 'php' && args[1] === 'status') assert.match(result.stdout, /Selected version:.*\nRuntime version:.*\nWeb server:.*\nIntegration:/)
+    if (['redis', 'memcached'].includes(args[0]) && args[1] === 'status') assert.match(result.stdout, /Configured: (?:Enabled|Disabled) · Status:/)
   }
   const database = run(['database', 'list'])
   assert.equal(database.status, 1, database.stdout + database.stderr)

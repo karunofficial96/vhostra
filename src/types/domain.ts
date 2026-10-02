@@ -74,7 +74,7 @@ export interface VhostraSettings {
   selectedPhpVersion: PhpVersion
   optionalServices: { redis: boolean; memcached: boolean }
   php: { extensions: string[]; disabledExtensions: string[]; opcacheEnabled: boolean; cwebpEnabled: boolean }
-  startup: { launchAtLogin: boolean; startServicesOnLaunch: boolean; startServicesAfterLogin: boolean; closeBehavior: 'keep-services' | 'stop-services' | 'minimize-to-tray' }
+  startup: { launchAtLogin: boolean; serviceStartMode: 'on-open' | 'after-login' | 'manual'; closeBehavior: 'keep-services' | 'stop-services' | 'minimize-to-tray' }
   ports: { http: number; https: number; mariadb: number; redis: number; memcached: number; phpMyAdmin: number }
 }
 

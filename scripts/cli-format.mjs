@@ -3,6 +3,12 @@ const title = value => String(value ?? '').replace(/(^|[-_\s])\w/g, match => mat
 const safe = value => typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
 const labels = { 'not-created': 'Not Created', unavailable: 'Unavailable', unhealthy: 'Unhealthy', error: 'Failed' }
 export const stateLabel = value => labels[value] ?? title(value)
+export function formatCliError(message, command) {
+  const reason = String(message).split(/\r?\n/).map(line => line.trim()).find(line =>
+    line.length > 0 && line.length <= 300 && !/^(?:Command failed:|docker\b|at\s|[{\[])/i.test(line) && !/\s-e\s+['"]?(?:SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER)\b/i.test(line)
+  ) || 'The managed operation failed. Check Vhostra Logs for details.'
+  return `${title(command || 'Operation')} could not be completed.\nReason: ${reason}`
+}
 export function prerequisiteMessage(service, state, startCommand) {
   const label = stateLabel(state || 'unavailable')
   const next = state === 'not-created' ? `Create and start it with ${startCommand}.`
@@ -22,6 +28,8 @@ export function formatResult(value, context = '') {
     if (!value.length) return 'None found.'
     return value.map(item => {
       if (safe(item)) return String(item)
+      if (item.id && typeof item.installed === 'boolean' && typeof item.enabled === 'boolean') return `${item.label || item.id}: Installed: ${item.installed ? 'Yes' : 'No'} · Enabled: ${item.enabled ? 'Yes' : 'No'}${item.supported === false ? ' · Unavailable' : ''}`
+      if (item.username && item.host) return `${item.username}@${item.host}${item.access?.length ? ` · Access: ${item.access.map(row => row.database).join(', ')}` : ''}`
       if (item.label && item.state) return `${item.label}: Configured: ${item.enabled ? 'Enabled' : 'Disabled'} · Status: ${stateLabel(item.state)}`
       if (item.hostname) return [item.hostname, item.aliases?.length ? `Aliases: ${item.aliases.join(', ')}` : '', item.documentRoot ? `Root: ${item.documentRoot}` : '', item.state ? `Status: ${stateLabel(item.state)}` : ''].filter(Boolean).join('  ·  ')
       if (item.name || item.url) return [item.name || item.hostname, item.url || '', item.documentRoot || ''].filter(Boolean).join('  ·  ')
@@ -30,6 +38,8 @@ export function formatResult(value, context = '') {
     }).join('\n')
   }
   if (value.runtime && value.services) return formatStatus(value.runtime, value.services)
+  if (typeof value.installed === 'boolean' && typeof value.enabled === 'boolean') return `${context.toLowerCase().includes('cwebp') ? 'cwebp' : value.label || value.id || 'Tool'}\nConfigured: ${value.enabled ? 'Enabled' : 'Disabled'}\nStatus: ${value.installed ? 'Available' : 'Unavailable'}${value.version ? `\nVersion: ${value.version}` : ''}`
+  if (Array.isArray(value.supported) && value.selected) return `PHP versions\n${value.supported.map(version => `${version} · Available${version === value.selected ? ' · Selected' : ''}${version === value.active ? ' · Active' : ''}`).join('\n')}`
   if (value.label && value.state) return `${value.label}: Configured: ${value.enabled ? 'Enabled' : 'Disabled'} · Status: ${stateLabel(value.state)}`
   if (value.state) return `Status: ${stateLabel(value.state)}`
   if (value.sites && Array.isArray(value.sites)) return `Site saved.\n${formatResult(value.sites)}${value.mapping?.message ? `\nHosts: ${value.mapping.message}` : ''}`

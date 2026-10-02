@@ -44,7 +44,7 @@ const topics: Topic[] = [
     'Errors may show a short message first and expandable technical details when available. Logs can contain sensitive paths or application data; review them before sharing.'
   ] },
   { title: 'Settings, backup and reset', intro: [
-    'Settings changes the selected web server, PHP, optional caches, ports, startup behavior and Local Configuration Path. Vhostra remembers the last useful Open or Save directory locally. Resources shows current app and managed-runtime usage only while that page is visible.',
+    'Settings changes the selected web server, PHP, optional caches, ports, startup behavior and Local Configuration Path. Startup has one service-start choice: When Vhostra opens, After login, or Manually. After login also enables Launch Vhostra on Login. Vhostra remembers the last useful Open or Save directory locally. Resources shows current app and managed-runtime usage only while that page is visible.',
     'Export Configuration saves a local bundle of settings and Site definitions without database data or secrets. Export Full Backup also includes database data, users, roles, grants and private authentication metadata in a private sibling folder. Keep both parts together in a trusted location. Restore previews conflicts and asks what to keep or replace.',
     'Reset Keep resets settings and runtime while preserving Site definitions and MariaDB data and accounts. Reset Remove also removes Vhostra definitions and database state after final confirmation. External website files stay untouched. Back up important data first.'
   ] },
@@ -58,7 +58,7 @@ const topics: Topic[] = [
     { title: 'Sites and virtual hosts', text: 'List Sites; add or edit using a small JSON file with name, url and an existing documentRoot; remove a Site configuration after typing remove; or repair managed Site mappings. vhost list shows the underlying Site host definitions.', command: 'vhostra sites list\nvhostra sites add site.json\nvhostra sites edit <site-id> site.json\nvhostra sites remove <site-id>\nvhostra sites repair <site-id>\nvhostra vhost list' },
     { title: 'Hosts mappings', text: 'Check or repair Vhostra-owned Hosts names. Repair may request administrator approval and reports conflicts.', command: 'vhostra hosts status\nvhostra hosts repair example.test' },
     { title: 'Configuration bundles and vhost import', text: 'Export, preview or import a local Vhostra configuration bundle. For Apache, Nginx, OpenLiteSpeed or supported Enterprise text, preview first; apply converts supported settings. If the preview requires review, --accept-warnings explicitly accepts preserved inactive directives.', command: 'vhostra config export backup.json\nvhostra config preview backup.json\nvhostra config import backup.json\nvhostra import preview site.conf apache\nvhostra import apply site.conf apache --accept-warnings' },
-    { title: 'Databases', text: 'List or create a database. Create asks for a hidden password in an interactive terminal; its optional character set is utf8mb4, utf8 or latin1. Import and export use local SQL files. Repair checks a database. Delete removes that database and its data after you type delete.', command: 'vhostra database list\nvhostra database create projectdb projectuser utf8mb4\nvhostra database import projectdb dump.sql\nvhostra database export projectdb dump.sql\nvhostra database repair projectdb\nvhostra database delete projectdb' },
+    { title: 'Databases', text: 'List or create a database. Create asks for a hidden password in an interactive terminal; its optional character set is utf8mb4, utf8 or latin1. Import and export use local SQL files. Repair checks a database. Delete removes that database and its data after you type delete.', command: 'vhostra database list\nvhostra database create projectdb projectuser utf8mb4\nvhostra database import projectdb dump.sql\nvhostra database export projectdb dump.sql\nvhostra database repair projectdb\nvhostra database delete projectdb\nvhostra database users\nvhostra database access grant projectdb projectuser localhost' },
     { title: 'PHP, extensions and OPcache', text: 'Inspect or select a supported PHP version; list or manage optional extension packages; inspect or switch OPcache. The CLI rejects unsupported PHP versions or protected extension changes.', command: 'vhostra php versions\nvhostra php status\nvhostra php select 8.4\nvhostra php extensions list\nvhostra php extension enable <package>\nvhostra opcache status\nvhostra opcache enable' },
     { title: 'Optional caches and cwebp', text: 'Inspect, enable, disable, start, stop or restart Redis and Memcached. The service form also supports cache enable/disable. cwebp supports status, enable and disable.', command: 'vhostra redis status\nvhostra redis enable\nvhostra memcached restart\nvhostra service redis disable\nvhostra cwebp status' },
     { title: 'Interactive reset', text: 'Reset explains Keep, Remove and Cancel, then requires the exact final confirmation phrase. It cannot be run non-interactively. Back up in the graphical app first; Remove deletes Vhostra database state, while external Site files remain untouched.', command: 'vhostra reset' }
@@ -75,16 +75,6 @@ const topics: Topic[] = [
   ] }
 ]
 
-const indexed = topics.map(topic => ({ topic, search: [topic.title, ...topic.intro, topic.note ?? '', ...(topic.entries ?? []).flatMap(entry => [entry.title, entry.text, entry.command ?? '', entry.output ?? ''])].join(' ').toLocaleLowerCase() }))
-const count = (text: string, term: string) => text.toLocaleLowerCase().split(term).length - 1
-const rankMatches = (term: string) => indexed.map((item, index) => {
-  const score = count(item.topic.title, term) * 20
-    + item.topic.intro.reduce((total, paragraph) => total + count(paragraph, term) * 2, 0)
-    + count(item.topic.note ?? '', term) * 2
-    + (item.topic.entries ?? []).reduce((total, entry) => total + count(entry.title, term) * 8 + count(entry.text, term) * 2 + count(entry.command ?? '', term) * 0.25 + count(entry.output ?? '', term) * 0.25, 0)
-  return { ...item, index, score }
-}).filter(item => item.score > 0).sort((a, b) => b.score - a.score || a.index - b.index)
-
 function CommandBlock({ value, kind = 'command' }: { value: string; kind?: 'command' | 'output' }) {
   const [copied, setCopied] = useState(false)
   async function copy() {
@@ -96,33 +86,17 @@ function CommandBlock({ value, kind = 'command' }: { value: string; kind?: 'comm
 export function HelpWorkspace() {
   const [query, setQuery] = useState('')
   const [active, setActive] = useState(0)
-  const [selectedEntry, setSelectedEntry] = useState<string | null>(null)
   const tabs = useRef<Array<HTMLButtonElement | null>>([])
   const normalized = query.trim().toLocaleLowerCase()
-  const matches = normalized ? rankMatches(normalized) : []
+  const terms = normalized.split(/\s+/).filter(Boolean).slice(0, 8)
+  const results = normalized ? topics.flatMap((topic, index) => [
+    ...topic.intro.map((content, position) => ({ topic, index, title: topic.title, content, key: `intro-${index}-${position}` })),
+    ...(topic.entries ?? []).map((entry, position) => ({ topic, index, title: entry.title, content: [entry.text, entry.command ?? '', entry.output ?? ''].filter(Boolean).join('\n'), key: `entry-${index}-${position}` })),
+    ...(topic.note ? [{ topic, index, title: topic.title, content: topic.note, key: `note-${index}` }] : [])
+  ].filter(result => terms.every(term => `${result.title} ${result.content}`.toLocaleLowerCase().includes(term)))) : []
   const topic = topics[active]
-  const choose = (index: number, entry: string | null = null, reveal = false) => {
-    if (normalized && !matches.some(match => match.index === index)) setQuery('')
-    setActive(index); setSelectedEntry(entry)
-    tabs.current[index]?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
-    if (reveal) window.requestAnimationFrame(() => {
-      const heading = entry
-        ? Array.from(document.querySelectorAll<HTMLElement>('[data-help-entry]')).find(item => item.dataset.helpEntry === entry)
-        : document.querySelector<HTMLElement>('#help-panel h2')
-      heading?.scrollIntoView({ block: 'nearest' })
-      heading?.focus({ preventScroll: true })
-    })
-  }
-  const search = (value: string) => {
-    setQuery(value)
-    const term = value.trim().toLocaleLowerCase()
-    if (!term) { setSelectedEntry(null); return }
-    const first = rankMatches(term)[0]?.index ?? -1
-    if (first >= 0) {
-      const entry = topics[first].entries?.find(item => [item.title, item.text, item.command ?? '', item.output ?? ''].join(' ').toLocaleLowerCase().includes(term))
-      setActive(first); setSelectedEntry(entry?.title ?? null)
-    }
-  }
+  const choose = (index: number) => { setActive(index); setQuery(''); tabs.current[index]?.focus({ preventScroll: true }) }
+  const search = (value: string) => { setQuery(value) }
   const onTabKey = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     const next = event.key === 'ArrowRight' ? (index + 1) % topics.length : event.key === 'ArrowLeft' ? (index - 1 + topics.length) % topics.length : event.key === 'Home' ? 0 : event.key === 'End' ? topics.length - 1 : -1
     if (next >= 0) { event.preventDefault(); choose(next); tabs.current[next]?.focus() }
@@ -132,8 +106,8 @@ export function HelpWorkspace() {
     <h1 className="mt-1 text-2xl font-bold">Help &amp; Documentation</h1>
     <p className="mt-3 max-w-2xl text-sm leading-5 text-[#606060]">Simple guides for Vhostra’s local development tools. Search stays on this computer.</p>
     <div className="mt-6 flex max-w-md items-center gap-2"><input aria-label="Search local help" value={query} onChange={event => search(event.target.value)} placeholder="Search local help" className="input"/>{query && <button type="button" aria-label="Clear help search" onClick={() => search('')} className="h-9 rounded-full border border-[#E5E5E5] px-3 text-sm font-medium">Clear</button>}</div>
-    <nav aria-label="Help topics" role="tablist" className="mt-6 flex max-w-full flex-wrap gap-2">{topics.map((item, index) => <button key={item.title} ref={element => { tabs.current[index] = element }} type="button" role="tab" id={`help-tab-${index}`} aria-controls="help-panel" aria-selected={active === index} tabIndex={active === index ? 0 : -1} onKeyDown={event => onTabKey(event, index)} onClick={() => choose(index)} className={`help-tab min-h-9 rounded-full px-3 py-2 text-sm font-medium ${active === index ? 'bg-[#0F0F0F] text-white' : 'bg-[#F2F2F2] text-[#0F0F0F] hover:bg-[#E5E5E5]'}`}>{item.title}{normalized && matches.some(match => match.index === index) ? <span className="ml-1" aria-label="Search match">•</span> : null}</button>)}</nav>
-    {normalized && <div aria-label="Help search results" className="mt-4"><p className="text-xs text-[#606060]">{matches.length ? `${matches.length} matching ${matches.length === 1 ? 'topic' : 'topics'}` : 'No documentation found for this search.'}</p>{matches.length > 0 && <div className="mt-2 flex flex-wrap gap-2">{matches.map(match => <button key={match.index} type="button" onClick={() => choose(match.index, match.topic.entries?.find(entry => [entry.title, entry.text, entry.command ?? ''].join(' ').toLocaleLowerCase().includes(normalized))?.title ?? null, true)} className={`rounded-full border px-3 py-1 text-xs font-medium ${active === match.index ? 'border-[#FF0000] text-[#FF0000]' : 'border-[#E5E5E5]'}`}>{match.topic.title}</button>)}</div>}</div>}
-    {(!normalized || matches.length > 0) && <section key={active} id="help-panel" role="tabpanel" aria-labelledby={`help-tab-${active}`} className="mt-6 border-b border-[#E5E5E5] pb-6"><h2 tabIndex={-1} className="help-heading text-xl font-medium leading-7">{topic.title}</h2><div className="mt-4 space-y-3">{topic.intro.map(paragraph => <p key={paragraph} className="help-copyable max-w-[75ch] text-sm leading-5 text-[#606060]">{paragraph}</p>)}</div>{topic.entries?.map(entry => <div key={entry.title} className={`mt-6 ${selectedEntry === entry.title ? 'border-l-2 border-[#FF0000] pl-3' : ''}`}><h3 tabIndex={-1} data-help-entry={entry.title} className="help-heading text-sm font-medium leading-5">{entry.title}</h3><p className="help-copyable mt-2 max-w-[75ch] text-sm leading-5 text-[#606060]">{entry.text}</p>{entry.command && <CommandBlock value={entry.command}/>}{entry.output && <><p className="mt-3 text-xs font-medium text-[#606060]">Example output</p><CommandBlock value={entry.output} kind="output"/></>}</div>)}{topic.note && <p className="help-copyable mt-4 rounded-lg bg-[#F2F2F2] p-4 text-sm leading-5">{topic.note}</p>}</section>}
+    {!normalized && <nav aria-label="Help topics" role="tablist" className="mt-6 flex max-w-full flex-wrap gap-2">{topics.map((item, index) => <button key={item.title} ref={element => { tabs.current[index] = element }} type="button" role="tab" id={`help-tab-${index}`} aria-controls="help-panel" aria-selected={active === index} tabIndex={active === index ? 0 : -1} onKeyDown={event => onTabKey(event, index)} onClick={() => choose(index)} className={`help-tab min-h-9 rounded-full px-3 py-2 text-sm font-medium ${active === index ? 'bg-[#0F0F0F] text-white' : 'bg-[#F2F2F2] text-[#0F0F0F] hover:bg-[#E5E5E5]'}`}>{item.title}</button>)}</nav>}
+    {normalized && <section aria-label="Help search results" className="mt-6 space-y-4"><p className="text-xs text-[#606060]">{results.length ? `${results.length} matching ${results.length === 1 ? 'section' : 'sections'}` : 'No documentation found for this search.'}</p>{results.map(result => <article key={result.key} id={`help-result-${result.key}`} tabIndex={-1} className="rounded-lg border border-[#E5E5E5] p-4"><p className="text-xs text-[#606060]">{result.topic.title}</p><h2 className="help-heading mt-2 text-sm font-medium">{result.title}</h2><p className="help-copyable mt-2 max-w-[75ch] whitespace-pre-wrap text-sm leading-5 text-[#606060]">{result.content}</p></article>)}</section>}
+    {!normalized && <section key={active} id="help-panel" role="tabpanel" aria-labelledby={`help-tab-${active}`} className="mt-6 border-b border-[#E5E5E5] pb-6"><h2 tabIndex={-1} className="help-heading text-xl font-medium leading-7">{topic.title}</h2><div className="mt-4 space-y-3">{topic.intro.map(paragraph => <p key={paragraph} className="help-copyable max-w-[75ch] text-sm leading-5 text-[#606060]">{paragraph}</p>)}</div>{topic.entries?.map(entry => <div key={entry.title} className="mt-6"><h3 tabIndex={-1} data-help-entry={entry.title} className="help-heading text-sm font-medium leading-5">{entry.title}</h3><p className="help-copyable mt-2 max-w-[75ch] text-sm leading-5 text-[#606060]">{entry.text}</p>{entry.command && <CommandBlock value={entry.command}/>}{entry.output && <><p className="mt-3 text-xs font-medium text-[#606060]">Example output</p><CommandBlock value={entry.output} kind="output"/></>}</div>)}{topic.note && <p className="help-copyable mt-4 rounded-lg bg-[#F2F2F2] p-4 text-sm leading-5">{topic.note}</p>}</section>}
   </div>
 }

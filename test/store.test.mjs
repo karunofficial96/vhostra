@@ -14,7 +14,7 @@ test('persists site definitions and preserves document-root files on removal', a
     assert.equal(first.settings.selectedWebServer, 'openlitespeed')
     assert.equal(first.settings.selectedPhpVersion, '8.5')
     assert.equal(first.settings.php.cwebpEnabled, true)
-    assert.equal(first.settings.startup.startServicesOnLaunch, true)
+    assert.equal(first.settings.startup.serviceStartMode, 'on-open')
     assert.equal(first.settings.startup.closeBehavior, 'minimize-to-tray')
     const localhost = first.sites.find(site => site.builtIn === 'localhost')
     assert.ok(localhost)
@@ -24,7 +24,7 @@ test('persists site definitions and preserves document-root files on removal', a
     const created = await store.addSite({ name: 'Example', documentRoot: '/projects/example/public', url: 'http://example.local', framework: 'Laravel' })
     assert.equal(created.sites.length, 2)
     assert.equal(created.virtualHosts.find(vhost => vhost.id === created.sites.find(site => site.name === 'Example').vhostId).hostname, 'example.local')
-    await store.saveSettings({ schemaVersion: 1, selectedWebServer: 'apache', selectedPhpVersion: '8.5', optionalServices: { redis: true, memcached: false }, startup: { launchAtLogin: false, startServicesOnLaunch: false, closeBehavior: 'keep-services' }, php: { extensions: [], opcacheEnabled: true, cwebpEnabled: true }, ports: { http: 80, https: 443, mariadb: 3306, redis: 6379, memcached: 11211, phpMyAdmin: 9080 } })
+    await store.saveSettings({ schemaVersion: 1, selectedWebServer: 'apache', selectedPhpVersion: '8.5', optionalServices: { redis: true, memcached: false }, startup: { launchAtLogin: false, serviceStartMode: 'manual', closeBehavior: 'keep-services' }, php: { extensions: [], opcacheEnabled: true, cwebpEnabled: true }, ports: { http: 80, https: 443, mariadb: 3306, redis: 6379, memcached: 11211, phpMyAdmin: 9080 } })
     const reloaded = await new VhostraStore(directory).getState()
     assert.equal(reloaded.settings.selectedWebServer, 'apache')
     assert.equal(reloaded.settings.startup.closeBehavior, 'keep-services')
@@ -38,6 +38,29 @@ test('only accepts credential-free HTTP(S) URLs for external site opening', () =
   assert.doesNotThrow(() => VhostraStore.validateUrl('https://project.local:8443'))
   assert.throws(() => VhostraStore.validateUrl('file:///etc/passwd'))
   assert.throws(() => VhostraStore.validateUrl('https://user:secret@project.local'))
+})
+
+test('legacy startup checkboxes migrate to one mode without losing other preferences', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'vhostra-startup-migration-'))
+  try {
+    const store = new VhostraStore(directory)
+    const original = (await store.getState()).settings
+    for (const [legacy, expected] of [
+      [{ launchAtLogin: false, startServicesOnLaunch: true, startServicesAfterLogin: false }, 'on-open'],
+      [{ launchAtLogin: false, startServicesOnLaunch: false, startServicesAfterLogin: false }, 'manual'],
+      [{ launchAtLogin: false, startServicesOnLaunch: true, startServicesAfterLogin: true }, 'after-login'],
+    ]) {
+      await writeFile(store.layout.settings, JSON.stringify({ ...original, selectedWebServer: 'nginx', startup: { ...legacy, closeBehavior: 'keep-services' } }))
+      const migrated = (await new VhostraStore(directory).getState()).settings
+      assert.equal(migrated.startup.serviceStartMode, expected)
+      assert.equal(migrated.startup.launchAtLogin, expected === 'after-login')
+      assert.equal(migrated.selectedWebServer, 'nginx')
+      assert.equal(migrated.startup.closeBehavior, 'keep-services')
+      const saved = JSON.parse(await readFile(store.layout.settings, 'utf8'))
+      assert.equal('startServicesOnLaunch' in saved.startup, false)
+      assert.equal('startServicesAfterLogin' in saved.startup, false)
+    }
+  } finally { await rm(directory, { recursive: true, force: true }) }
 })
 
 test('database import readiness updates only Sites associated with that database', async () => {

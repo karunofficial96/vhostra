@@ -15,7 +15,7 @@ app.whenReady().then(async()=>{
   const {VhostraStore}=await import('../dist-electron/store.js');const store=new VhostraStore(profile,path.resolve('dist-welcome'));const state=await store.getState()
   server=http.createServer((request,response)=>{response.setHeader('X-Vhostra-Site',routeId??'default');response.setHeader('Content-Type','text/html');response.end('<!doctype html><body style="margin:0;background:#f2f2f2;font:32px sans-serif"><section style="height:720px;background:#065fd4;color:white;padding:32px;box-sizing:border-box">Local Site homepage preview<br>'+request.headers.host+'</section><div style="height:6000px">This long page must not be captured in full.</div><img src="https://remote.invalid/sensitive-site-name"></body>')})
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const port=server.address().port
-  await store.saveSettings({...state.settings,ports:{...state.settings.ports,http:port},startup:{...state.settings.startup,startServicesOnLaunch:false}})
+  await store.saveSettings({...state.settings,ports:{...state.settings.ports,http:port},startup:{...state.settings.startup,serviceStartMode:'manual'}})
   await store.saveOnboarding({...await store.getOnboarding(),theme:'dark',completed:true,themeSaved:true})
   external=await mkdtemp(path.join(os.tmpdir(),'vhostra-preview-ui-site-'));await writeFile(path.join(external,'sentinel'),'untouched')
   const site=(await store.addSite({name:'Preview fixture',url:`http://preview.test:${port}/`,documentRoot:external})).sites.find(site=>!site.builtIn);routeId=site.vhostId

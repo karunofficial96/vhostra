@@ -21,7 +21,7 @@ if (stopped) {
   saveDockerExecutable(store.layout.root, fakeDocker)
   await store.saveOnboarding({ ...await store.getOnboarding(), completed: true, themeSaved: true })
   const state = await store.getState()
-  await store.saveSettings({ ...state.settings, startup: { ...state.settings.startup, startServicesOnLaunch: false } })
+  await store.saveSettings({ ...state.settings, startup: { ...state.settings.startup, serviceStartMode: 'manual' } })
 }
 const server = net.createServer()
 const port = await new Promise((resolve, reject) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)).once('error', reject))

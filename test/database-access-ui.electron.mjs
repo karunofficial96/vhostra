@@ -15,7 +15,7 @@ app.whenReady().then(async()=>{
  let runtime,window;let failed=false
  try {
   const {VhostraStore}=await import('../dist-electron/store.js');const store=new VhostraStore(profile,path.resolve('dist-welcome'));const {settings}=await store.getState()
-  settings.selectedWebServer='nginx';settings.selectedPhpVersion='8.4';settings.php.extensions=['apcu','intl'];settings.php.opcacheEnabled=false;settings.optionalServices={redis:true,memcached:true};settings.startup.startServicesOnLaunch=false;settings.ports={http:34180,https:34443,phpMyAdmin:34181,mariadb:34306,redis:34379,memcached:34211};await store.saveSettings(settings)
+  settings.selectedWebServer='nginx';settings.selectedPhpVersion='8.4';settings.php.extensions=['apcu','intl'];settings.php.opcacheEnabled=false;settings.optionalServices={redis:true,memcached:true};settings.startup.serviceStartMode='manual';settings.ports={http:34180,https:34443,phpMyAdmin:34181,mariadb:34306,redis:34379,memcached:34211};await store.saveSettings(settings)
   await store.saveOnboarding({...await store.getOnboarding(),completed:true,themeSaved:true,theme:'light'})
   const {applicationSession}=await import('../dist-electron/main.js');await pause(500);const native=applicationSession();runtime=native.runtime;window=native.window;runtime.scope=scope
   window.webContents.setBackgroundThrottling(false)

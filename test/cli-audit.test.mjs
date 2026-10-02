@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { formatResult, formatStatus, prerequisiteMessage } from '../scripts/cli-format.mjs'
+import { formatCliError, formatResult, formatStatus, prerequisiteMessage } from '../scripts/cli-format.mjs'
 import { redactProgress } from '../dist-electron/progress.js'
 
 const roots = ['status','start','stop','restart','runtime','service','sites','config','database','php','vhost','hosts','import','web','mariadb','redis','memcached','opcache','cwebp','reset']
@@ -21,7 +21,7 @@ test('each CLI command family has local help and invalid syntax fails before bac
       assert.equal(help.status, 0, command + help.stderr)
       assert.match(help.stdout, /Usage:/)
     }
-    for (const args of [['database','list','extra'], ['runtime','status','extra'], ['sites','edit','id'], ['service','mariadb','enable'], ['php','extension','enable'], ['hosts','repair','name','extra'], ['reset','--force'], ['import','apply']]) {
+    for (const args of [['database','list','extra'], ['database','user','delete','missing'], ['database','access','grant','db','user'], ['runtime','status','extra'], ['sites','edit','id'], ['service','mariadb','enable'], ['php','extension','enable'], ['hosts','repair','name','extra'], ['reset','--force'], ['import','apply']]) {
       const result = invoke(args, root)
       assert.equal(result.status, 64, args.join(' '))
       assert.doesNotMatch(result.stderr, /at .*\.mjs:\d+/)
@@ -32,7 +32,7 @@ test('each CLI command family has local help and invalid syntax fails before bac
 test('database commands explain a missing MariaDB without a SQL placeholder or stack', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'vhostra-cli-missing-db-'))
   try {
-    for (const args of [['database','list'], ['database','create','sample','user'], ['database','import','sample','missing.sql'], ['database','export','sample','out.sql'], ['database','repair','sample'], ['database','delete','sample']]) {
+    for (const args of [['database','list'], ['database','users'], ['database','user','delete','user','localhost'], ['database','user','password','user','localhost'], ['database','access','grant','sample','user','localhost'], ['database','create','sample','user'], ['database','import','sample','missing.sql'], ['database','export','sample','out.sql'], ['database','repair','sample'], ['database','delete','sample']]) {
       const result = invoke(args, root)
       assert.equal(result.status, 1, args.join(' '))
       assert.match(result.stderr, /MariaDB is Not Created/)
@@ -47,6 +47,11 @@ test('human output excludes backend revisions and secret redaction preserves ord
   assert.match(rendered, /MariaDB\s+Configured: Enabled · Status: Stopped/)
   assert.doesNotMatch(rendered, /serviceRevision|updatedAt|\{/)
   assert.equal(formatResult(['projectdb']), 'projectdb')
+  assert.match(formatResult([{ id: 'redis', label: 'Redis', installed: true, enabled: false }]), /Installed: Yes · Enabled: No/)
+  assert.match(formatResult({ enabled: true, installed: true, version: '1.5.0' }, 'cwebp status'), /cwebp\nConfigured: Enabled\nStatus: Available\nVersion: 1.5.0/)
+  assert.match(formatResult({ selected: '8.5', supported: ['8.4', '8.5'] }), /8.5 · Available · Selected/)
+  assert.equal(formatResult([{ username: 'user', host: 'localhost', access: [] }]), 'user@localhost')
+  assert.match(formatCliError('Command failed: docker compose exec -e DROP DATABASE private\nError response from daemon: service stopped', 'database delete'), /Database Delete could not be completed.\nReason: Error response from daemon: service stopped/)
   assert.equal(redactProgress('MariaDB service projectdb Site example.test'), 'MariaDB service projectdb Site example.test')
   assert.match(redactProgress('password=private token=abc mysql://user:secret@localhost'), /password=\*+ token=\*+ mysql:\/\/\*+@localhost/)
   for (const [state, expected] of [['not-created','Create and start'], ['stopped','Start it'], ['starting','Wait'], ['disabled','Enable'], ['failed','Check Docker']]) {

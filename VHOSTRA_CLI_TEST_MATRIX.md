@@ -49,3 +49,13 @@ All CLI tests use isolated `VHOSTRA_USER_DATA` and `VHOSTRA_RUNTIME_PROJECT`. Th
 ## Runtime/settings follow-up — 2026-10-01
 
 A local unsigned macOS desktop package now includes `Vhostra.app/Contents/Resources/bin/vhostra`; `test/packaged-cli.mjs` invokes it as `vhostra` through a temporary PATH symlink from outside the checkout. Help, overall and individual human service status, MariaDB Not Created, and syntax/exit-code paths passed without npm or manually invoked Node. The package does not install a global PATH entry automatically. Linux and Windows launchers are included in packaging configuration but have not been built or verified natively. The old pending labels above record the baseline before the current live fixtures.
+
+## 2026-10-02 readability and account extension
+
+The sequential `test/cli-live-matrix.mjs` passed against one temporary profile and exact owned Docker project, including database `users`, `access grant`, `user password`, and `user delete`. Account mutations used hidden terminal input or typed delete confirmation; the fixture verified a complete create/list/grant/password/export/import/repair/user-delete/database-delete chain and exact Docker inventory cleanup. PHP status, versions, extensions, OPcache, cwebp, Redis, Memcached, web/MariaDB lifecycle and invalid prerequisites passed in the same fixture. The four account routes also have help/syntax/missing-MariaDB/exit coverage in `test/cli-audit.test.mjs`. Normal output formatter tests cover cwebp, version flags, extensions and User@Host rows. The newly rebuilt packaged macOS launcher passed `test/packaged-cli.mjs` outside the checkout.
+
+The current CLI does not expose arbitrary SQL or broad global role administration. Protected MariaDB system accounts remain filtered by the backend. Native Windows/Linux packaged launcher acceptance and protected real Hosts elevation remain external checks.
+
+Final source suite: 122/122. The final unsigned macOS package passed CLI help/status/PHP/service/prerequisite/syntax checks outside the checkout after the offline Electron rebuild.
+
+The final formatter also has a focused test that suppresses raw Docker/SQL command lines from normal failure text and emits a short command/reason pair. The final 122/122 suite and rebuilt outside-source packaged CLI fixture passed after this change.

@@ -7,7 +7,7 @@ import process from 'node:process'
 import { promises as fs } from 'node:fs'
 import { createInterface } from 'node:readline/promises'
 import { fileURLToPath } from 'node:url'
-import { formatResult, formatStatus, prerequisiteMessage } from './cli-format.mjs'
+import { formatCliError, formatResult, formatStatus, prerequisiteMessage } from './cli-format.mjs'
 
 const platformDataRoot = () => process.env.VHOSTRA_USER_DATA || (process.platform === 'darwin'
   ? path.join(os.homedir(), 'Library', 'Application Support', 'vhostra')
@@ -24,6 +24,9 @@ Usage:
   vhostra config <export FILE|preview FILE|import FILE>
   vhostra database create NAME USER [utf8mb4|utf8|latin1]
   vhostra database <list|import NAME FILE|export NAME FILE|repair NAME|delete NAME>
+  vhostra database users
+  vhostra database user <delete|password> USER HOST
+  vhostra database access grant DATABASE USER HOST
   vhostra reset
   vhostra service <list|web|mariadb|redis|memcached> [status|start|stop|restart|enable|disable]
   vhostra web <status|start|stop|restart>
@@ -73,7 +76,7 @@ const valid = (() => {
     case 'opcache': case 'cwebp': return exact(['status','enable','disable'], 2)
     case 'sites': return exact(['list'], 2) || exact(['add','remove'], 3) || exact(['edit'], 4) || exact(['repair'], 2, 3)
     case 'config': return exact(['export','preview','import'], 3)
-    case 'database': return exact(['list'], 2) || exact(['create'], 4, 5) || exact(['import','export'], 4) || exact(['repair','delete'], 3)
+    case 'database': return exact(['list','users'], 2) || exact(['create'], 4, 5) || exact(['import','export'], 4) || exact(['repair','delete'], 3) || args.length === 5 && subcommand === 'user' && ['delete','password'].includes(args[2]) || args.length === 6 && subcommand === 'access' && args[2] === 'grant'
     case 'php': return args.length === 1 || exact(['status','versions'], 2) || exact(['select'], 3) || args.length === 3 && subcommand === 'extensions' && args[2] === 'list' || args.length === 4 && subcommand === 'extension' && ['install','enable','disable','remove'].includes(args[2])
     case 'vhost': return exact(['list'], 2)
     case 'hosts': return exact(['status','repair'], 2, 3)
@@ -117,10 +120,21 @@ try {
     if (service?.state === 'running') return
     throw new Error(prerequisiteMessage('MariaDB', service?.state, 'vhostra mariadb start'))
   }
+  const phpStatus = async () => { const state = await store.getState(); const row = (await runtime.runtimeStatuses()).find(item => item.id === 'php'); const server = state.settings.selectedWebServer; const integration = server === 'openlitespeed' ? 'LSPHP' : 'PHP-FPM'; return `PHP\nSelected version: ${state.settings.selectedPhpVersion}\nRuntime version: ${row?.state === 'running' ? state.settings.selectedPhpVersion : 'Not running'}\nWeb server: ${server === 'openlitespeed' ? 'OpenLiteSpeed' : server === 'nginx' ? 'Nginx' : 'Apache'}\nIntegration: ${integration}\nStatus: ${row?.state ?? 'Unavailable'}` }
   const save = async mutate => { await runtime.refresh(); const current = await store.getState(); await store.saveSettings(mutate(current.settings)); try { await runtime.applyConfiguration(); print(await runtime.refresh()) } catch (error) { await store.saveSettings(current.settings); throw error } }
   const confirm = async question => {
     if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error('Interactive confirmation requires a terminal. Open Vhostra to complete this operation; no non-interactive destructive flags are supported.')
     const prompt = createInterface({ input: process.stdin, output: process.stdout }); try { return (await prompt.question(question)).trim() } finally { prompt.close() }
+  }
+  const hiddenPassword = async question => {
+    if (!process.stdin.isTTY || !process.stdin.setRawMode) throw new Error('A terminal is required for hidden password entry. Use the graphical Database area otherwise.')
+    process.stdout.write(question)
+    return new Promise((resolve, reject) => {
+      let value = ''
+      const restore = () => { process.stdin.setRawMode(false); process.stdin.pause(); process.stdin.removeListener('data', onData); process.stdout.write('\n') }
+      const onData = data => { for (const character of data.toString()) { if (character === '\u0003') { restore(); reject(new Error('Cancelled.')); return } if (character === '\r' || character === '\n') { restore(); resolve(value); return } if (character === '\u007f' || character === '\b') value = value.slice(0, -1); else if (value.length < 1024 && character >= ' ') value += character } }
+      process.stdin.setRawMode(true); process.stdin.resume(); process.stdin.on('data', onData)
+    })
   }
   const selectedTarget = async target => {
     const selected = (await store.getState()).settings.selectedWebServer
@@ -150,6 +164,7 @@ try {
   } else if (subject === 'status' && action) {
     const selected = (await store.getState()).settings.selectedWebServer
     if (['apache', 'nginx', 'openlitespeed'].includes(action) && action !== selected) print({ id: action, state: 'inactive', selected })
+    else if (action === 'php') print(await phpStatus())
     else { const rows = await runtime.runtimeStatuses(); const row = rows.find(row => row.id === (action === selected ? 'web' : action)); if (!row) throw new Error('Unknown runtime status target.'); print(row); if (['failed', 'unhealthy', 'unavailable'].includes(row.state)) process.exitCode = 2 }
   } else if (subject === 'sites' && action === 'list') print((await store.getState()).sites)
   else if (subject === 'sites' && ['add', 'edit'].includes(action)) {
@@ -174,15 +189,24 @@ try {
     const source = path.resolve(process.argv[4]); print(action === 'export' ? await store.exportBundle(source) : action === 'preview' ? await store.previewBundle(source) : await store.importBundle(source))
     if (action === 'import') { const state = await store.getState(); const names = state.virtualHosts.filter(host => !host.builtIn).flatMap(host => [host.hostname, ...host.aliases]); print(names.length ? await hosts.ensureLocalhostMappings(names) : { installed: [], alreadyMapped: [], conflicts: [], message: 'No Site hostnames to repair.' }); await runtime.refresh(); await runtime.applyConfiguration() }
   } else if (subject === 'database' && action === 'list') { await runtime.refresh(); await requireMariaDb(); print(await runtime.listDatabases()) }
+  else if (subject === 'database' && action === 'users') { await runtime.refresh(); await requireMariaDb(); print(await runtime.listDatabaseUsers()) }
+  else if (subject === 'database' && action === 'user' && process.argv[4] === 'delete') {
+    await runtime.refresh(); await requireMariaDb()
+    const [username, host] = [process.argv[5], process.argv[6]]
+    if ((await confirm(`Delete database user ${username}@${host}? Type delete: `)) !== 'delete') print('Cancelled.')
+    else print(await runtime.deleteDatabaseUser({ username, host }))
+  } else if (subject === 'database' && action === 'user' && process.argv[4] === 'password') {
+    await runtime.refresh(); await requireMariaDb()
+    const password = await hiddenPassword('New database password (hidden, at least 12 characters): ')
+    print(await runtime.changeDatabaseUserPassword({ username: process.argv[5], host: process.argv[6], password }))
+  } else if (subject === 'database' && action === 'access' && process.argv[4] === 'grant') {
+    await runtime.refresh(); await requireMariaDb()
+    const password = await hiddenPassword('Current database password (hidden): ')
+    print(await runtime.updateDatabaseAccess({ database: process.argv[5], username: process.argv[6], host: process.argv[7], password }))
+  }
   else if (subject === 'database' && action === 'create' && process.argv[4] && process.argv[5]) {
     await runtime.refresh(); await requireMariaDb()
-    if (!process.stdin.isTTY || !process.stdin.setRawMode) throw new Error('Database creation requires an interactive terminal for the password. Use the graphical Database area otherwise.')
-    process.stdout.write('Database password (hidden, at least 12 characters): ')
-    const password = await new Promise((resolve, reject) => {
-      let value = ''; const restore = () => { process.stdin.setRawMode(false); process.stdin.pause(); process.stdin.removeListener('data', onData); process.stdout.write('\n') }
-      const onData = data => { for (const character of data.toString()) { if (character === '\u0003') { restore(); reject(new Error('Cancelled.')); return } if (character === '\r' || character === '\n') { restore(); resolve(value); return } if (character === '\u007f' || character === '\b') value = value.slice(0, -1); else if (value.length < 1024 && character >= ' ') value += character } }
-      process.stdin.setRawMode(true); process.stdin.resume(); process.stdin.on('data', onData)
-    })
+    const password = await hiddenPassword('Database password (hidden, at least 12 characters): ')
     print(await runtime.createDatabase({ name: process.argv[4], username: process.argv[5], charset: process.argv[6] || 'utf8mb4', password }))
   } else if (subject === 'database' && ['import', 'export', 'repair', 'delete'].includes(action) && process.argv[4]) {
     const database = process.argv[4]; await runtime.refresh(); await requireMariaDb()
@@ -193,7 +217,7 @@ try {
   } else if (subject === 'help' || subject === '--help' || subject === '-h') print(usage)
   else if (subject === 'php' && (!action || action === 'status' || action === 'versions')) {
     const state = await store.getState(); await runtime.refresh()
-    print(action === 'versions' ? { selected: state.settings.selectedPhpVersion, supported: supportedPhpVersions } : (await runtime.runtimeStatuses()).find(row => row.id === 'php'))
+    print(action === 'versions' ? { selected: state.settings.selectedPhpVersion, supported: supportedPhpVersions, active: (await runtime.runtimeStatuses()).find(row => row.id === 'php')?.state === 'running' ? state.settings.selectedPhpVersion : undefined } : await phpStatus())
   } else if (subject === 'php' && action === 'select' && process.argv[4]) {
     if (!supportedPhpVersions.includes(process.argv[4])) throw new Error(`Supported PHP versions: ${supportedPhpVersions.join(', ')}`)
     await save(settings => ({ ...settings, selectedPhpVersion: process.argv[4] }))
@@ -243,6 +267,6 @@ try {
     else if (['start', 'stop', 'restart'].includes(action)) { await runtime.refresh(); print(await runtime.controlManagedService(subject, action)) }
     else await save(settings => ({ ...settings, optionalServices: { ...settings.optionalServices, [subject]: action === 'enable' } }))
   } else { process.stderr.write(`${usage}\n`); process.exitCode = 64 }
-} catch (error) { const { redactProgress } = await import('../dist-electron/progress.js').catch(() => ({ redactProgress: value => value })); const message = error instanceof Error ? error.message : String(error); const applicationRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'); process.stderr.write(`Vhostra: ${redactProgress(message).split(applicationRoot).join('[Vhostra application]').split('\n')[0]}\n`); process.exitCode = 1 }
+} catch (error) { const { redactProgress } = await import('../dist-electron/progress.js').catch(() => ({ redactProgress: value => value })); const message = error instanceof Error ? error.message : String(error); const applicationRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'); process.stderr.write(`Vhostra: ${formatCliError(redactProgress(message).split(applicationRoot).join('[Vhostra application]'), [command, subcommand].filter(Boolean).join(' '))}\n`); process.exitCode = 1 }
 
 finally { activeRuntime?.dispose() }

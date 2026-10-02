@@ -38,7 +38,11 @@ app.whenReady().then(async () => {
     for (const cache of ['Redis', 'Memcached', 'No cache service']) { await click(cache); await pause(100) }
     await click('Continue'); await pause(100)
     assert.match(await evaluate('document.body.textContent'), /Startup Settings/)
-    assert.equal(await evaluate(`[...document.querySelectorAll('label')].find(label=>label.textContent.includes('Start configured services when Vhostra opens')).querySelector('input').checked`), true)
+    assert.equal(await evaluate(`document.querySelectorAll('input[name=service-start-mode]:checked').length`), 1)
+    assert.equal(await evaluate(`[...document.querySelectorAll('label')].find(label=>label.textContent.trim()==='When Vhostra opens').querySelector('input').checked`), true)
+    assert.equal(await evaluate(`[...document.querySelectorAll('label')].find(label=>label.textContent.includes('Launch Vhostra on Login')).querySelector('input').checked`), false)
+    await evaluate(`[...document.querySelectorAll('label')].find(label=>label.textContent.trim()==='Manually').querySelector('input').click()` )
+    await waitFor(`window.vhostra.getState().then(state=>state.settings.startup.serviceStartMode==='manual')`)
     await click('Continue'); await pause(100)
     assert.match(await evaluate('document.body.textContent'), /Ready to set up/)
     const start = runtime.start

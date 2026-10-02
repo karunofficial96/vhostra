@@ -17,7 +17,7 @@ app.whenReady().then(async () => {
     const store = new VhostraStore(profile, path.resolve('dist-welcome'))
     await store.saveOnboarding({ ...await store.getOnboarding(), completed: true, themeSaved: true, theme: 'light' })
     const settings = await store.getState()
-    await store.saveSettings({ ...settings.settings, startup: { ...settings.settings.startup, startServicesOnLaunch: false } })
+    await store.saveSettings({ ...settings.settings, startup: { ...settings.settings.startup, serviceStartMode: 'manual' } })
     const { applicationSession } = await import('../dist-electron/main.js')
     await pause(600)
     ;({ window, runtime } = applicationSession())
@@ -52,13 +52,13 @@ app.whenReady().then(async () => {
     await evaluate(`document.getElementById('help-tab-0').focus()`)
     await evaluate(`document.getElementById('help-tab-0').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}))`)
     await waitFor(`document.getElementById('help-tab-1').getAttribute('aria-selected')==='true'`)
-    await search('MariaDB')
-    assert.equal(await evaluate(`document.querySelector('section[role="tabpanel"] h2').textContent`), 'Databases')
-    assert.ok(await evaluate(`document.querySelectorAll('[aria-label="Help search results"] button').length>1`))
-    for (const term of ['database','OpenLiteSpeed','CLI','Hosts','PHP','import','export','WordPress','MariaDB','Redis','Memcached','logs','reset','backup']) {
+    for (const [term, expected] of [['MariaDB', 'MariaDB stores data'], ['MariaDB user', 'Database users can be created'], ['Redis', 'Redis and Memcached'], ['Memcached', 'Redis and Memcached'], ['Hosts', 'Hosts entry'], ['PHP', 'PHP version'], ['production', 'production URL'], ['CLI', 'Vhostra CLI launcher']]) {
       await search(term)
-      assert.ok(await evaluate(`document.querySelectorAll('section[role="tabpanel"]').length===1`), term)
+      assert.ok(await evaluate(`document.querySelectorAll('[aria-label="Help search results"] article').length>0`), term)
+      assert.ok(await evaluate(`document.querySelector('[aria-label="Help search results"]').textContent.includes(${JSON.stringify(expected)})`), term)
+      assert.equal(await evaluate(`document.querySelectorAll('section[role="tabpanel"]').length`), 0)
     }
+    assert.equal(await evaluate('window.__helpRequests'), 0)
     await search('no-such-vhostra-help-topic')
     assert.equal(await evaluate('document.body.textContent.includes("No documentation found for this search.")'), true)
     await evaluate(`document.querySelector('input[aria-label="Search local help"]').focus()`)
