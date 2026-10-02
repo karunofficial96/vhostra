@@ -11,6 +11,7 @@ export interface RuntimeSnapshot {
   updatedAt: string
   serviceRevision?: number
   serviceTransitions?: Partial<Record<'web' | 'mariadb' | 'redis' | 'memcached', 'starting' | 'stopping' | 'restarting'>>
+  replacementPhase?: 'restoring'
 }
 
 export interface ServiceConfiguration {

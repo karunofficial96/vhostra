@@ -35,6 +35,7 @@ export interface RuntimeSnapshot {
     updatedAt: string;
     serviceRevision?: number;
     serviceTransitions?: Partial<Record<ManagedServiceStatus['id'], 'starting' | 'stopping' | 'restarting'>>;
+    replacementPhase?: 'restoring';
     progress?: { id: number; lines: string[]; total: number };
 }
 export interface ManagedServiceStatus {
@@ -531,7 +532,7 @@ export class DockerRuntimeController {
                     await this.refresh();
                     recoveredOrPromoted = true;
                 } catch (error) {
-                    this.set({ state: "starting", message: "Recovering runtime replacement; rolling back to verified configuration…", services: ["runtime"] });
+                    this.set({ state: "starting", replacementPhase: "restoring", message: "Recovering runtime replacement; rolling back to verified configuration…", services: ["runtime"] });
                     this.appendProgress(`Replacement failed: ${error instanceof Error ? error.message : String(error)}`);
                     if (candidate) {
                         const output = await candidate.compose(["logs", "--no-color", "--tail", "60", "runtime"]).catch(() => "Candidate logs unavailable.");
