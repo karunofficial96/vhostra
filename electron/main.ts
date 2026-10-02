@@ -551,7 +551,7 @@ function registerIpc() {
         }
     });
     handle("vhostra:add-site", async (_event, input) => {
-        if (!(await fs.stat(input.documentRoot)).isDirectory()) throw new Error("Choose an existing host document-root directory.");
+        if (!(await fs.stat(input.documentRoot).catch(() => null))?.isDirectory()) throw new Error("Choose an existing host document-root directory.");
         const result = await store.addSite(input);
         const mapping = await safelyEnsureHosts([
             new URL(input.url).hostname,
@@ -945,6 +945,7 @@ function registerIpc() {
     );
     handle("vhostra:list-databases", () => services.listDatabases());
     handle("vhostra:list-database-users", () => services.listDatabaseUsers());
+    handle("vhostra:create-database-user", (_event, input) => services.createDatabaseUser(input));
     handle("vhostra:change-database-user-password", (_event, input) => services.changeDatabaseUserPassword(input));
     handle("vhostra:delete-database-user", (_event, input) => services.deleteDatabaseUser(input));
     handle("vhostra:check-database-access", (_event, input) => services.checkDatabaseAccess(input));

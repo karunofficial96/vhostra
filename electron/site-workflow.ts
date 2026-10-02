@@ -10,7 +10,7 @@ export async function updateManagedSite(store: VhostraStore, hosts: HostsFileMan
   const previous = before.sites.find(site => site.id === input.id)
   const previousHost = before.virtualHosts.find(host => host.id === previous?.vhostId)
   if (!previous || !previousHost) throw new Error('Site definition not found.')
-  if (!(await fs.stat(input.documentRoot)).isDirectory()) throw new Error('Choose an existing host document-root directory.')
+  if (!(await fs.stat(input.documentRoot).catch(() => null))?.isDirectory()) throw new Error('Choose an existing host document-root directory.')
   const originalHosts = await hosts.inspect()
   const result = await store.updateSite(input)
   try {

@@ -32,6 +32,7 @@ export class SitePreviews {
     const recent = this.attempted.get(id)
     if (!force && recent?.identity === attemptIdentity && Date.now() - recent.at < 600000) return recent.result
     let window: BrowserWindow | undefined; let browserSession: Session | undefined; let timer: ReturnType<typeof setTimeout> | undefined
+    let stage = 'checking local routing'
     const abort = new AbortController(); this.activeAbort = abort
     let result: PreviewResult
     try {
@@ -40,6 +41,7 @@ export class SitePreviews {
           const resolved = await this.resolver.resolve(id, abort.signal)
           if (!resolved.available || !resolved.url) return { captured: false, message: resolved.message, details: resolved.details, repair: resolved.repair }
           if (abort.signal.aborted || !this.visible()) return { captured: false, message: 'Open Dashboard to refresh previews.' }
+          stage = 'preparing the private browser'
           this.browserSession ??= session.fromPartition(`vhostra-preview-${randomUUID()}`, { cache: false })
           browserSession = this.browserSession
           browserSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
@@ -77,10 +79,12 @@ export class SitePreviews {
           window.webContents.on('will-redirect', (event, destination) => { if (!localUrl(destination)) event.preventDefault() })
           const currentWindow = window
           // DOM readiness starts a temporary, bounded visual readiness check.
+          stage = 'loading the local page'
           await new Promise<void>((resolve, reject) => {
             currentWindow.webContents.once('dom-ready', () => resolve())
             void currentWindow.loadURL(resolved.url!).catch(reject)
           })
+          stage = 'waiting for visible content'
           await currentWindow.webContents.insertCSS('* { scrollbar-width: none !important; } *::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }', { cssOrigin: 'user' })
           await currentWindow.webContents.executeJavaScript(`(${waitForVisualReadiness.toString()})()`)
           if (abort.signal.aborted || !this.visible() || currentWindow.isDestroyed()) throw new Error('Preview capture cancelled.')
@@ -89,13 +93,15 @@ export class SitePreviews {
           if (incompleteDatabasePage) return { captured: false, message: 'Preview waiting for database setup.' }
           const finalUrl = currentWindow.webContents.getURL()
           if (!localUrl(finalUrl)) throw new Error('Site navigation left its mapped local URLs.')
+          stage = 'capturing the rendered viewport'
           const image = await currentWindow.webContents.capturePage()
           if (image.isEmpty() || abort.signal.aborted) throw new Error('No rendered Site viewport.')
+          stage = 'saving the local preview'
           await this.store.saveScreenshot(id, site.url, image.resize({ width: 960 }).toJPEG(75), force ? 'manual' : 'automatic', { documentRoot: site.documentRoot, updatedAt: site.updatedAt }, { url: publicSiteUrl(finalUrl), identity })
           const saved = (await this.store.getState()).sites.find(item => item.id === id)
           return { captured: true, message: 'Preview updated successfully.', screenshot: saved?.screenshot }
         })(),
-        new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { abort.abort(); reject(new Error('Local preview timed out.')) }, 15000) }),
+        new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { abort.abort(); reject(new Error(`Local preview timed out while ${stage}.`)) }, 15000) }),
       ])
     } catch (error) { result = { captured: false, message: captureFailureReason(error), details: previewErrorText(error instanceof Error ? error.message : String(error)).slice(0, 4000) } }
     finally {

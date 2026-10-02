@@ -59,3 +59,7 @@ The current CLI does not expose arbitrary SQL or broad global role administratio
 Final source suite: 122/122. The final unsigned macOS package passed CLI help/status/PHP/service/prerequisite/syntax checks outside the checkout after the offline Electron rebuild.
 
 The final formatter also has a focused test that suppresses raw Docker/SQL command lines from normal failure text and emits a short command/reason pair. The final 122/122 suite and rebuilt outside-source packaged CLI fixture passed after this change.
+
+## 2026-10-02 top-status continuation
+
+No CLI grammar or formatter was changed in this continuation. The isolated live matrix was re-run after the UI and direct database-user changes and passed with exact project cleanup; the rebuilt unsigned macOS launcher also passed outside the checkout. Standalone database-user creation is exposed in the desktop UI, not added to the CLI grammar.

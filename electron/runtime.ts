@@ -1221,6 +1221,22 @@ export class DockerRuntimeController {
     private async databaseAccountExists(username: string, host: string) {
         return (await this.accountSql(`SELECT COUNT(*) FROM mysql.user WHERE BINARY User=${sqlLiteral(username)} AND BINARY Host=${sqlLiteral(host)} AND is_role='N'`)).trim() === '1';
     }
+    async createDatabaseUser(input: { username: string; host: string; password: string }) {
+        const host = typeof input.host === 'string' ? input.host.toLowerCase() : input.host;
+        const identity = this.databaseAccount(input.username, host);
+        if (await this.databaseAccountExists(input.username, host)) throw new Error(`Database user already exists. ${input.username}@${host} was not changed.`);
+        if (typeof input.password !== 'string' || input.password.length < 12) throw new Error('The database password must contain at least 12 characters.');
+        let created = false;
+        try {
+            await this.accountSql(`CREATE USER ${identity} IDENTIFIED BY ${sqlLiteral(input.password)}`);
+            created = true;
+            if (!await this.databaseAccountExists(input.username, host)) throw new Error('MariaDB did not confirm the new account.');
+            return { message: `Database user ${input.username}@${host} created successfully.` };
+        } catch (error) {
+            const recovery = created ? await this.accountSql(`DROP USER ${identity}`).then(() => '', () => 'The new account needs review.') : '';
+            throw new Error(redactProgress(`${error instanceof Error ? error.message : String(error)} ${recovery}`, [input.password]));
+        }
+    }
     async changeDatabaseUserPassword(input: { username: string; host: string; password: string }) {
         const identity = this.databaseAccount(input.username, input.host);
         if (!await this.databaseAccountExists(input.username, input.host)) throw new Error('This database user no longer exists. Refresh the list.');

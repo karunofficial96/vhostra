@@ -70,6 +70,7 @@ export interface VhostraDesktopApi {
   setOptionalService(id: 'redis' | 'memcached', enabled: boolean): Promise<Array<{ id: 'web' | 'mariadb' | 'redis' | 'memcached'; label: string; enabled: boolean; state: string }>>
   listManagedServices(): Promise<Array<{ id: 'web' | 'mariadb' | 'redis' | 'memcached'; label: string; enabled: boolean; state: 'running' | 'stopped' | 'starting' | 'stopping' | 'restarting' | 'failed' | 'unhealthy' | 'disabled' | 'unavailable' }>>
   controlManagedService(id: 'web' | 'mariadb' | 'redis' | 'memcached', action: 'start' | 'stop' | 'restart'): Promise<Array<{ id: 'web' | 'mariadb' | 'redis' | 'memcached'; label: string; enabled: boolean; state: string }>>
+  createDatabaseUser(input: { username: string; host: string; password: string }): Promise<{ message: string }>
   listDatabaseUsers(): Promise<Array<{ username: string; host: string; globalPrivileges: string[]; roles: string[]; access: Array<{ database: string; privilege: string }> }>>
   changeDatabaseUserPassword(input: { username: string; host: string; password: string }): Promise<{ message: string }>
   deleteDatabaseUser(input: { username: string; host: string }): Promise<{ message: string }>

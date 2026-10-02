@@ -17,7 +17,7 @@ export function parseError(value: unknown): ErrorDiagnostic {
     else if (/Redis|Memcached/i.test(text)) { service = /Redis/i.test(text) ? 'Redis' : 'Memcached'; title = `${service} could not complete this action.`; explanation = 'Review the service connection or configuration details.'; }
     else if (/Docker|daemon socket|container.*(?:failed|unavailable)/i.test(text)) { title = 'Vhostra could not connect to its runtime.'; explanation = 'Check Docker and the runtime details.'; service = 'Docker'; }
     else if (/hosts (?:file|operation)|administrator|permission.*hosts/i.test(text)) { title = 'Vhostra could not update the Hosts file.'; explanation = 'Review file permissions and the reported details.'; service = 'Hosts'; }
-    else if (/^Start the web runtime|^Enter |^Database passwords|^This database user no longer|^This database account is reserved|^Unsupported MariaDB/i.test(text)) { title = text.split(/\n/)[0]; explanation = ''; }
+    else if (/^Start the web runtime|^Choose an existing host document-root directory|^Enter |^Database passwords|^This database user no longer|^This database account is reserved|^Unsupported MariaDB/i.test(text)) { title = text.split(/\n/)[0]; explanation = ''; }
     if (/invalid number of arguments/i.test(text)) cause = 'Invalid directive arguments';
     else if (/syntax error/i.test(text)) cause = 'Invalid syntax';
     const details: ErrorDiagnostic['details'] = [];

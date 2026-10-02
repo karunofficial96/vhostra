@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { app, ipcMain } from 'electron'
 import { mkdtempSync } from 'node:fs'
-import { rm } from 'node:fs/promises'
+import { rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -30,6 +30,8 @@ app.whenReady().then(async () => {
     await waitFor('document.body.textContent.includes("Dashboard")')
     await evaluate(`([...document.querySelectorAll('button')].find(button=>button.textContent==='Settings')).click()`)
     await waitFor('document.body.textContent.includes("Shared environment")')
+    assert.equal(await evaluate(`[...document.querySelectorAll('h2')].filter(node=>node.textContent==='Runtime Status').length`), 1)
+    await writeFile('/private/tmp/vhostra-top-settings.png', (await window.webContents.capturePage()).toPNG())
     const select = async (label, value) => evaluate(`(()=>{const control=[...document.querySelectorAll('label')].find(item=>item.textContent.includes(${JSON.stringify(label)})).querySelector('select');Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(control,${JSON.stringify(value)});control.dispatchEvent(new Event('change',{bubbles:true}))})()`)
     const selected = label => evaluate(`[...document.querySelectorAll('label')].find(item=>item.textContent.includes(${JSON.stringify(label)})).querySelector('select').value`)
     const check = async (label, value) => evaluate(`(()=>{const control=[...document.querySelectorAll('label')].find(item=>item.textContent.includes(${JSON.stringify(label)})).querySelector('input[type=checkbox]');if(control.checked!==${value})control.click()})()`)
@@ -51,8 +53,10 @@ app.whenReady().then(async () => {
     fail = true
     await select('PHP version', '8.4'); await pause(40)
     assert.equal(await selected('PHP version'), '8.4')
+    assert.match(await evaluate(`document.getElementById('runtime-status').textContent`), /Switching PHP/)
     await waitFor(`document.body.textContent.includes('Injected candidate failure')`)
     assert.equal(await selected('PHP version'), '8.5')
+    assert.match(await evaluate(`document.getElementById('runtime-status').textContent`), /previous verified setting was restored/)
     await check('Enable shared Redis', true); await pause(40)
     assert.equal(await checked('Enable shared Redis'), true)
     assert.match(await evaluate('document.body.textContent'), /Enabling Redis/)
@@ -80,10 +84,12 @@ app.whenReady().then(async () => {
     ipcMain.handle('vhostra:control-managed-service', async (_event, id, action) => { await pause(300); serviceRows = serviceRows.map(row => row.id === id ? { ...row, state: action === 'stop' ? 'stopped' : 'running' } : row); return serviceRows })
     await evaluate(`([...document.querySelectorAll('button')].find(button=>button.textContent==='Services')).click()`)
     await waitFor(`document.getElementById('services-runtime-status')!==null`)
+    assert.equal(await evaluate(`[...document.querySelectorAll('h2')].filter(node=>node.textContent==='Runtime Status').length`), 1)
+    await writeFile('/private/tmp/vhostra-top-services.png', (await window.webContents.capturePage()).toPNG())
     await evaluate(`(()=>{const pane=document.getElementById('services-runtime-status').closest('.overflow-auto');pane.style.height='320px';pane.scrollTop=0;const card=[...document.querySelectorAll('article')].find(node=>node.textContent.includes('MariaDB'));card.querySelector('button').click()})()`)
     await waitFor(`document.getElementById('services-runtime-status').textContent.includes('stopped')`)
     await pause(500)
-    assert.equal(await evaluate(`(()=>{const target=document.getElementById('services-runtime-status').getBoundingClientRect(),pane=document.getElementById('services-runtime-status').closest('.overflow-auto').getBoundingClientRect();return target.top>=pane.top-1&&target.bottom<=pane.bottom+1})()`), true)
+    assert.equal(await evaluate(`document.getElementById('services-runtime-status').closest('.overflow-auto').scrollTop`), 0)
     assert.equal(await evaluate(`document.body.textContent.includes('Ports & Services')`), false)
     await evaluate(`document.getElementById('services-runtime-status').closest('.overflow-auto').scrollTop=0`)
     runtime.set({ state: 'stopped', message: 'Background fixture status', services: [], serviceRevision: 123 })
@@ -94,7 +100,7 @@ app.whenReady().then(async () => {
     await waitFor(`document.getElementById('services-runtime-status').textContent.includes('running')`)
     await pause(400)
     assert.ok(Math.abs((await evaluate(`document.getElementById('services-runtime-status').closest('.overflow-auto').scrollTop`)) - visibleScroll) <= 1)
-    console.log('PASS Settings requested state, Ports value, rollback, startup radio, Services scroll and background no-scroll.')
+    console.log('PASS Settings requested state, top Runtime Status, rollback, startup radio, Services no-scroll and background no-scroll.')
     passed = true
   } catch (error) { console.error(error) }
   finally { clearTimeout(deadline); await runtime?.pauseBackgroundWork(); runtime?.dispose(); window?.destroy(); await (await import('../dist-electron/logs.js')).drainApplicationLogs(); await pause(200); if (passed) await rm(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }).catch(error => console.error('Deferred fixture cleanup:', error)); else console.error('Retained Settings fixture:', profile); app.exit(passed ? 0 : 1) }

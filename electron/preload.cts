@@ -56,6 +56,7 @@ const api = Object.freeze({
   listManagedServices: () => ipcRenderer.invoke('vhostra:list-managed-services'),
   controlManagedService: (id: 'web' | 'mariadb' | 'redis' | 'memcached', action: 'start' | 'stop' | 'restart') => ipcRenderer.invoke('vhostra:control-managed-service', id, action),
   listDatabaseUsers: () => ipcRenderer.invoke('vhostra:list-database-users'),
+  createDatabaseUser: (input: { username: string; host: string; password: string }) => ipcRenderer.invoke('vhostra:create-database-user', input),
   changeDatabaseUserPassword: (input: { username: string; host: string; password: string }) => ipcRenderer.invoke('vhostra:change-database-user-password', input),
   deleteDatabaseUser: (input: { username: string; host: string }) => ipcRenderer.invoke('vhostra:delete-database-user', input),
   checkDatabaseAccess: (input: unknown) => ipcRenderer.invoke('vhostra:check-database-access', input),
