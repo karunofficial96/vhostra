@@ -38,10 +38,11 @@ html[data-theme="dark"] .service-brand-mariadb img { filter: brightness(0) inver
 .input { height: 40px; width: 100%; border: 1px solid var(--v-border); border-radius: 4px; background: var(--v-control); padding: 0 12px; color: var(--v-text); font: inherit; font-size: 14px; }
 .input:focus { outline: 2px solid var(--v-focus); outline-offset: 1px; }
 
-.runtime-progress { flex-basis: 100%; min-width: 0; }
+.runtime-progress { flex-basis: 100%; min-width: 0; margin-top: 16px; }
 .runtime-expand { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 16px; border: 1px solid var(--v-border, #E5E5E5); border-radius: 9999px; font-size: 14px; font-weight: 500; }
 .runtime-expand:hover { background: var(--v-hover, #E5E5E5); }
-.runtime-terminal { margin-top: 8px; max-height: 240px; overflow-y: auto; background: var(--v-bg, #FFFFFF); color: var(--v-text, #0F0F0F); border: 1px solid var(--v-border, #E5E5E5); border-radius: 8px; padding: 12px; font-family: 'Roboto Mono', monospace; font-size: 14px; line-height: 20px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.runtime-terminal { margin-top: 16px; max-height: 240px; overflow-y: auto; background: var(--v-bg, #FFFFFF); color: var(--v-text, #0F0F0F); border: 1px solid var(--v-border, #E5E5E5); border-radius: 8px; padding: 12px; font-family: 'Roboto Mono', monospace; font-size: 14px; line-height: 20px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.runtime-terminal + .runtime-expand { margin-top: 12px; }
 .runtime-line-success { color: #217d30; }
 html[data-theme="dark"] .runtime-line-success { color: #65cb77; }
 .runtime-line-error { color: var(--v-error, #CC0000); }
