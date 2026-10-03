@@ -13,6 +13,13 @@ test('Windows installer exposes its installed root and includes the packaged CLI
   assert.match(installer, /\$INSTDIR\\vhostra\.cmd/)
 })
 
+test('Windows NSIS pins electron-builder past the PE extraction regression', async () => {
+  const lock = JSON.parse(await readFile('package-lock.json', 'utf8'))
+  const [major, minor, patch] = lock.packages['node_modules/app-builder-lib'].version.split('.').map(Number)
+  assert.ok(major > 26 || major === 26 && (minor > 15 || minor === 15 && patch >= 6),
+    'electron-builder 26.15.3-26.15.5 can silently omit executables from NSIS installs')
+})
+
 test('Windows user PATH install and upgrade add one entry; uninstall removes only owned entry', () => {
   const values = new Map()
   const registry = {

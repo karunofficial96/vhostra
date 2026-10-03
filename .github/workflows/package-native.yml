@@ -93,12 +93,14 @@ jobs:
           $installLocation = if ($record) { [string]$record.InstallLocation } else { '' }
           $directoryExists = [bool]($installLocation -and (Test-Path -LiteralPath $installLocation -PathType Container))
           $cliExists = [bool]($directoryExists -and (Test-Path -LiteralPath (Join-Path $installLocation 'vhostra.cmd') -PathType Leaf))
-          if ($install.ExitCode -ne 0 -or -not $cliExists) {
+          $exeExists = [bool]($directoryExists -and (Test-Path -LiteralPath (Join-Path $installLocation 'Vhostra.exe') -PathType Leaf))
+          if ($install.ExitCode -ne 0 -or -not $cliExists -or -not $exeExists) {
             Write-Host "InstallLocation: $(if ($installLocation) { $installLocation } else { '<missing>' })"
             Write-Host "Installation directory exists: $directoryExists"
             Write-Host 'Installation root filenames:'
             if ($directoryExists) { Get-ChildItem -LiteralPath $installLocation -File -Force | Select-Object -ExpandProperty Name | Sort-Object | ForEach-Object { Write-Host "  $_" } }
             Write-Host "vhostra.cmd exists: $cliExists"
+            Write-Host "Vhostra.exe exists: $exeExists"
             $failurePath = [string](Get-ItemProperty HKCU:\Environment -Name Path -ErrorAction SilentlyContinue).Path
             $ownedDirectory = [string](Get-ItemProperty HKCU:\Software\Vhostra\CLI -Name Directory -ErrorAction SilentlyContinue).Directory
             $entryCount = if ($installLocation) { @($failurePath -split ';' | Where-Object { $_ -ieq $installLocation }).Count } else { 0 }
@@ -157,8 +159,19 @@ jobs:
             }
             if ($pathFailure.ContainsKey($install.ExitCode)) { throw "Installer PATH setup failed at $($pathFailure[$install.ExitCode]) (exit $($install.ExitCode))" }
             if ($install.ExitCode -ne 0) { throw "Installer exited $($install.ExitCode)" }
+            if (-not $exeExists) { throw 'Installed Vhostra.exe is missing' }
             throw 'Installed CLI is missing'
           }
+          $exeStream = [System.IO.File]::OpenRead((Join-Path $installLocation 'Vhostra.exe'))
+          try {
+            $exeReader = [System.IO.BinaryReader]::new($exeStream)
+            [void]$exeStream.Seek(0x3c, [System.IO.SeekOrigin]::Begin)
+            $peOffset = $exeReader.ReadInt32()
+            [void]$exeStream.Seek($peOffset + 4, [System.IO.SeekOrigin]::Begin)
+            $installedMachine = $exeReader.ReadUInt16()
+          } finally { $exeStream.Dispose() }
+          $expectedMachine = if ('${{ matrix.arch }}' -eq 'arm64') { 0xAA64 } else { 0x8664 }
+          if ($installedMachine -ne $expectedMachine) { throw ('Installed Vhostra.exe PE machine 0x{0:X4} does not match expected 0x{1:X4}' -f $installedMachine, $expectedMachine) }
           $userPath = [string](Get-ItemProperty HKCU:\Environment -Name Path).Path
           if (($userPath -split ';' | Where-Object { $_ -ieq $installLocation }).Count -ne 1) { throw 'Vhostra user PATH entry is missing or duplicated' }
           & (Join-Path $installLocation 'vhostra.cmd') --help
