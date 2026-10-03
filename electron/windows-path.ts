@@ -17,7 +17,9 @@ export function changeWindowsUserPath(action: 'install' | 'uninstall', directory
   const index = parts.findIndex(part => part && normalize(part) === target);
   if (action === 'install') {
     if (index !== -1) return 'unchanged';
-    const next = raw ? `${raw}${raw.endsWith(';') ? '' : ';'}${directory}` : directory;
+    // Always add our own separator. If the original PATH ended in ';', that
+    // empty trailing component must still be there after we remove our entry.
+    const next = raw ? `${raw};${directory}` : directory;
     if (next.length > 32767) throw new Error('The user PATH is too long to add Vhostra safely.');
     registry.write(environment, 'Path', { data: next, type: current?.type ?? 'REG_EXPAND_SZ' });
     registry.write(ownership, 'Directory', { data: directory, type: 'REG_SZ' });

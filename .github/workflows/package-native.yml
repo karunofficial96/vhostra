@@ -99,6 +99,13 @@ jobs:
             Write-Host 'Installation root filenames:'
             if ($directoryExists) { Get-ChildItem -LiteralPath $installLocation -File -Force | Select-Object -ExpandProperty Name | Sort-Object | ForEach-Object { Write-Host "  $_" } }
             Write-Host "vhostra.cmd exists: $cliExists"
+            $failurePath = [string](Get-ItemProperty HKCU:\Environment -Name Path -ErrorAction SilentlyContinue).Path
+            $ownedDirectory = [string](Get-ItemProperty HKCU:\Software\Vhostra\CLI -Name Directory -ErrorAction SilentlyContinue).Directory
+            $entryCount = if ($installLocation) { @($failurePath -split ';' | Where-Object { $_ -ieq $installLocation }).Count } else { 0 }
+            Write-Host "Vhostra PATH component count: $entryCount"
+            Write-Host "Vhostra PATH ownership recorded: $([bool]($installLocation -and $ownedDirectory -ieq $installLocation))"
+            if ($install.ExitCode -eq 10) { throw 'Installer could not find the packaged CLI launcher (exit 10)' }
+            if ($install.ExitCode -eq 11) { throw 'Installer PATH setup command failed (exit 11)' }
             if ($install.ExitCode -ne 0) { throw "Installer exited $($install.ExitCode)" }
             throw 'Installed CLI is missing'
           }
@@ -120,7 +127,23 @@ jobs:
           $remove = Start-Process (Join-Path $installLocation 'Uninstall Vhostra.exe') -ArgumentList '/S', '/currentuser' -Wait -PassThru
           if ($remove.ExitCode -ne 0) { throw "Uninstaller exited $($remove.ExitCode)" }
           $after = [string](Get-ItemProperty HKCU:\Environment -Name Path -ErrorAction SilentlyContinue).Path
-          if ($after -ne $before) { throw 'Uninstall changed unrelated user PATH entries' }
+          $beforeParts = @($before -split ';' | Where-Object { $_ -ne '' })
+          $afterParts = @($after -split ';' | Where-Object { $_ -ne '' })
+          $mismatches = @()
+          for ($index = 0; $index -lt [Math]::Max($beforeParts.Count, $afterParts.Count); $index++) {
+            if ($index -ge $beforeParts.Count -or $index -ge $afterParts.Count -or
+                -not [string]::Equals($beforeParts[$index], $afterParts[$index], [StringComparison]::Ordinal)) {
+              $mismatches += $index
+            }
+          }
+          $vhostraRemains = @($afterParts | Where-Object { $_ -ieq $installLocation }).Count -gt 0
+          if ($mismatches.Count -gt 0 -or $vhostraRemains) {
+            Write-Host "PATH component counts before/after: $($beforeParts.Count)/$($afterParts.Count)"
+            Write-Host "Changed component indexes: $($mismatches -join ',')"
+            Write-Host "Vhostra component remains: $vhostraRemains"
+            Write-Host "Component order or content changed: $($mismatches.Count -gt 0)"
+            throw 'Uninstall changed unrelated user PATH components'
+          }
       - name: Smoke packaged macOS CLI
         if: matrix.platform == 'mac'
         shell: bash

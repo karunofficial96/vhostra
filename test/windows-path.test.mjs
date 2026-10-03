@@ -33,3 +33,21 @@ test('Windows user PATH install and upgrade add one entry; uninstall removes onl
   assert.equal(changeWindowsUserPath('uninstall', directory, registry), 'unchanged')
   assert.equal(values.get(environment).data, `${directory};C:\\Docker`)
 })
+
+test('Windows PATH round trip preserves existing empty components and their order', () => {
+  const values = new Map()
+  const registry = {
+    read: (key, name) => values.get(`${key}/${name}`) ?? null,
+    write: (key, name, value) => values.set(`${key}/${name}`, value),
+    remove: (key, name) => values.delete(`${key}/${name}`),
+  }
+  const key = 'HKCU\\Environment/Path'
+  const original = 'C:\\Tools;;%USERPROFILE%\\bin;'
+  const directory = 'C:\\Users\\Sample\\AppData\\Local\\Programs\\Vhostra'
+  values.set(key, { data: original, type: 'REG_EXPAND_SZ' })
+  assert.equal(changeWindowsUserPath('install', directory, registry), 'changed')
+  assert.equal(changeWindowsUserPath('install', directory, registry), 'unchanged')
+  assert.equal(values.get(key).data, `${original};${directory}`)
+  assert.equal(changeWindowsUserPath('uninstall', directory, registry), 'changed')
+  assert.deepEqual(values.get(key), { data: original, type: 'REG_EXPAND_SZ' })
+})

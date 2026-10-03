@@ -3,7 +3,8 @@
     ${IfNot} ${Silent}
       MessageBox MB_OK|MB_ICONSTOP "Vhostra's CLI launcher is missing from the installation."
     ${EndIf}
-    SetErrorLevel 1
+    ; Packaged launcher missing.
+    SetErrorLevel 10
     Quit
   ${EndIf}
   ; electron-builder stores InstallLocation in its private install key. Publish
@@ -14,7 +15,8 @@
     ${IfNot} ${Silent}
       MessageBox MB_OK|MB_ICONSTOP "Vhostra was installed, but its CLI could not be added to your user PATH. Reinstall to retry."
     ${EndIf}
-    SetErrorLevel 1
+    ; Electron user PATH command failed.
+    SetErrorLevel 11
     Quit
   ${EndIf}
   System::Call 'user32::SendMessageTimeout(p 0xffff, i 0x1A, p 0, t "Environment", i 2, i 5000, *p .r0) p .r1'
