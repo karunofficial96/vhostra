@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { readFile } from 'node:fs/promises'
-import { changeWindowsUserPath } from '../dist-electron/windows-path.js'
+import { changeWindowsUserPath, WindowsPathSetupError } from '../dist-electron/windows-path.js'
 
 test('Windows installer exposes its installed root and includes the packaged CLI', async () => {
   const packageJson = JSON.parse(await readFile('package.json', 'utf8'))
@@ -50,4 +50,15 @@ test('Windows PATH round trip preserves existing empty components and their orde
   assert.equal(values.get(key).data, `${original};${directory}`)
   assert.equal(changeWindowsUserPath('uninstall', directory, registry), 'changed')
   assert.deepEqual(values.get(key), { data: original, type: 'REG_EXPAND_SZ' })
+})
+
+test('Windows PATH setup identifies failing registry write without exposing PATH', () => {
+  const directory = 'C:\\Users\\Sample\\AppData\\Local\\Programs\\Vhostra'
+  const registry = {
+    read: () => null,
+    write: () => { throw new Error('private registry data') },
+    remove: () => {},
+  }
+  assert.throws(() => changeWindowsUserPath('install', directory, registry), error =>
+    error instanceof WindowsPathSetupError && error.exitCode === 23 && !error.message.includes('private registry data'))
 })

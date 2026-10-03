@@ -39,7 +39,7 @@ import { openFileDialog, saveFileDialog } from "./file-dialogs.js";
 import { checkDocker, dockerDesktopApplication, dockerInstallUrl, saveDockerExecutable } from './docker-prerequisite.js';
 import { checkManualUpdate, type UpdateResult } from './manual-update.js';
 import { authorizeMacCliLink, ensureOwnedCliLink, removeOwnedCliLink, installAppImageCli, removeAppImageCli } from './cli-integration.js';
-import { changeInstalledWindowsPath } from './windows-path.js';
+import { changeInstalledWindowsPath, WindowsPathSetupError } from './windows-path.js';
 
 if (!app.isPackaged && process.env.NODE_ENV === "development" && process.env.VHOSTRA_DEV_PROFILE) {
     if (!path.isAbsolute(process.env.VHOSTRA_DEV_PROFILE)) throw new Error("VHOSTRA_DEV_PROFILE must be an absolute local test directory.");
@@ -296,8 +296,8 @@ if (pathCommand) {
         try {
             changeInstalledWindowsPath(process.argv[1] === '--vhostra-cli-path-install' ? 'install' : 'uninstall', process.argv[2]);
             app.exit(0);
-        } catch { app.exit(1); }
-    });
+        } catch (error) { app.exit(error instanceof WindowsPathSetupError ? error.exitCode : 25); }
+    }).catch(() => app.exit(26));
 }
 const hasSingleInstanceLock = pathCommand ? false : app.requestSingleInstanceLock();
 

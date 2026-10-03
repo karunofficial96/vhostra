@@ -105,7 +105,16 @@ jobs:
             Write-Host "Vhostra PATH component count: $entryCount"
             Write-Host "Vhostra PATH ownership recorded: $([bool]($installLocation -and $ownedDirectory -ieq $installLocation))"
             if ($install.ExitCode -eq 10) { throw 'Installer could not find the packaged CLI launcher (exit 10)' }
-            if ($install.ExitCode -eq 11) { throw 'Installer PATH setup command failed (exit 11)' }
+            $pathFailure = @{
+              21 = 'invalid installation directory'
+              22 = 'user PATH length limit'
+              23 = 'writing the user PATH registry value'
+              24 = 'writing the Vhostra PATH ownership registry value'
+              25 = 'unexpected Electron PATH handler error'
+              26 = 'Electron readiness failed before PATH setup'
+              27 = 'launching the Electron PATH helper failed'
+            }
+            if ($pathFailure.ContainsKey($install.ExitCode)) { throw "Installer PATH setup failed at $($pathFailure[$install.ExitCode]) (exit $($install.ExitCode))" }
             if ($install.ExitCode -ne 0) { throw "Installer exited $($install.ExitCode)" }
             throw 'Installed CLI is missing'
           }

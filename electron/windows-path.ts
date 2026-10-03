@@ -6,9 +6,12 @@ export type Registry = { read(key: string, name: string): Value | null; write(ke
 const environment = 'HKCU\\Environment';
 const ownership = 'HKCU\\Software\\Vhostra\\CLI';
 const normalize = (value: string) => path.win32.normalize(value.trim().replace(/[\\/]+$/, '')).toLowerCase();
+export class WindowsPathSetupError extends Error {
+  constructor(readonly exitCode: 21 | 22 | 23 | 24) { super('Windows CLI PATH setup failed.'); }
+}
 
 export function changeWindowsUserPath(action: 'install' | 'uninstall', directory: string, registry: Registry): 'changed' | 'unchanged' {
-  if (!path.win32.isAbsolute(directory) || /[\r\n;]/.test(directory)) throw new Error('Invalid Vhostra installation directory.');
+  if (!path.win32.isAbsolute(directory) || /[\r\n;]/.test(directory)) throw new WindowsPathSetupError(21);
   const current = registry.read(environment, 'Path');
   const raw = current?.data ?? '';
   const parts = raw ? raw.split(';') : [];
@@ -20,9 +23,11 @@ export function changeWindowsUserPath(action: 'install' | 'uninstall', directory
     // Always add our own separator. If the original PATH ended in ';', that
     // empty trailing component must still be there after we remove our entry.
     const next = raw ? `${raw};${directory}` : directory;
-    if (next.length > 32767) throw new Error('The user PATH is too long to add Vhostra safely.');
-    registry.write(environment, 'Path', { data: next, type: current?.type ?? 'REG_EXPAND_SZ' });
-    registry.write(ownership, 'Directory', { data: directory, type: 'REG_SZ' });
+    if (next.length > 32767) throw new WindowsPathSetupError(22);
+    try { registry.write(environment, 'Path', { data: next, type: current?.type ?? 'REG_EXPAND_SZ' }); }
+    catch { throw new WindowsPathSetupError(23); }
+    try { registry.write(ownership, 'Directory', { data: directory, type: 'REG_SZ' }); }
+    catch { throw new WindowsPathSetupError(24); }
     return 'changed';
   }
   if (!owned || normalize(owned) !== target) return 'unchanged';

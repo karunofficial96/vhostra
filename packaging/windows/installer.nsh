@@ -10,13 +10,18 @@
   ; electron-builder stores InstallLocation in its private install key. Publish
   ; the same directory in the uninstall entry used by Windows and CI.
   WriteRegStr SHELL_CONTEXT "${UNINSTALL_REGISTRY_KEY}" "InstallLocation" "$INSTDIR"
+  ClearErrors
   ExecWait '"$INSTDIR\Vhostra.exe" --vhostra-cli-path-install "$INSTDIR"' $0
+  ${If} ${Errors}
+    SetErrorLevel 27
+    Quit
+  ${EndIf}
   ${If} $0 != 0
     ${IfNot} ${Silent}
       MessageBox MB_OK|MB_ICONSTOP "Vhostra was installed, but its CLI could not be added to your user PATH. Reinstall to retry."
     ${EndIf}
-    ; Electron user PATH command failed.
-    SetErrorLevel 11
+    ; Preserve the helper's safe diagnostic exit code.
+    SetErrorLevel $0
     Quit
   ${EndIf}
   System::Call 'user32::SendMessageTimeout(p 0xffff, i 0x1A, p 0, t "Environment", i 2, i 5000, *p .r0) p .r1'
