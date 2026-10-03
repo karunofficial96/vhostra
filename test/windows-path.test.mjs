@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { readFile } from 'node:fs/promises'
 import { changeWindowsUserPath } from '../dist-electron/windows-path.js'
+
+test('Windows installer exposes its installed root and includes the packaged CLI', async () => {
+  const packageJson = JSON.parse(await readFile('package.json', 'utf8'))
+  assert.deepEqual(packageJson.build.win.extraFiles, [{ from: 'packaging/windows/vhostra.cmd', to: 'vhostra.cmd' }])
+  const launcher = await readFile('packaging/windows/vhostra.cmd', 'utf8')
+  assert.match(launcher, /%~dp0Vhostra\.exe/)
+  const installer = await readFile('packaging/windows/installer.nsh', 'utf8')
+  assert.match(installer, /!macro customInstall[\s\S]*?WriteRegStr SHELL_CONTEXT "\$\{UNINSTALL_REGISTRY_KEY\}" "InstallLocation" "\$INSTDIR"/)
+  assert.match(installer, /\$INSTDIR\\vhostra\.cmd/)
+})
 
 test('Windows user PATH install and upgrade add one entry; uninstall removes only owned entry', () => {
   const values = new Map()

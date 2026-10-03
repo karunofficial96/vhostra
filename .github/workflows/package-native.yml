@@ -89,14 +89,35 @@ jobs:
           $before = [string](Get-ItemProperty HKCU:\Environment -Name Path -ErrorAction SilentlyContinue).Path
           $installer = Resolve-Path "release/Vhostra-$(node -p 'require("./package.json").version')-windows-${{ matrix.arch }}.exe"
           $install = Start-Process $installer -ArgumentList '/S', '/currentuser' -Wait -PassThru
-          if ($install.ExitCode -ne 0) { throw "Installer exited $($install.ExitCode)" }
           $record = Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' | Get-ItemProperty | Where-Object { $_.DisplayName -like 'Vhostra*' } | Select-Object -First 1
-          if (-not $record -or -not (Test-Path "$($record.InstallLocation)\vhostra.cmd")) { throw 'Installed CLI is missing' }
+          $installLocation = if ($record) { [string]$record.InstallLocation } else { '' }
+          $directoryExists = [bool]($installLocation -and (Test-Path -LiteralPath $installLocation -PathType Container))
+          $cliExists = [bool]($directoryExists -and (Test-Path -LiteralPath (Join-Path $installLocation 'vhostra.cmd') -PathType Leaf))
+          if ($install.ExitCode -ne 0 -or -not $cliExists) {
+            Write-Host "InstallLocation: $(if ($installLocation) { $installLocation } else { '<missing>' })"
+            Write-Host "Installation directory exists: $directoryExists"
+            Write-Host 'Installation root filenames:'
+            if ($directoryExists) { Get-ChildItem -LiteralPath $installLocation -File -Force | Select-Object -ExpandProperty Name | Sort-Object | ForEach-Object { Write-Host "  $_" } }
+            Write-Host "vhostra.cmd exists: $cliExists"
+            if ($install.ExitCode -ne 0) { throw "Installer exited $($install.ExitCode)" }
+            throw 'Installed CLI is missing'
+          }
           $userPath = [string](Get-ItemProperty HKCU:\Environment -Name Path).Path
-          if (($userPath -split ';' | Where-Object { $_ -ieq $record.InstallLocation }).Count -ne 1) { throw 'Vhostra user PATH entry is missing or duplicated' }
-          & "$($record.InstallLocation)\vhostra.cmd" --help
+          if (($userPath -split ';' | Where-Object { $_ -ieq $installLocation }).Count -ne 1) { throw 'Vhostra user PATH entry is missing or duplicated' }
+          & (Join-Path $installLocation 'vhostra.cmd') --help
           if ($LASTEXITCODE -ne 0) { throw 'Packaged CLI failed' }
-          $remove = Start-Process "$($record.InstallLocation)\Uninstall Vhostra.exe" -ArgumentList '/S', '/currentuser' -Wait -PassThru
+          $pwsh = (Get-Command pwsh).Source
+          $processPath = $env:PATH
+          try {
+            $env:PATH = @([Environment]::GetEnvironmentVariable('Path', 'Machine'), [Environment]::GetEnvironmentVariable('Path', 'User')) -join ';'
+            & $pwsh -NoProfile -Command 'vhostra --help'
+            if ($LASTEXITCODE -ne 0) { throw 'CLI failed from a fresh user PATH' }
+          } finally { $env:PATH = $processPath }
+          $reinstall = Start-Process $installer -ArgumentList '/S', '/currentuser' -Wait -PassThru
+          if ($reinstall.ExitCode -ne 0) { throw "Reinstall exited $($reinstall.ExitCode)" }
+          $userPath = [string](Get-ItemProperty HKCU:\Environment -Name Path).Path
+          if (($userPath -split ';' | Where-Object { $_ -ieq $installLocation }).Count -ne 1) { throw 'Reinstall duplicated or removed the user PATH entry' }
+          $remove = Start-Process (Join-Path $installLocation 'Uninstall Vhostra.exe') -ArgumentList '/S', '/currentuser' -Wait -PassThru
           if ($remove.ExitCode -ne 0) { throw "Uninstaller exited $($remove.ExitCode)" }
           $after = [string](Get-ItemProperty HKCU:\Environment -Name Path -ErrorAction SilentlyContinue).Path
           if ($after -ne $before) { throw 'Uninstall changed unrelated user PATH entries' }
