@@ -256,9 +256,44 @@ jobs:
             release/*.AppImage
           if-no-files-found: error
 
+  verify:
+    needs: package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Verify release tag and version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          test "$RELEASE_TAG" = "v$(node -p 'require("./package.json").version')"
+          git rev-parse --verify "refs/tags/$RELEASE_TAG"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vhostra-*
+          path: package-artifacts
+          merge-multiple: false
+      - name: Merge package artifacts without filename collisions
+        run: node scripts/merge-release-artifacts.mjs package-artifacts release-assets
+      - name: Verify full matrix and write checksums
+        run: node scripts/verify-release.mjs release-assets "$(node -p 'require("./package.json").version')" all
+      - name: Verify checksums
+        run: cd release-assets && sha256sum --check SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-vhostra-release
+          path: release-assets/*
+          if-no-files-found: error
+
   release:
     if: inputs.publish
-    needs: package
+    needs: verify
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -266,16 +301,10 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.tag }}
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '22'
       - uses: actions/download-artifact@v4
         with:
-          pattern: vhostra-*
+          name: verified-vhostra-release
           path: release-assets
-          merge-multiple: true
-      - name: Verify full matrix and write checksums
-        run: node scripts/verify-release.mjs release-assets "$(node -p 'require("./package.json").version')" all
       - name: Publish verified assets
         env:
           GH_TOKEN: ${{ github.token }}

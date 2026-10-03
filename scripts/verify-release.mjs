@@ -22,7 +22,7 @@ if (!requested?.length || platform !== 'all' && !arches.includes(arch)) throw ne
 
 for (const artifact of requested) if (!existsSync(path.join(directory, artifact))) throw new Error(`Missing release artifact: ${artifact}`)
 if (platform === 'all') {
-  const found = readdirSync(directory).filter(file => /\.(exe|dmg|rpm|deb|AppImage)$/.test(file))
+  const found = readdirSync(directory)
   if (found.length !== requested.length || found.some(file => !requested.includes(file))) throw new Error('Release directory contains missing, duplicate, or unexpected packages.')
   const lines = []
   for (const file of requested.sort()) {
