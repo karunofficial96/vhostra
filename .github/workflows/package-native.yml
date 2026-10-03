@@ -104,6 +104,47 @@ jobs:
             $entryCount = if ($installLocation) { @($failurePath -split ';' | Where-Object { $_ -ieq $installLocation }).Count } else { 0 }
             Write-Host "Vhostra PATH component count: $entryCount"
             Write-Host "Vhostra PATH ownership recorded: $([bool]($installLocation -and $ownedDirectory -ieq $installLocation))"
+            if ($install.ExitCode -eq 27 -and $directoryExists) {
+              $helper = Join-Path $installLocation 'Vhostra.exe'
+              $helperExists = Test-Path -LiteralPath $helper -PathType Leaf
+              Write-Host "Installed Electron helper exists: $helperExists"
+              if ($helperExists) {
+                $stream = $null
+                try {
+                  $stream = [System.IO.File]::OpenRead($helper)
+                  $reader = [System.IO.BinaryReader]::new($stream)
+                  [void]$stream.Seek(0x3c, [System.IO.SeekOrigin]::Begin)
+                  $peOffset = $reader.ReadInt32()
+                  [void]$stream.Seek($peOffset + 4, [System.IO.SeekOrigin]::Begin)
+                  Write-Host ('Installed helper PE machine: 0x{0:X4}' -f $reader.ReadUInt16())
+                } catch {
+                  Write-Host "Installed helper PE read failed: $($_.Exception.GetType().FullName)"
+                } finally { if ($stream) { $stream.Dispose() } }
+                $start = [System.Diagnostics.ProcessStartInfo]::new($helper)
+                $start.UseShellExecute = $false
+                $start.WorkingDirectory = $installLocation
+                [void]$start.ArgumentList.Add('--vhostra-cli-path-install')
+                [void]$start.ArgumentList.Add($installLocation)
+                $probe = $null
+                try {
+                  $probe = [System.Diagnostics.Process]::Start($start)
+                  Write-Host 'Independent helper process creation: succeeded'
+                  if ($probe.WaitForExit(15000)) {
+                    Write-Host "Independent helper process exit code: $($probe.ExitCode)"
+                  } else {
+                    Write-Host 'Independent helper process timed out'
+                    try { $probe.Kill() } catch { }
+                  }
+                } catch [System.ComponentModel.Win32Exception] {
+                  Write-Host 'Independent helper process creation: failed'
+                  Write-Host "Windows launch error code: $($_.Exception.NativeErrorCode)"
+                } catch {
+                  Write-Host 'Independent helper process creation: failed'
+                  Write-Host "Launch exception type: $($_.Exception.GetType().FullName)"
+                  Write-Host "Launch exception HRESULT: $($_.Exception.HResult)"
+                } finally { if ($probe) { $probe.Dispose() } }
+              }
+            }
             if ($install.ExitCode -eq 10) { throw 'Installer could not find the packaged CLI launcher (exit 10)' }
             $pathFailure = @{
               21 = 'invalid installation directory'
