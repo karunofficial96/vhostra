@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdtemp, writeFile, readFile, rm, unlink } from 'node:fs/promises'
+import { mkdtemp, writeFile, readFile, rm, unlink, lstat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -19,4 +19,16 @@ test('release gate requires every architecture and writes checksums only for a f
     await unlink(path.join(root, names[0]))
     assert.notEqual(check().status, 0)
   } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('bundled license texts are regular files for Windows NSIS compression', async () => {
+  const licenses = [
+    'common/GFDL', 'common/GPL', 'common/LGPL',
+    'mariadb/openssl/copyright', 'web/openssl/copyright',
+  ]
+  for (const license of licenses) {
+    const file = path.resolve('third-party-licenses/docker', license)
+    assert.equal((await lstat(file)).isFile(), true, `${license} must not be a symlink`)
+    assert.ok((await readFile(file)).length > 100, `${license} must contain the license text`)
+  }
 })

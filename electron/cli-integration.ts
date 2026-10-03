@@ -59,7 +59,10 @@ export function installAppImageCli(image: string, link: string): LinkResult {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
-  const script = `${appImageHeader}ELECTRON_RUN_AS_NODE=1 exec ${shellQuote(image)} -e 'process.argv=[process.execPath,"vhostra",...process.argv.slice(1)];import(process.env.APPDIR+"/resources/app.asar/scripts/vhostra.mjs")' -- "$@"\n`;
+  // electron-builder's AppRun may prepend --no-sandbox when user namespaces are
+  // unavailable. Node mode rejects that Chromium flag with exit code 9. Passing
+  // it after `--` satisfies AppRun's probe without passing it as a Node option.
+  const script = `${appImageHeader}ELECTRON_RUN_AS_NODE=1 exec ${shellQuote(image)} -e 'process.argv=[process.execPath,"vhostra",...process.argv.slice(2)];import(process.env.APPDIR+"/resources/app.asar/scripts/vhostra.mjs")' -- --no-sandbox "$@"\n`;
   mkdirSync(path.dirname(link), { recursive: true });
   writeFileSync(link, script, { mode: 0o755 });
   return 'linked';

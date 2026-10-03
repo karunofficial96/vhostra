@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdtemp, symlink, readlink, rm, writeFile, readFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, symlink, readlink, rm, writeFile, readFile } from 'node:fs/promises'
+import { spawnSync } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import { ensureOwnedCliLink, removeOwnedCliLink, installAppImageCli, removeAppImageCli } from '../dist-electron/cli-integration.js'
@@ -39,5 +40,23 @@ test('AppImage CLI wrapper is explicit, replaceable, and removes only Vhostra-ow
     assert.equal(installAppImageCli('/tmp/Vhostra-3.AppImage', command), 'conflict')
     assert.equal(removeAppImageCli(command), false)
     assert.equal(await readFile(command, 'utf8'), 'other command')
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('AppImage CLI passes help through AppRun when user namespaces are unavailable', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'vhostra-appimage-run-'))
+  const image = path.join(root, 'Vhostra.AppImage')
+  const command = path.join(root, 'bin', 'vhostra')
+  const cli = path.join(root, 'resources', 'app.asar', 'scripts', 'vhostra.mjs')
+  try {
+    await mkdir(path.dirname(cli), { recursive: true })
+    await writeFile(cli, 'process.stdout.write(JSON.stringify(process.argv.slice(2)))')
+    // AppRun prepends --no-sandbox if its namespace probe fails, unless the
+    // argument is already present. Node mode rejects a prepended Chromium flag.
+    await writeFile(image, '#!/bin/sh\nfor arg do\n  if [ "$arg" = --no-sandbox ]; then exec node "$@"; fi\ndone\nexec node --no-sandbox "$@"\n', { mode: 0o755 })
+    assert.equal(installAppImageCli(image, command), 'linked')
+    const run = spawnSync(command, ['--help'], { encoding: 'utf8', env: { ...process.env, APPDIR: root } })
+    assert.equal(run.status, 0, run.stderr)
+    assert.deepEqual(JSON.parse(run.stdout), ['--help'])
   } finally { await rm(root, { recursive: true, force: true }) }
 })
