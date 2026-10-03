@@ -426,3 +426,18 @@ Final phase validation: `npm run build` passed, `node --test test/*.test.mjs` pa
 - [x] Focused semantic tests passed 10/10 across web, MariaDB, Redis, Memcached, PHP and web-server transitions. Isolated native Electron fixture passed actual pending button and Runtime Status text for representative Start, Stop, Restart, Enable, Disable actions.
 - [x] Full source suite passed 132/132 with loopback binding; production `npm run build` passed. Local unsigned macOS arm64 `release/mac-arm64/Vhostra.app` compiled and passed structure and packaged CLI smoke checks. Signed/notarized distribution remains external.
 - [x] No Runtime Status button-spacing change, MariaDB persistent data modification, telemetry, polling, operation-history storage, Docker matrix, or Git commit.
+- [x] Manual-only About release check uses the repository's GitHub Releases source with bounded request, version validation, and no startup check.
+- [x] Configure NSIS, DMG, AppImage and DEB targets; ordinary uninstall preserves Vhostra user data and Docker.
+- [ ] Native Windows/macOS/Linux installer and uninstall acceptance; production signing/notarization; published release assets.
+- [ ] Automated Docker acquisition/install after consent; current bootstrap hands off to Docker's official instructions and rechecks after user installation.
+
+## Release matrix continuation — 2026-10-03
+
+- [x] Configure all ten requested target names and native runner jobs; gate release publication on the full matrix and actual checksums.
+- [x] Add narrow Windows user PATH, macOS command-link, Linux package-link, and explicit AppImage CLI integration logic.
+- [x] Make manual update download selection require the exact OS/architecture release asset.
+- [ ] Run native CI workflow; build and validate both Windows installers and exercise native package flows.
+- [ ] Native install/run/uninstall acceptance, especially Windows PATH, macOS authorization/removal and AppImage CLI wrapper.
+
+- [x] Locally build macOS arm64/x64 DMGs and Linux x64/arm64 RPM, DEB and AppImage; inspect matching architectures and package CLI payloads. Both RPMs were built in an isolated Linux arm64 container and their package metadata and CLI install/remove hooks were verified.
+- [ ] Build Windows x64/arm64 NSIS on configured native runners; validate all native install/uninstall flows before publication.

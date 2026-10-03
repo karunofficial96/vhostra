@@ -37,6 +37,9 @@ import { supportedPhpVersions } from "./store.js";
 import { configureStartup } from "./startup.js";
 import { openFileDialog, saveFileDialog } from "./file-dialogs.js";
 import { checkDocker, dockerDesktopApplication, dockerInstallUrl, saveDockerExecutable } from './docker-prerequisite.js';
+import { checkManualUpdate, type UpdateResult } from './manual-update.js';
+import { authorizeMacCliLink, ensureOwnedCliLink, removeOwnedCliLink, installAppImageCli, removeAppImageCli } from './cli-integration.js';
+import { changeInstalledWindowsPath } from './windows-path.js';
 
 if (!app.isPackaged && process.env.NODE_ENV === "development" && process.env.VHOSTRA_DEV_PROFILE) {
     if (!path.isAbsolute(process.env.VHOSTRA_DEV_PROFILE)) throw new Error("VHOSTRA_DEV_PROFILE must be an absolute local test directory.");
@@ -286,9 +289,19 @@ const createWindow = () => {
     return window;
 };
 
-const hasSingleInstanceLock = app.requestSingleInstanceLock();
+const pathCommand = process.platform === 'win32' && app.isPackaged &&
+    (process.argv[1] === '--vhostra-cli-path-install' || process.argv[1] === '--vhostra-cli-path-uninstall');
+if (pathCommand) {
+    void app.whenReady().then(() => {
+        try {
+            changeInstalledWindowsPath(process.argv[1] === '--vhostra-cli-path-install' ? 'install' : 'uninstall', process.argv[2]);
+            app.exit(0);
+        } catch { app.exit(1); }
+    });
+}
+const hasSingleInstanceLock = pathCommand ? false : app.requestSingleInstanceLock();
 
-if (!hasSingleInstanceLock) {
+if (!hasSingleInstanceLock && !pathCommand) {
     app.quit();
 } else {
     app.on("second-instance", () => {
@@ -312,6 +325,10 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     installApplicationMenu();
     createTray();
     createWindow();
+    if (app.isPackaged && process.platform === 'darwin' &&
+        (process.execPath.startsWith('/Applications/') || process.execPath.startsWith(path.join(os.homedir(), 'Applications') + path.sep))) {
+        void installMacCli();
+    }
     startResourceDiagnostics(() => services, () => Boolean(primaryWindow?.isVisible() && !primaryWindow.isMinimized()));
     void store
         .getState()
@@ -622,7 +639,11 @@ function registerIpc() {
     handle("vhostra:get-app-info", () => ({
         name: "Vhostra",
         version: app.getVersion(),
+        platform: process.platform,
+        appImage: Boolean(process.env.APPIMAGE),
     }));
+    handle('vhostra:install-cli', () => process.platform === 'darwin' ? installMacCli() : installLinuxAppImageCli());
+    handle('vhostra:remove-cli', () => process.platform === 'darwin' ? removeMacCli() : removeLinuxAppImageCli());
     handle("vhostra:check-for-updates", () => checkForUpdates());
     handle(
         "vhostra:set-vhost-rewrite",
@@ -869,7 +890,17 @@ function registerIpc() {
     handle("vhostra:get-runtime-status", desktopRuntimeSnapshot);
     handle('vhostra:docker-prerequisite', () => services.prerequisite());
     handle('vhostra:check-docker', async () => { await services.refresh(); return services.prerequisite(); });
-    handle('vhostra:install-docker', () => shell.openExternal(dockerInstallUrl()));
+    handle('vhostra:install-docker', async () => {
+        const check = await checkDocker(store.layout.root);
+        if (check.state !== 'missing') return;
+        const choice = await dialog.showMessageBox(primaryWindow!, {
+            type: 'info', title: 'Install Docker',
+            message: 'Vhostra requires Docker to run its local web-development services.',
+            detail: 'Docker is separate third-party software. Open Docker’s official installation instructions, review its requirements and terms, and choose whether to install it. Vhostra will not download or install Docker for you.',
+            buttons: ['Cancel', 'Open Docker Instructions'], defaultId: 0, cancelId: 0, noLink: true,
+        });
+        if (choice.response === 1) await shell.openExternal(dockerInstallUrl());
+    });
     handle('vhostra:choose-docker', async () => {
         const result = await dialog.showOpenDialog(primaryWindow!, { title: 'Choose Docker executable', properties: ['openFile'] });
         if (result.canceled || !result.filePaths[0]) return null;
@@ -1061,85 +1092,49 @@ function registerIpc() {
     );
 }
 
-async function checkForUpdates() {
-    const currentVersion = app.getVersion();
-    const source = process.env.VHOSTRA_UPDATE_URL;
-    if (!source)
-        return {
-            state: "unconfigured" as const,
-            currentVersion,
-            message:
-                "No production update source is configured for this build.",
-        };
-    try {
-        const endpoint = new URL(source);
-        if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password)
-            throw new Error("The configured update source must use HTTPS.");
-        const response = await fetch(endpoint, {
-            headers: { accept: "application/json" },
-            redirect: "error",
-            signal: AbortSignal.timeout(8_000),
-        });
-        if (!response.ok)
-            throw new Error(`Update server returned HTTP ${response.status}.`);
-        const reader = response.body?.getReader();
-        if (!reader) throw new Error("Update metadata response is empty.");
-        const chunks: Uint8Array[] = []; let bytes = 0;
-        try { while (true) { const { done, value } = await reader.read(); if (done) break; bytes += value.byteLength; if (bytes > 64 * 1024) throw new Error("Update metadata exceeds 64 KiB."); chunks.push(value); } }
-        finally { await reader.cancel(); }
-        const release = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
-            version?: unknown;
-            notes?: unknown;
-            url?: unknown;
-        };
-        if (typeof release.version !== "string" || !semver(release.version))
-            throw new Error(
-                "Update metadata does not contain a valid semantic version.",
-            );
-        const url =
-            typeof release.url === "string" && /^https:\/\//.test(release.url)
-                ? release.url
-                : undefined;
-        const notes =
-            typeof release.notes === "string"
-                ? release.notes.slice(0, 12_000)
-                : undefined;
-        return semverCompare(release.version, currentVersion) > 0
-            ? {
-                  state: "available" as const,
-                  currentVersion,
-                  availableVersion: release.version,
-                  notes,
-                  url,
-                  message: `Vhostra ${release.version} is available.`,
-              }
-            : {
-                  state: "up-to-date" as const,
-                  currentVersion,
-                  message: "Vhostra is up to date.",
-              };
-    } catch (error) {
-        return {
-            state: "error" as const,
-            currentVersion,
-            message:
-                error instanceof Error
-                    ? error.message
-                    : "Vhostra could not check for updates.",
-        };
+const macCliLink = '/usr/local/bin/vhostra';
+function appImageCliLink() { return path.join(os.homedir(), '.local', 'bin', 'vhostra'); }
+function installLinuxAppImageCli(): string {
+    if (process.platform !== 'linux' || !process.env.APPIMAGE) return 'The package installer provides the CLI automatically.';
+    const link = appImageCliLink();
+    if (!(process.env.PATH ?? '').split(path.delimiter).includes(path.dirname(link)))
+        return 'This system does not include ~/.local/bin in new-shell PATH. Use the DEB or RPM package for automatic CLI integration.';
+    const state = installAppImageCli(process.env.APPIMAGE, link);
+    return state === 'conflict' ? 'A different vhostra command already exists in ~/.local/bin. It was preserved.' : 'Vhostra CLI is available in new terminal sessions.';
+}
+function removeLinuxAppImageCli(): string {
+    if (process.platform !== 'linux' || !process.env.APPIMAGE) return 'The package manager removes the CLI with Vhostra.';
+    return removeAppImageCli(appImageCliLink()) ? 'Vhostra CLI integration removed.' : 'No Vhostra-owned CLI integration was found.';
+}
+function macCliTarget() { return path.join(process.resourcesPath, 'bin', 'vhostra'); }
+async function installMacCli(): Promise<string> {
+    if (!app.isPackaged || process.platform !== 'darwin') return 'CLI installation is available in a packaged macOS app.';
+    if (process.execPath.startsWith('/Volumes/')) return 'Move Vhostra to Applications before installing its CLI.';
+    const target = macCliTarget();
+    const state = ensureOwnedCliLink(target, macCliLink);
+    if (state === 'linked' || state === 'present') return 'Vhostra CLI is available in new terminal sessions.';
+    if (state === 'conflict') return 'A different vhostra command already exists in /usr/local/bin. It was preserved.';
+    return await authorizeMacCliLink(target, macCliLink, 'install')
+        ? 'Vhostra CLI is available in new terminal sessions.'
+        : 'CLI installation was cancelled or could not be completed.';
+}
+async function removeMacCli(): Promise<string> {
+    if (!app.isPackaged || process.platform !== 'darwin') return 'CLI removal is available in a packaged macOS app.';
+    const target = macCliTarget();
+    try { return removeOwnedCliLink(target, macCliLink) ? 'Vhostra CLI link removed.' : 'No Vhostra-owned CLI link was found.'; }
+    catch (error) {
+        if (!['EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+        return await authorizeMacCliLink(target, macCliLink, 'remove') ? 'Vhostra CLI link removed.' : 'CLI removal was cancelled or could not be completed.';
     }
 }
-const semver = (value: string) =>
-    /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(
-        value,
-    );
-const semverCompare = (left: string, right: string) => {
-    const parse = (value: string) =>
-        value.replace(/^v/, "").split(/[.+-]/).slice(0, 3).map(Number);
-    const [a, b, c] = parse(left);
-    const [x, y, z] = parse(right);
-    return a - x || b - y || c - z;
-};
+
+let pendingUpdateCheck: Promise<UpdateResult> | null = null;
+function checkForUpdates() {
+    if (!pendingUpdateCheck) {
+        pendingUpdateCheck = checkManualUpdate(app.getVersion()).finally(() => { pendingUpdateCheck = null; });
+    }
+    return pendingUpdateCheck;
+}
 
 async function configureLaunchAtLogin(enabled: boolean) {
     await configureStartup(enabled, {

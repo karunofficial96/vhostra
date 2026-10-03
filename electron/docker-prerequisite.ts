@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 export type DockerCheck = { state: 'ready' | 'missing' | 'stopped' | 'broken' | 'timeout'; executable?: string; detail?: string };
 export function knownDockerLocations(platform: NodeJS.Platform = process.platform, environment: NodeJS.ProcessEnv = process.env): string[] {
   return platform === 'darwin'
-    ? ['/usr/local/bin/docker', '/opt/homebrew/bin/docker', '/Applications/Docker.app/Contents/Resources/bin/docker', '/Applications/Docker.app/Contents/MacOS/docker']
+    ? [path.join(environment.HOME || '', '.docker', 'bin', 'docker'), '/usr/local/bin/docker', '/opt/homebrew/bin/docker', '/Applications/Docker.app/Contents/Resources/bin/docker', '/Applications/Docker.app/Contents/MacOS/docker']
     : platform === 'win32'
       ? [path.win32.join(environment.ProgramFiles || 'C:\\Program Files', 'Docker', 'Docker', 'resources', 'bin', 'docker.exe'), path.win32.join(environment.LOCALAPPDATA || 'C:\\Users\\Public\\AppData\\Local', 'Programs', 'DockerDesktop', 'resources', 'bin', 'docker.exe')]
       : ['/usr/bin/docker', '/usr/local/bin/docker', '/snap/bin/docker'];
@@ -73,9 +73,13 @@ export function dockerMessage(check: DockerCheck): string {
 }
 
 export function dockerInstallUrl(): string {
-  return process.platform === 'darwin' ? 'https://docs.docker.com/desktop/setup/install/mac-install/'
-    : process.platform === 'win32' ? 'https://docs.docker.com/desktop/setup/install/windows-install/'
-      : 'https://docs.docker.com/engine/install/';
+  if (process.platform === 'darwin') return 'https://docs.docker.com/desktop/setup/install/mac-install/';
+  if (process.platform === 'win32') return 'https://docs.docker.com/desktop/setup/install/windows-install/';
+  let id = '';
+  try { id = /^ID=(.+)$/m.exec(readFileSync('/etc/os-release', 'utf8'))?.[1]?.replace(/["']/g, '') ?? ''; } catch { /* Unknown distribution. */ }
+  return ['ubuntu', 'debian', 'fedora', 'rhel', 'centos'].includes(id)
+    ? `https://docs.docker.com/engine/install/${id}/`
+    : 'https://docs.docker.com/engine/install/';
 }
 
 export function dockerDesktopApplication(): string | undefined {

@@ -9,7 +9,7 @@ test('platform discovery uses bounded conventional Docker paths', () => {
   assert.ok(knownDockerLocations('darwin').includes('/Applications/Docker.app/Contents/Resources/bin/docker'))
   assert.ok(knownDockerLocations('win32', { ProgramFiles: 'C:\\Program Files', LOCALAPPDATA: 'C:\\Users\\Sample\\AppData\\Local' }).includes('C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe'))
   assert.ok(knownDockerLocations('linux').includes('/usr/bin/docker'))
-  for (const platform of ['darwin', 'win32', 'linux']) assert.ok(knownDockerLocations(platform).length <= 4)
+  for (const platform of ['darwin', 'win32', 'linux']) assert.ok(knownDockerLocations(platform).length <= 5)
 })
 
 test('Docker discovery and daemon outcomes remain distinct without using real Docker', async () => {

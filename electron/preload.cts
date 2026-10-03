@@ -80,6 +80,8 @@ const api = Object.freeze({
   hostsStatus: (id: string) => ipcRenderer.invoke('vhostra:hosts-status', id),
   getAppInfo: () => ipcRenderer.invoke('vhostra:get-app-info'),
   checkForUpdates: () => ipcRenderer.invoke('vhostra:check-for-updates'),
+  installCli: () => ipcRenderer.invoke('vhostra:install-cli'),
+  removeCli: () => ipcRenderer.invoke('vhostra:remove-cli'),
   setPreviewActivity: (visible: boolean) => ipcRenderer.invoke('vhostra:preview-activity', visible),
   resolveSiteUrl: (siteId: string) => ipcRenderer.invoke('vhostra:resolve-site-url', siteId),
   capturePreview: (siteId: string, force = false) => ipcRenderer.invoke('vhostra:capture-preview', siteId, force),

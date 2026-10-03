@@ -1,0 +1,176 @@
+name: Package and release Vhostra
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v-prefixed version tag to build
+        required: true
+        type: string
+      publish:
+        description: Publish the verified matrix to GitHub Releases
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            platform: win
+            arch: x64
+            label: windows-x64
+          - runner: windows-11-arm
+            platform: win
+            arch: arm64
+            label: windows-arm64
+          - runner: macos-15-intel
+            platform: mac
+            arch: x64
+            label: macos-x64
+          - runner: macos-latest
+            platform: mac
+            arch: arm64
+            label: macos-arm64
+          - runner: ubuntu-24.04
+            platform: linux
+            arch: x64
+            label: linux-x64
+          - runner: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+            label: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Verify release tag and version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          test "$RELEASE_TAG" = "v$(node -p 'require("./package.json").version')"
+          git rev-parse --verify "refs/tags/$RELEASE_TAG"
+      - run: npm ci
+      - run: npm run build
+      - name: Install RPM inspection tool
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y rpm
+      - name: Build native packages
+        shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never
+      - name: Verify this job's packages and executable architecture
+        shell: bash
+        run: node scripts/verify-release.mjs release "$(node -p 'require("./package.json").version')" ${{ matrix.platform }} ${{ matrix.arch }}
+      - name: Smoke packaged Windows CLI
+        if: matrix.platform == 'win'
+        shell: pwsh
+        run: |
+          $folder = if ('${{ matrix.arch }}' -eq 'x64') { 'win-unpacked' } else { 'win-arm64-unpacked' }
+          & "release/$folder/vhostra.cmd" --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test Windows installer, user PATH and uninstaller
+        if: matrix.platform == 'win'
+        shell: pwsh
+        run: |
+          $before = [string](Get-ItemProperty HKCU:\Environment -Name Path -ErrorAction SilentlyContinue).Path
+          $installer = Resolve-Path "release/Vhostra-$(node -p 'require("./package.json").version')-windows-${{ matrix.arch }}.exe"
+          $install = Start-Process $installer -ArgumentList '/S', '/currentuser' -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Installer exited $($install.ExitCode)" }
+          $record = Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' | Get-ItemProperty | Where-Object { $_.DisplayName -like 'Vhostra*' } | Select-Object -First 1
+          if (-not $record -or -not (Test-Path "$($record.InstallLocation)\vhostra.cmd")) { throw 'Installed CLI is missing' }
+          $userPath = [string](Get-ItemProperty HKCU:\Environment -Name Path).Path
+          if (($userPath -split ';' | Where-Object { $_ -ieq $record.InstallLocation }).Count -ne 1) { throw 'Vhostra user PATH entry is missing or duplicated' }
+          & "$($record.InstallLocation)\vhostra.cmd" --help
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged CLI failed' }
+          $remove = Start-Process "$($record.InstallLocation)\Uninstall Vhostra.exe" -ArgumentList '/S', '/currentuser' -Wait -PassThru
+          if ($remove.ExitCode -ne 0) { throw "Uninstaller exited $($remove.ExitCode)" }
+          $after = [string](Get-ItemProperty HKCU:\Environment -Name Path -ErrorAction SilentlyContinue).Path
+          if ($after -ne $before) { throw 'Uninstall changed unrelated user PATH entries' }
+      - name: Smoke packaged macOS CLI
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: |
+          folder=mac
+          if [ '${{ matrix.arch }}' = arm64 ]; then folder=mac-arm64; fi
+          node test/packaged-cli.mjs "$PWD/release/$folder/Vhostra.app/Contents/Resources/bin/vhostra"
+      - name: Smoke packaged Linux CLI
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          folder=linux-unpacked
+          if [ '${{ matrix.arch }}' = arm64 ]; then folder=linux-arm64-unpacked; fi
+          node test/packaged-cli.mjs "$PWD/release/$folder/vhostra"
+      - name: Test DEB install, CLI and removal
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          cpu=amd64
+          if [ '${{ matrix.arch }}' = arm64 ]; then cpu=arm64; fi
+          fixture="$RUNNER_TEMP/vhostra-preserve"
+          mkdir -p "$fixture"
+          echo keep > "$fixture/site-data"
+          sudo apt-get install -y "./release/Vhostra-$(node -p 'require("./package.json").version')-linux-$cpu.deb"
+          test "$(readlink /usr/bin/vhostra)" = /opt/Vhostra/vhostra
+          vhostra --help
+          sudo apt-get remove -y vhostra
+          test ! -e /usr/bin/vhostra
+          test "$(cat "$fixture/site-data")" = keep
+      - name: Smoke AppImage CLI integration
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          cpu=x86_64
+          if [ '${{ matrix.arch }}' = arm64 ]; then cpu=arm64; fi
+          mkdir -p "$RUNNER_TEMP/vhostra-cli-bin"
+          node -e 'import("./dist-electron/cli-integration.js").then(m => m.installAppImageCli(process.argv[1], process.argv[2]))' "$PWD/release/Vhostra-$(node -p 'require("./package.json").version')-linux-$cpu.AppImage" "$RUNNER_TEMP/vhostra-cli-bin/vhostra"
+          APPIMAGE_EXTRACT_AND_RUN=1 "$RUNNER_TEMP/vhostra-cli-bin/vhostra" --help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vhostra-${{ matrix.label }}
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.rpm
+            release/*.deb
+            release/*.AppImage
+          if-no-files-found: error
+
+  release:
+    if: inputs.publish
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vhostra-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify full matrix and write checksums
+        run: node scripts/verify-release.mjs release-assets "$(node -p 'require("./package.json").version')" all
+      - name: Publish verified assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: gh release create "$RELEASE_TAG" release-assets/* --verify-tag --title "Vhostra ${RELEASE_TAG#v}" --generate-notes

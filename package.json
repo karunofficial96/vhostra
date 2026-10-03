@@ -52,7 +52,11 @@
           "from": "packaging/macos/vhostra",
           "to": "Resources/bin/vhostra"
         }
-      ]
+      ],
+      "target": [
+        "dmg"
+      ],
+      "artifactName": "Vhostra-${version}-macos-${arch}.${ext}"
     },
     "win": {
       "icon": "build/icon.ico",
@@ -61,7 +65,11 @@
           "from": "packaging/windows/vhostra.cmd",
           "to": "vhostra.cmd"
         }
-      ]
+      ],
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "Vhostra-${version}-windows-${arch}.${ext}"
     },
     "linux": {
       "icon": "build/icons",
@@ -71,7 +79,31 @@
           "from": "packaging/linux/vhostra",
           "to": "vhostra"
         }
-      ]
+      ],
+      "target": [
+        "rpm",
+        "deb",
+        "AppImage"
+      ],
+      "category": "Development",
+      "artifactName": "Vhostra-${version}-linux-${arch}.${ext}",
+      "maintainer": "Karun <karun@karungirdhar.in>"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "include": "packaging/windows/installer.nsh",
+      "runAfterFinish": false
+    },
+    "deb": {
+      "afterInstall": "packaging/linux/after-install.sh",
+      "afterRemove": "packaging/linux/after-remove.sh"
+    },
+    "rpm": {
+      "afterInstall": "packaging/linux/after-install.sh",
+      "afterRemove": "packaging/linux/after-remove.sh"
     }
   },
   "scripts": {
@@ -84,8 +116,10 @@
     "test": "npm run build && node --test test/*.test.mjs",
     "test:bridge": "node scripts/run-bridge-test.mjs",
     "cli": "node scripts/vhostra.mjs",
-    "package:mac": "npm run build && electron-builder --mac dir --publish never",
-    "lint": "eslint . --max-warnings=0"
+    "package:mac": "npm run build && electron-builder --mac dmg --x64 --arm64 --publish never",
+    "lint": "eslint . --max-warnings=0",
+    "package:win": "npm run build && electron-builder --win nsis --x64 --arm64 --publish never",
+    "package:linux": "npm run build && electron-builder --linux rpm deb AppImage --x64 --arm64 --publish never"
   },
   "dependencies": {},
   "devDependencies": {
@@ -102,5 +136,10 @@
     "electron-builder": "^26.15.3",
     "tailwindcss": "^4.0.9",
     "typescript": "^5.7.3"
+  },
+  "homepage": "https://github.com/karunofficial96/vhostra",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/karunofficial96/vhostra.git"
   }
 }
