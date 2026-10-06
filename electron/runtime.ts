@@ -1,6 +1,9 @@
 import { legacyOlsRouteMatches } from './routing-proof.js';
 import { runtimeDocumentRoot } from "./store.js";
-import { generatedMarker, cleanObsoleteGenerated, cleanObsoleteRuntime, restoreGenerated } from "./generated-config.js";
+import { generatedMarker, cleanObsoleteGenerated, cleanObsoleteRuntime, cleanObsoleteMachineConfiguration, restoreGenerated } from "./generated-config.js";
+import { authorizeProtectedTransaction } from "./protected-launcher.js";
+import { authoritativeMariaDbConfig, deriveMariaDbRuntimeConfig, mariaDbPolicyBody } from './mariadb-config.js';
+import { authoritativeWebFile, renderWebRuntimeFiles, runtimeWebFile, type WebRuntimeModel } from './web-runtime-config.js';
 import { mapDiagnosticPaths } from './errors.js';
 import { redactProgress } from "./progress.js";
 import { createHash, randomBytes } from "node:crypto";
@@ -95,12 +98,12 @@ export class DockerRuntimeController {
     private counters = { dockerCalls: 0, composeCalls: 0, refreshes: 0, builds: 0, operations: 0 };
     private dockerCheck: DockerCheck = { state: 'missing' };
     private dockerCommand() {
-        const command = resolveDockerExecutable(this.layout.root);
+        const command = resolveDockerExecutable(this.layout.userRoot ?? this.layout.root);
         if (!command) throw new Error(prerequisiteMessage({ state: 'missing' }));
         return command;
     }
     prerequisite() { return this.dockerCheck; }
-    async checkPrerequisite() { this.dockerCheck = await checkDocker(this.layout.root); return this.dockerCheck; }
+    async checkPrerequisite() { this.dockerCheck = await checkDocker(this.layout.userRoot ?? this.layout.root); return this.dockerCheck; }
     private imageName = "";
     private htaccessWatchers = new Map<string, FSWatcher>();
     private htaccessRoots = new Map<string, string>();
@@ -116,6 +119,8 @@ export class DockerRuntimeController {
     ) {
         if (!/^[a-z0-9][a-z0-9_-]*$/.test(scope))
             throw new Error("Invalid Vhostra runtime project scope.");
+        if (layout.userRoot)
+            throw new Error("Machine storage runtime is blocked until generated service configuration and writable data/log ownership are migrated.");
     }
 
     subscribe(listener: () => void) {
@@ -435,6 +440,7 @@ export class DockerRuntimeController {
                         const candidateLayout: StoreLayout = {
                             ...this.layout,
                             sites: path.join(backup, "candidate-sites"),
+                            builtinPublic: path.join(backup, "candidate-sites", "localhost", "public"),
                             certificates: {
                                 directory: path.join(
                                     backup,
@@ -467,6 +473,9 @@ export class DockerRuntimeController {
                         await fs.cp(this.layout.sites, candidateLayout.sites, {
                             recursive: true,
                         });
+                        if (!this.layout.builtinPublic.startsWith(`${this.layout.sites}${path.sep}`)) {
+                            await fs.cp(this.layout.builtinPublic, candidateLayout.builtinPublic, { recursive: true });
+                        }
                         const http = await this.findAvailablePort(30000);
                         const phpMyAdmin = await this.findAvailablePort(http);
                         const mariadb =
@@ -551,7 +560,7 @@ export class DockerRuntimeController {
                                 this.runtimeRoot,
                                 { recursive: true, force: true, filter: source => path.basename(source) !== path.basename(this.layout.runtime.mariaDb) },
                             );
-                            await restoreGenerated(this.layout.configuration.generated, path.join(backup, "generated"));
+                            await restoreGenerated(this.layout.configuration.generated, path.join(backup, "generated"), Boolean(this.layout.userRoot));
                             // A pre-separation Compose/image can contain a second
                             // MariaDB server/datadir mount. Never restart it during
                             // recovery after the independent DB owns that data.
@@ -605,7 +614,7 @@ export class DockerRuntimeController {
             return { port, available: true, owner: null as string | null };
         if (await this.vhostraOwnsPort(port))
             return { port, available: false, owner: "Vhostra" };
-        return { port, available: false, owner: await describePort(port, resolveDockerExecutable(this.layout.root) ?? 'docker') };
+        return { port, available: false, owner: await describePort(port, resolveDockerExecutable(this.layout.userRoot ?? this.layout.root) ?? 'docker') };
     }
     async findAvailablePort(start: number) {
         validatePort(start);
@@ -1375,8 +1384,8 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
             const file = path.join(this.layout.runtime[service], `${service}.conf`);
             if (state[service] === null) { await fs.rm(file, { force: true }); continue; }
             if (Buffer.byteLength(state[service]!) > 64 * 1024) throw new Error('Cache configuration exceeds 64 KiB.');
-            await fs.mkdir(path.dirname(file), { recursive: true }); const temporary = `${file}.${randomBytes(8).toString('hex')}.tmp`;
-            try { await fs.writeFile(temporary, state[service]!, { mode: 0o600 }); await fs.rename(temporary, file); } finally { await fs.rm(temporary, { force: true }); }
+            await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 }); const temporary = `${file}.${randomBytes(8).toString('hex')}.tmp`;
+            try { await fs.writeFile(temporary, state[service]!, { flag: 'wx', mode: 0o600 }); await fs.rename(temporary, file); } finally { await fs.rm(temporary, { force: true }); }
         }
     }
     async backupDatabaseMetadata() {
@@ -1599,7 +1608,7 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
     }
 
     private get runtimeRoot() {
-        return path.dirname(this.layout.runtime.apache);
+        return this.layout.dataRoot ? path.join(this.layout.dataRoot, 'runtime') : path.dirname(this.layout.runtime.apache);
     }
     private get composeFile() {
         return path.join(this.runtimeRoot, "compose.yml");
@@ -1797,6 +1806,7 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
             if (!compatible) throw new Error("The compatible runtime tag is owned by an unrecognized image; refusing to overwrite it.");
         }
         if (!compatible) { this.counters.builds++; await this.compose(["build", "runtime"]); }
+        if (this.layout.userRoot) await this.assertWebRuntimePublication(await this.getState());
         if (this.snapshot.state !== 'running' || forceRecreate) {
             const state = await this.getState();
             this.markStarting('web');
@@ -1826,25 +1836,25 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
         await fs.mkdir(this.runtimeRoot, { recursive: true });
         await Promise.all(
             [
+                ...(!this.layout.userRoot ? [
                 this.layout.runtime.apache,
                 this.layout.runtime.nginx,
                 this.layout.runtime.openLiteSpeed,
                 this.layout.runtime.php,
+                ] : []),
                 this.layout.runtime.mariaDb,
                 this.layout.runtime.phpMyAdmin,
                 this.layout.runtime.redis,
                 this.layout.runtime.memcached,
                 this.layout.logs,
-            ].map((directory) => fs.mkdir(directory, { recursive: true })),
+            ].map((directory) => fs.mkdir(directory, { recursive: true, mode: 0o700 })),
         );
         await this.ensureEnvironment();
         await this.prepareDatabase(state);
         await Promise.all([
             fs.writeFile(
                 path.join(
-                    this.layout.sites,
-                    "localhost",
-                    "public",
+                    this.layout.builtinPublic,
                     "vhostra-health.php",
                 ),
                 '<?php echo (PHP_SAPI === "litespeed" ? "vhostra-lsphp:" : "vhostra-php-fpm:") . PHP_VERSION;\n',
@@ -1852,16 +1862,14 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
             ),
             fs.writeFile(
                 path.join(
-                    this.layout.sites,
-                    "localhost",
-                    "public",
+                    this.layout.builtinPublic,
                     "vhostra-extensions.php",
                 ),
                 '<?php foreach (["mysqli", "pdo_mysql", "redis", "memcached"] as $extension) { echo $extension . ":" . (extension_loaded($extension) ? "1" : "0") . "\\n"; } echo "opcache:" . ((function_exists("opcache_get_status") && ini_get("opcache.enable")) ? "1" : "0") . "\\n";\n',
                 { mode: 0o600 },
             ),
             fs.writeFile(
-                path.join(this.layout.sites, "localhost", "public", "vhostra-cache-health.php"),
+                path.join(this.layout.builtinPublic, "vhostra-cache-health.php"),
                 `<?php
 foreach (['localhost', '127.0.0.1'] as $host) {
   if (${state.settings.optionalServices.redis ? 'true' : 'false'}) { try { $r = new Redis(); if ($r->connect($host, ${state.settings.ports.redis}, 2) && $r->ping()) echo "redis:$host:ok\\n"; $r->close(); } catch (Throwable $e) {} }
@@ -1871,9 +1879,7 @@ foreach (['localhost', '127.0.0.1'] as $host) {
             ),
             fs.writeFile(
                 path.join(
-                    this.layout.sites,
-                    "localhost",
-                    "public",
+                    this.layout.builtinPublic,
                     "vhostra-extension-state.php",
                 ),
                 '<?php header("Content-Type: application/json"); echo json_encode(get_loaded_extensions());\n',
@@ -1886,21 +1892,29 @@ foreach (['localhost', '127.0.0.1'] as $host) {
         }));
         for (const { host } of mounts) {
             const directory = path.join(this.layout.logs, "sites", host.id);
-            await fs.mkdir(directory, { recursive: true });
-            // Shared with unprivileged PHP workers; only these managed log files.
-            await fs.chmod(directory, 0o755);
-            for (const name of ["access.log", "error.log"]) {
+            // The container entrypoint assigns these exact managed log paths to
+            // the web worker. Host-side precreation cannot safely choose its UID.
+            await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+            const logDirectory = await fs.lstat(directory);
+            if (!logDirectory.isDirectory() || logDirectory.isSymbolicLink()) throw new Error('Invalid managed Site log directory.');
+            await fs.chmod(directory, 0o700);
+            for (const name of ['access.log', 'error.log']) {
                 const file = path.join(directory, name);
-                const handle = await fs.open(file, "a", 0o666); await handle.close();
-                await fs.chmod(file, 0o666);
+                const existing = await fs.lstat(file).catch(error => {
+                    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+                    throw error;
+                });
+                if (existing) {
+                    if (!existing.isFile() || existing.nlink !== 1) throw new Error('Invalid managed Site log file.');
+                    await fs.chmod(file, 0o600);
+                }
             }
         }
+        const serviceConfiguration = [
+            { key: 'runtime/php/vhostra.ini', contents: generatedMarker + "expose_php=Off\nlog_errors=On\nerror_log=/dev/stderr\nmysqli.default_socket=/run/mysqld/mysqld.sock\npdo_mysql.default_socket=/run/mysqld/mysqld.sock\n" },
+            { key: 'runtime/php/site-logrotate.conf', contents: generatedMarker + mounts.flatMap(({ host }) => ["access", "error"].map(kind => `/var/log/vhostra/sites/${host.id}/${kind}.log`)).join(" ") + " {\n  size 5M\n  rotate 3\n  copytruncate\n  missingok\n  notifempty\n  su root root\n}\n" },
+        ];
         await Promise.all([
-            fs.writeFile(
-                path.join(this.layout.runtime.php, "vhostra.ini"),
-                "expose_php=Off\nlog_errors=On\nerror_log=/dev/stderr\nmysqli.default_socket=/run/mysqld/mysqld.sock\npdo_mysql.default_socket=/run/mysqld/mysqld.sock\n",
-                { mode: 0o600 },
-            ),
             fs.writeFile(
                 path.join(this.layout.runtime.phpMyAdmin, "README.txt"),
                 "phpMyAdmin is configured by the generated Vhostra Compose project.\n",
@@ -1931,13 +1945,12 @@ foreach (['localhost', '127.0.0.1'] as $host) {
         const memcachedPort = `-p ${state.settings.ports.memcached}`;
         const memcachedConfigured = /(?:^|\s)-p\s+\d+/.test(memcachedDefaults) ? memcachedDefaults.replace(/(^|\s)-p\s+\d+/g, `$1${memcachedPort}`) : `${memcachedDefaults}\n${memcachedPort}\n`;
         if (memcachedConfigured !== memcachedSource) await fs.writeFile(memcachedFile, memcachedConfigured, { mode: 0o600 });
-        await fs.rm(path.join(this.layout.runtime.php, "roots.json"), { force: true }); // Obsolete CLI-development-server router map.
-        await fs.writeFile(path.join(this.layout.runtime.php, "site-logrotate.conf"),
-            mounts.flatMap(({ host }) => ["access", "error"].map(kind => `/var/log/vhostra/sites/${host.id}/${kind}.log`)).join(" ") + " {\n  size 5M\n  rotate 3\n  copytruncate\n  missingok\n  notifempty\n  su root root\n}\n", { mode: 0o644 });
+        if (!this.layout.userRoot) await fs.rm(path.join(this.layout.runtime.php, "roots.json"), { force: true }); // Obsolete CLI-development-server router map.
         await this.writeServerConfiguration(
             state.settings.selectedWebServer,
             state.settings.selectedPhpVersion,
             mounts,
+            serviceConfiguration,
         );
         await fs.cp(
             existsSync(fileURLToPath(new URL("../runtime-image/", import.meta.url)))
@@ -2058,148 +2071,87 @@ foreach (['localhost', '127.0.0.1'] as $host) {
         });
     }
     private async cleanGenerated(state: AppState) {
+        if (this.layout.userRoot) {
+            await cleanObsoleteMachineConfiguration(this.layout, state.settings.selectedWebServer, state.virtualHosts.map(host => host.id));
+            return;
+        }
         await cleanObsoleteGenerated(this.layout.configuration.generated, state.settings.selectedWebServer);
         await cleanObsoleteRuntime(this.layout, state.settings.selectedWebServer, state.virtualHosts.map(host => host.id));
     }
     private async writeServerConfiguration(
         server: WebServer,
         phpVersion: PhpVersion,
-        mounts: Array<{
-            host: AppState["virtualHosts"][number];
-            container: string;
-        }>,
+        mounts: Array<{ host: AppState["virtualHosts"][number]; container: string }>,
+        serviceConfiguration: Array<{ key: string; contents: string }> = [],
     ) {
-        const generated = this.layout.configuration.generated;
-        await fs.mkdir(generated, { recursive: true });
-        const local = mounts.find(({ host }) => host.builtIn === "localhost");
-        if (local) await fs.writeFile(path.join(this.layout.runtime.openLiteSpeed, "localhost.conf"),
-            generatedMarker + openLiteSpeedSiteConfig({ ...local.host, indexFiles: ["index.html"] }, local.container), { mode: 0o600 });
-        {
-            // Always generate the PHP backend's host routing, regardless of frontend.
-            const managedMounts = mounts.filter(
-                ({ host }) => host.builtIn !== "localhost",
-            );
-            await fs.mkdir(
-                path.join(this.layout.runtime.openLiteSpeed, "sites"),
-                { recursive: true },
-            );
-            await Promise.all([
-                fs.writeFile(
-                    path.join(
-                        this.layout.runtime.openLiteSpeed,
-                        "vhostra-maps.conf",
-                    ),
-                    generatedMarker + openLiteSpeedConfig(managedMounts),
-                    { mode: 0o600 },
-                ),
-                fs.writeFile(
-                    path.join(
-                        this.layout.runtime.openLiteSpeed,
-                        "vhostra-vhosts.conf",
-                    ),
-                    generatedMarker + openLiteSpeedVirtualHosts(managedMounts),
-                    { mode: 0o600 },
-                ),
-                ...managedMounts.map(({ host, container }) =>
-                    fs.writeFile(
-                        path.join(
-                            this.layout.runtime.openLiteSpeed,
-                            "sites",
-                            `${host.id}.conf`,
-                        ),
-                        generatedMarker + openLiteSpeedSiteConfig(host, container),
-                        { mode: 0o600 },
-                    ),
-                ),
-            ]);
+        if (this.layout.userRoot) {
+            const model = this.webRuntimeModel(server, phpVersion, mounts);
+            await authorizeProtectedTransaction({ version: 1, operations: [{ type: 'web-runtime-config', model }] });
+            return;
         }
+        // Build all generated web configuration before changing a protected file.
+        // The privileged executor accepts only these semantic, owned names.
+        const files: Array<{ key: string; contents: string }> = [...serviceConfiguration];
+        const add = (key: string, contents: string) => files.push({ key, contents });
+        const managed = mounts.filter(({ host }) => host.builtIn !== "localhost");
+        const local = mounts.find(({ host }) => host.builtIn === "localhost");
+        if (local) add("runtime/openlitespeed/localhost.conf",
+            generatedMarker + openLiteSpeedSiteConfig({ ...local.host, indexFiles: ["index.html"] }, local.container));
+        // OpenLiteSpeed also routes PHP requests behind Apache and Nginx.
+        const main = openLiteSpeedConfig(managed);
+        const virtualHosts = openLiteSpeedVirtualHosts(managed);
+        add("runtime/openlitespeed/vhostra-maps.conf", generatedMarker + main);
+        add("runtime/openlitespeed/vhostra-vhosts.conf", generatedMarker + virtualHosts);
+        for (const { host, container } of managed)
+            add(`runtime/openlitespeed/sites/${host.id}.conf`, generatedMarker + openLiteSpeedSiteConfig(host, container));
         if (server === "apache") {
             let config = apacheConfig(mounts);
             if (!this.httpsWarning) config += config.slice(config.indexOf("<VirtualHost")).replaceAll("<VirtualHost *:8088>",
                 "<VirtualHost *:8443>\n  SSLEngine on\n  SSLCertificateFile /etc/vhostra/certificates/public/localhost.pem\n  SSLCertificateKeyFile /etc/vhostra/certificates/private/localhost.key\n  RequestHeader set X-Forwarded-Proto https");
-            await Promise.all([
-                fs.writeFile(
-                    path.join(this.layout.runtime.apache, "vhostra.conf"),
-                    generatedMarker + config,
-                    { mode: 0o600 },
-                ),
-                fs.writeFile(
-                    path.join(generated, "apache-vhosts.conf"),
-                    generatedMarker + config,
-                    { mode: 0o600 },
-                ),
-            ]);
+            add("runtime/apache/vhostra.conf", generatedMarker + config);
+            add("generated/apache-vhosts.conf", generatedMarker + config);
         } else if (server === "nginx") {
             const config = nginxConfig(mounts, !this.httpsWarning);
-            await Promise.all([
-                fs.writeFile(
-                    path.join(this.layout.runtime.nginx, "default.conf"),
-                    generatedMarker + config,
-                    { mode: 0o600 },
-                ),
-                fs.writeFile(
-                    path.join(generated, "nginx-vhosts.conf"),
-                    generatedMarker + config,
-                    { mode: 0o600 },
-                ),
-            ]);
+            add("runtime/nginx/default.conf", generatedMarker + config);
+            add("generated/nginx-vhosts.conf", generatedMarker + config);
         } else {
-            // The stock Example vhost remains the protected localhost vhost. Only
-            // user-created portable definitions are injected as additional OLS vhosts.
-            const managedMounts = mounts.filter(
-                ({ host }) => host.builtIn !== "localhost",
-            );
-            const main = openLiteSpeedConfig(managedMounts);
-            const virtualHosts = openLiteSpeedVirtualHosts(managedMounts);
-            await fs.mkdir(
-                path.join(this.layout.runtime.openLiteSpeed, "sites"),
-                { recursive: true },
-            );
-            await Promise.all([
-                fs.writeFile(
-                    path.join(
-                        this.layout.runtime.openLiteSpeed,
-                        "vhostra-maps.conf",
-                    ),
-                    generatedMarker + main,
-                    { mode: 0o600 },
-                ),
-                fs.writeFile(
-                    path.join(
-                        this.layout.runtime.openLiteSpeed,
-                        "vhostra-vhosts.conf",
-                    ),
-                    generatedMarker + virtualHosts,
-                    { mode: 0o600 },
-                ),
-                ...managedMounts.map(({ host, container }) =>
-                    fs.writeFile(
-                        path.join(
-                            this.layout.runtime.openLiteSpeed,
-                            "sites",
-                            `${host.id}.conf`,
-                        ),
-                        generatedMarker + openLiteSpeedSiteConfig(host, container),
-                        { mode: 0o600 },
-                    ),
-                ),
-                fs.writeFile(
-                    path.join(generated, "openlitespeed-vhosts.conf"),
-                    generatedMarker + `${main}\n${virtualHosts}\n${managedMounts.map(({ host, container }) => `# ${host.hostname} (${host.id})\n${openLiteSpeedSiteConfig(host, container)}`).join("\n")}`,
-                    { mode: 0o600 },
-                ),
-            ]);
+            add("generated/openlitespeed-vhosts.conf",
+                generatedMarker + `${main}\n${virtualHosts}\n${managed.map(({ host, container }) => `# ${host.hostname} (${host.id})\n${openLiteSpeedSiteConfig(host, container)}`).join("\n")}`);
         }
-        // Keeps the PHP policy explicit in generated config metadata without exposing it over HTTP.
-        await fs.writeFile(
-            path.join(generated, "runtime-selection.json"),
-            JSON.stringify(
-                { owner: "vhostra", schemaVersion: 1, server, phpVersion, generatedAt: new Date().toISOString() },
-                null,
-                2,
-            ),
-            { mode: 0o600 },
-        );
+        add("generated/runtime-selection.json", JSON.stringify(
+            { owner: "vhostra", schemaVersion: 1, server, phpVersion, generatedAt: new Date().toISOString() }, null, 2));
+        const legacyPath = (key: string) => {
+            const [area, service, ...name] = key.split('/');
+            if (area === 'generated') return path.join(this.layout.configuration.generated, service);
+            const directory = service === 'openlitespeed' ? this.layout.runtime.openLiteSpeed
+                : service === 'apache' ? this.layout.runtime.apache
+                    : service === 'php' ? this.layout.runtime.php : this.layout.runtime.nginx;
+            return path.join(directory, ...name);
+        };
+        const destinations = files.map(file => ({ destination: legacyPath(file.key), contents: file.contents }));
+        await Promise.all([...new Set(destinations.map(file => path.dirname(file.destination)))].map(directory => fs.mkdir(directory, { recursive: true })));
+        await Promise.all(destinations.map(file => fs.writeFile(file.destination, file.contents, { mode: 0o600 })));
+    }
+    private webRuntimeModel(server: WebServer, phpVersion: PhpVersion,
+        mounts: Array<{ host: AppState['virtualHosts'][number]; container: string }>): WebRuntimeModel {
+        return { server, phpVersion, httpsEnabled: !this.httpsWarning,
+            sites: mounts.map(({ host }) => ({ id: host.id, hostname: host.hostname, aliases: host.aliases,
+                builtIn: host.builtIn === 'localhost', indexFiles: host.indexFiles ?? ['index.php', 'index.html'],
+                rewriteEnabled: host.rewriteEnabled !== false })) };
+    }
+    private async assertWebRuntimePublication(state: AppState): Promise<void> {
+        const model = this.webRuntimeModel(state.settings.selectedWebServer, state.settings.selectedPhpVersion,
+            state.virtualHosts.map(host => ({ host, container: runtimeDocumentRoot(host) })));
+        for (const { key, body } of renderWebRuntimeFiles(model)) {
+            const privateFile = path.join(this.layout.root, 'configuration', key);
+            const publicFile = path.join(this.layout.dataRoot ?? this.layout.root, 'runtime-config', 'web', key.slice('runtime/'.length));
+            const [privateStat, publicStat] = await Promise.all([fs.lstat(privateFile), fs.lstat(publicFile)]);
+            if (!privateStat.isFile() || privateStat.isSymbolicLink() || privateStat.uid !== 0 || (privateStat.mode & 0o777) !== 0o600
+                || !publicStat.isFile() || publicStat.isSymbolicLink() || publicStat.uid !== 0 || (publicStat.mode & 0o777) !== 0o644
+                || privateStat.mtimeMs > publicStat.mtimeMs
+                || await fs.readFile(publicFile, 'utf8') !== runtimeWebFile(authoritativeWebFile(body)))
+                throw new Error('Web runtime configuration is stale or unsafe; repair before container start.');
+        }
     }
     private async ensurePortsAvailable(
         ports: number[],
@@ -2229,7 +2181,7 @@ foreach (['localhost', '127.0.0.1'] as $host) {
             if (!occupied) { this.appendProgress(`✓ localhost:${port} available`); continue; }
             const ownedByVhostra =
                 allowProjectPorts && (await this.vhostraOwnsPort(port));
-            if (!ownedByVhostra) conflicts.push(await describePort(port, resolveDockerExecutable(this.layout.root) ?? 'docker'));
+            if (!ownedByVhostra) conflicts.push(await describePort(port, resolveDockerExecutable(this.layout.userRoot ?? this.layout.root) ?? 'docker'));
             else this.appendProgress(`✓ localhost:${port} belongs to the current managed runtime`);
         }
         return conflicts;
@@ -2503,6 +2455,12 @@ foreach (['localhost', '127.0.0.1'] as $host) {
     private get databaseScope(): string { return this.databaseOwner?.databaseScope ?? `${this.scope}-database`; }
     private get databaseNetwork(): string { return `${this.databaseScope}-network`; }
     private get databaseRoot(): string { return this.databaseLayout.runtime.mariaDb; }
+    private get databaseConfigFile(): string { return this.layout.userRoot
+        ? path.join(this.layout.root, 'configuration', 'runtime', 'mariadb', 'vhostra.cnf')
+        : path.join(this.databaseRoot, 'vhostra.cnf'); }
+    private get databaseRuntimeConfigFile(): string { return this.layout.userRoot
+        ? path.join(this.layout.dataRoot ?? this.layout.root, 'runtime-config', 'mariadb', 'vhostra.cnf')
+        : this.databaseConfigFile; }
     private databaseComposeArguments(args: string[]): string[] {
         return ["compose", "--project-name", this.databaseScope, "--project-directory", this.databaseRoot,
             "--env-file", path.join(this.databaseRoot, "secrets.env"), "--file", path.join(this.databaseRoot, "compose.yml"), ...args];
@@ -2557,11 +2515,11 @@ foreach (['localhost', '127.0.0.1'] as $host) {
         return JSON.parse(await this.docker(["inspect", ...ids])).some((row: { NetworkSettings?: { Ports?: Record<string, Array<{ HostIp: string; HostPort: string }> | null> } }) =>
             Object.values(row.NetworkSettings?.Ports ?? {}).some(bindings => bindings?.some(binding => binding.HostIp === "127.0.0.1" && Number(binding.HostPort) === port)));
     }
-    private async prepareDatabase(state: AppState) {
+    private async prepareDatabase(state: AppState): Promise<void> {
         if (this.databaseOwner) return;
         await fs.mkdir(this.databaseRoot, { recursive: true });
         await fs.mkdir(this.layout.persistentData.mariaDb, { recursive: true });
-        const managedRoot = await fs.realpath(this.layout.root);
+        const managedRoot = await fs.realpath(this.layout.dataRoot ?? this.layout.root);
         const realData = await fs.realpath(this.layout.persistentData.mariaDb);
         if (!realData.startsWith(managedRoot + path.sep)) throw new Error("MariaDB data links must stay inside Vhostra managed storage.");
         await fs.mkdir(path.join(this.layout.logs, "mariadb"), { recursive: true });
@@ -2571,7 +2529,23 @@ foreach (['localhost', '127.0.0.1'] as $host) {
         const hasData = existsSync(path.join(this.layout.persistentData.mariaDb, "mysql"));
         const series = hasData ? version.trim().match(/^(\d+\.\d+)\./)?.[1] : "11.8";
         if (!series || !["10.6", "10.11", "11.4", "11.8"].includes(series)) throw new Error("This MariaDB datadir requires its original server series. Export a logical backup with that server before a supported migration; Vhostra will not implicitly upgrade or reset it.");
-        await writeIfMissing(path.join(this.databaseRoot, "vhostra.cnf"), "[mariadb]\nskip-name-resolve\ninnodb_buffer_pool_size=64M\nmax_connections=50\nthread_cache_size=4\ntable_open_cache=400\ntmp_table_size=16M\nmax_heap_table_size=16M\nmax_allowed_packet=64M\nperformance_schema=OFF\nlog_error=/var/log/vhostra/mariadb.log\n", { mode: 0o600 });
+        if (this.layout.userRoot) {
+            const inspect = async (file: string) => fs.lstat(file).catch(error => {
+                if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+                throw error;
+            });
+            const privateStat = await inspect(this.databaseConfigFile);
+            const runtimeStat = await inspect(this.databaseRuntimeConfigFile);
+            for (const [stat, mode] of [[privateStat, 0o600], [runtimeStat, 0o644]] as const)
+                if (stat && (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.uid !== 0 || (stat.mode & 0o777) !== mode))
+                    throw new Error('MariaDB configuration ownership or permissions require repair before service start.');
+            if (privateStat && runtimeStat && privateStat.mtimeMs > runtimeStat.mtimeMs)
+                throw new Error('Authoritative MariaDB configuration is newer than its container copy; repair before service start.');
+            const expectedRuntime = deriveMariaDbRuntimeConfig(authoritativeMariaDbConfig);
+            const actualRuntime = runtimeStat ? await fs.readFile(this.databaseRuntimeConfigFile, 'utf8') : null;
+            if (!privateStat || actualRuntime !== expectedRuntime)
+                await authorizeProtectedTransaction({ version: 1, operations: [{ type: 'mariadb-runtime-config' }] });
+        } else await writeIfMissing(this.databaseConfigFile, mariaDbPolicyBody, { mode: 0o600 });
         const source = existsSync(fileURLToPath(new URL("../runtime-image/mariadb/", import.meta.url))) ? fileURLToPath(new URL("../runtime-image/mariadb/", import.meta.url)) : path.join(process.resourcesPath, "runtime-image/mariadb");
         await fs.cp(source, path.join(this.databaseRoot, "image"), { recursive: true });
         const secret = (await fs.readFile(path.join(this.databaseRoot, "secrets.env"), "utf8")).match(/^MARIADB_ROOT_PASSWORD=(.+)$/m)?.[1];
@@ -2596,7 +2570,7 @@ services:
       - ${q(`127.0.0.1:${state.settings.ports.mariadb}:3306`)}
     volumes:
       - ${q(`${this.layout.persistentData.mariaDb}:/var/lib/mysql`)}
-      - ${q(`${this.databaseRoot}/vhostra.cnf:/etc/mysql/mariadb.conf.d/99-vhostra.cnf:ro`)}
+      - ${q(`${this.databaseRuntimeConfigFile}:/etc/mysql/mariadb.conf.d/99-vhostra.cnf:ro`)}
       - ${q(`${this.databaseRoot}/root-password:/run/secrets/root-password:ro`)}
       - ${q(`${this.layout.logs}/mariadb:/var/log/vhostra`)}
     healthcheck:
@@ -2620,6 +2594,7 @@ networks:
         const target = path.join(this.databaseRoot, "compose.yml");
         // Byte-identical configuration does not touch the independently running DB.
         if (await fs.readFile(target, "utf8").catch(() => "") !== file) await fs.writeFile(target, file, { mode: 0o600 });
+        return;
     }
     private async startDatabase() {
         if (this.databaseOwner) { if (["stopped", "not-created"].includes(await this.databaseStatus())) return; await this.waitForDatabase(); return; }
@@ -3012,6 +2987,9 @@ function singleRuntimeComposeYaml(
     databaseNetwork: string,
 ) {
     const php = state.settings.selectedPhpVersion.replace(".", "");
+    const configRoot = layout.userRoot ? path.join(layout.dataRoot ?? layout.root, 'runtime-config', 'web') : null;
+    const serviceConfig = (service: 'openlitespeed' | 'php' | 'apache' | 'nginx') =>
+        configRoot ? path.join(configRoot, service) : layout.runtime[service === 'openlitespeed' ? 'openLiteSpeed' : service];
     return `name: ${scope}
 services:
   runtime:
@@ -3056,13 +3034,13 @@ services:
       VHOSTRA_PMA_BLOWFISH_SECRET: \${VHOSTRA_PMA_BLOWFISH_SECRET}
       VHOSTRA_PMA_PASSWORD: \${VHOSTRA_PMA_PASSWORD}
     volumes:
-      - ${q(`${path.join(layout.sites, "localhost", "public")}:/var/www/html`)}
-      - ${q(`${layout.runtime.openLiteSpeed}:/etc/vhostra/openlitespeed:ro`)}
-      - ${q(`${layout.runtime.php}:/etc/vhostra/php:ro`)}
+      - ${q(`${layout.builtinPublic}:/var/www/html`)}
+      - ${q(`${serviceConfig('openlitespeed')}:/etc/vhostra/openlitespeed:ro`)}
+      - ${q(`${serviceConfig('php')}:/etc/vhostra/php:ro`)}
       - ${q(`${layout.runtime.memcached}/memcached.conf:/etc/vhostra/memcached.conf:ro`)}
       - ${q(`${layout.runtime.redis}/redis.conf:/etc/redis/vhostra.conf:ro`)}
-      - ${q(`${layout.runtime.apache}:/etc/vhostra/apache:ro`)}
-      - ${q(`${layout.runtime.nginx}:/etc/vhostra/nginx:ro`)}
+      ${state.settings.selectedWebServer === 'apache' ? `- ${q(`${serviceConfig('apache')}:/etc/vhostra/apache:ro`)}` : ''}
+      ${state.settings.selectedWebServer === 'nginx' ? `- ${q(`${serviceConfig('nginx')}:/etc/vhostra/nginx:ro`)}` : ''}
       - ${q(`${layout.certificates.directory}:/etc/vhostra/certificates`)}
       ${state.sites
           .filter((site) => !site.builtIn)

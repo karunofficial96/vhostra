@@ -1,6 +1,12 @@
 #!/bin/sh
 set -eu
 
+case "${VHOSTRA_WEB_SERVER:-openlitespeed}" in
+  openlitespeed) site_log_user=nobody; site_log_group=nogroup ;;
+  apache|nginx) site_log_user=www-data; site_log_group=www-data ;;
+  *) echo 'Unsupported Vhostra log writer' >&2; exit 64 ;;
+esac
+
 LSPHP_BIN="/usr/local/lsws/lsphp${VHOSTRA_LSPHP_VERSION:?}/bin/lsphp"
 test -x "$LSPHP_BIN" || { echo "Vhostra build error: requested LSPHP runtime is unavailable" >&2; exit 64; }
 
@@ -113,10 +119,10 @@ sed -i '/; Vhostra PHP policy begin/,/; Vhostra PHP policy end/d' "$FPM_INI"
   printf '; Vhostra PHP policy end\n'
 } >> "$FPM_INI"
 rm -f "/etc/php/${PHP_VERSION}/fpm/pool.d/www.conf"
-cat > "/etc/php/${PHP_VERSION}/fpm/pool.d/vhostra.conf" <<'FPM_POOL'
+cat > "/etc/php/${PHP_VERSION}/fpm/pool.d/vhostra.conf" <<FPM_POOL
 [vhostra]
-user = nobody
-group = nogroup
+user = ${site_log_user}
+group = ${site_log_group}
 listen = 127.0.0.1:8089
 listen.allowed_clients = 127.0.0.1
 pm = ondemand
@@ -164,6 +170,31 @@ fi
 # Preserve the stock protected context's authentication policy while providing
 # its empty managed directory for strict native configuration validation.
 mkdir -p /var/log/vhostra /run/mysqld /var/www/html/protected
+# OLS uses nobody; Apache and Nginx use www-data workers. Their root masters
+# may also open logs. A server switch repairs only managed Site log paths.
+chown "root:$site_log_group" /var/log/vhostra
+chmod 0710 /var/log/vhostra
+mkdir -p /var/log/vhostra/sites
+chown "root:$site_log_group" /var/log/vhostra/sites
+chmod 0710 /var/log/vhostra/sites
+for site_log_dir in /var/log/vhostra/sites/*; do
+  [ -d "$site_log_dir" ] || continue
+  [ ! -L "$site_log_dir" ] || { echo 'Invalid Site log directory' >&2; exit 65; }
+  case "${site_log_dir##*/}" in
+    vhostra-localhost-vhost|????????-????-????-????-????????????) ;;
+    *) echo 'Invalid Site log directory name' >&2; exit 65 ;;
+  esac
+  chown "$site_log_user:$site_log_group" "$site_log_dir"
+  chmod 0700 "$site_log_dir"
+  for site_log_kind in access error; do
+    site_log_file="$site_log_dir/$site_log_kind.log"
+    [ ! -L "$site_log_file" ] || { echo 'Invalid Site log file' >&2; exit 65; }
+    if [ ! -e "$site_log_file" ]; then ( umask 077; : >> "$site_log_file" ); fi
+    [ -f "$site_log_file" ] && [ "$(stat -c %h "$site_log_file")" = 1 ] || { echo 'Invalid Site log file' >&2; exit 65; }
+    chown "$site_log_user:$site_log_group" "$site_log_file"
+    chmod 0600 "$site_log_file"
+  done
+done
 ln -sfn /run/mysqld/mysqld.sock /tmp/mysql.sock
 # This is a Vhostra-managed built-in document root. OLS deliberately rejects
 # symlinks which leave its vhost root, so seed the immutable bundled source on

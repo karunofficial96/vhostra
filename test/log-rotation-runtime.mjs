@@ -12,7 +12,7 @@ try {
   const state = await store.addSite({ name: 'Rotation probe', documentRoot: project, url: 'http://rotation.test' }); state.settings.selectedWebServer = 'nginx'; state.settings.php.extensions = ['apcu']; await store.saveSettings(state.settings); await runtime.generate(await store.getState())
   const host = (await store.getState()).virtualHosts.find(host => !host.builtIn)
   for (let iteration = 0; iteration < 4; iteration++) {
-    console.log(await runtime.compose(['run', '--rm', '--no-deps', '--entrypoint', '/bin/sh', 'runtime', '-c', `dd if=/dev/zero bs=1M count=6 >> /var/log/vhostra/sites/${host.id}/access.log 2>/dev/null; /usr/sbin/logrotate --verbose --state /tmp/rotation.state /etc/vhostra/php/site-logrotate.conf 2>&1; stat -c %s /var/log/vhostra/sites/${host.id}/access.log`]))
+    console.log(await runtime.compose(['run', '--rm', '--no-deps', '--entrypoint', '/bin/sh', 'runtime', '-c', `umask 077; : >> /var/log/vhostra/sites/${host.id}/access.log; dd if=/dev/zero bs=1M count=6 >> /var/log/vhostra/sites/${host.id}/access.log 2>/dev/null; /usr/sbin/logrotate --verbose --state /tmp/rotation.state /etc/vhostra/php/site-logrotate.conf 2>&1; stat -c %s /var/log/vhostra/sites/${host.id}/access.log`]))
     for (let attempt = 0; (await stat(host.logs.paths.access)).size && attempt < 20; attempt++) await new Promise(resolve => setTimeout(resolve, 100))
     assert.equal((await stat(host.logs.paths.access)).size, 0)
   }

@@ -51,14 +51,17 @@ test('legacy startup checkboxes migrate to one mode without losing other prefere
       [{ launchAtLogin: false, startServicesOnLaunch: true, startServicesAfterLogin: true }, 'after-login'],
     ]) {
       await writeFile(store.layout.settings, JSON.stringify({ ...original, selectedWebServer: 'nginx', startup: { ...legacy, closeBehavior: 'keep-services' } }))
+      await rm(path.join(directory, 'vhostra-user-settings.json'), { force: true })
       const migrated = (await new VhostraStore(directory).getState()).settings
       assert.equal(migrated.startup.serviceStartMode, expected)
       assert.equal(migrated.startup.launchAtLogin, expected === 'after-login')
       assert.equal(migrated.selectedWebServer, 'nginx')
       assert.equal(migrated.startup.closeBehavior, 'keep-services')
       const saved = JSON.parse(await readFile(store.layout.settings, 'utf8'))
-      assert.equal('startServicesOnLaunch' in saved.startup, false)
-      assert.equal('startServicesAfterLogin' in saved.startup, false)
+      assert.equal('startup' in saved, false)
+      const personal = JSON.parse(await readFile(path.join(directory, 'vhostra-user-settings.json'), 'utf8'))
+      assert.equal('startServicesOnLaunch' in personal.startup, false)
+      assert.equal('startServicesAfterLogin' in personal.startup, false)
     }
   } finally { await rm(directory, { recursive: true, force: true }) }
 })

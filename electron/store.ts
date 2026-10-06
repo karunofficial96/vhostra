@@ -4,6 +4,8 @@ import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream, existsSync, promises as fs, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { importedMetadata, type NativeImportPreview } from './config-import.js'
+import { systemStoragePaths, type SystemStoragePaths } from './storage-paths.js'
+import { authorizeProtectedTransaction } from './protected-launcher.js'
 
 export type WebServer = 'apache' | 'nginx' | 'openlitespeed'
 export type PhpVersion = '8.1' | '8.2' | '8.3' | '8.4' | '8.5'
@@ -14,7 +16,7 @@ export interface ServicePorts { http: number; https: number; mariadb: number; re
 export type ServiceStartMode = 'on-open' | 'after-login' | 'manual'
 export type CloseBehavior = 'keep-services' | 'stop-services' | 'minimize-to-tray'
 export interface Settings { schemaVersion: 1; selectedWebServer: WebServer; selectedPhpVersion: PhpVersion; optionalServices: { redis: boolean; memcached: boolean }; php: { extensions: string[]; disabledExtensions: string[]; opcacheEnabled: boolean; cwebpEnabled: boolean }; startup: { launchAtLogin: boolean; serviceStartMode: ServiceStartMode; closeBehavior: CloseBehavior }; ports: ServicePorts }
-export interface OnboardingState { themeSaved?: boolean; restoredServices?: { redis: boolean; memcached: boolean }; ready?: boolean; completed: boolean; theme: 'light' | 'dark' | 'system'; server: WebServer; php: PhpVersion; cache: 'none' | 'redis' | 'memcached' }
+export interface OnboardingState { themeSaved?: boolean; secondary?: boolean; restoredServices?: { redis: boolean; memcached: boolean }; ready?: boolean; completed: boolean; theme: 'light' | 'dark' | 'system'; server: WebServer; php: PhpVersion; cache: 'none' | 'redis' | 'memcached' }
 export interface Screenshot { url?: string; identity?: string; cacheFile: string; capturedAt: string; source: 'automatic' | 'manual' }
 export const runtimeDocumentRoot = (host: Pick<VirtualHost, 'id' | 'builtIn'>) => host.builtIn === 'localhost' ? '/var/www/html' : `/var/www/vhostra/${host.id}`
 export const siteLogPaths = (layout: StoreLayout, id: string) => ({ access: path.join(layout.logs, 'sites', id, 'access.log'), error: path.join(layout.logs, 'sites', id, 'error.log') })
@@ -23,7 +25,7 @@ export interface VirtualHost { id: string; hostname: string; aliases: string[]; 
 export interface AppState { settings: Settings; sites: Site[]; virtualHosts: VirtualHost[] }
 
 export interface StoreLayout {
-  root: string; settings: string; sites: string; virtualHosts: string; screenshots: string; exports: string; backups: string
+  root: string; userRoot?: string; dataRoot?: string; builtinPublic: string; settings: string; sites: string; virtualHosts: string; screenshots: string; exports: string; backups: string
   configuration: { source: string; custom: string; imported: string; generated: string }
   runtime: { apache: string; nginx: string; openLiteSpeed: string; php: string; mariaDb: string; phpMyAdmin: string; redis: string; memcached: string }
   certificates: { directory: string; public: string; private: string }; persistentData: { mariaDb: string }; logs: string
@@ -47,15 +49,23 @@ export class VhostraStore {
   }
   private initialized: Promise<void> | null = null
   private readonly locationFile: string
-  constructor(private readonly userData: string, private readonly welcomeTemplateDirectory?: string, private readonly validateHostMappings?: (names: string[]) => Promise<void>) {
+  private readonly userSettingsFile: string
+  constructor(private readonly userData: string, private readonly welcomeTemplateDirectory?: string, private readonly validateHostMappings?: (names: string[]) => Promise<void>, private readonly machinePaths?: SystemStoragePaths) {
+    if (machinePaths) {
+      const native = systemStoragePaths(process.platform)
+      if (Object.keys(native).every(key => path.resolve(machinePaths[key as keyof SystemStoragePaths]) === path.resolve(native[key as keyof SystemStoragePaths])))
+        throw new Error('Native machine storage remains blocked until protected runtime writes and scoped data/log permissions are verified.')
+    }
     this.locationFile = path.join(userData, 'vhostra-location.json')
+    this.userSettingsFile = path.join(userData, 'vhostra-user-settings.json')
     let root = path.join(userData, 'Vhostra')
     try { const saved = JSON.parse(readFileSync(this.locationFile, 'utf8')) as { root?: unknown }; if (typeof saved.root === 'string' && path.isAbsolute(saved.root)) root = saved.root } catch { /* default location */ }
-    this.layout = this.layoutFor(root)
+    this.layout = machinePaths ? this.systemLayoutFor(machinePaths) : this.layoutFor(root)
   }
   migrateConfiguration(destinationDirectory: string, validateDestination?: () => Promise<void>, progress?: (message: string) => void) { return this.serialize(() => this.migrateConfigurationRecords(destinationDirectory, validateDestination, progress)) }
   migrateConfigurationRoot(destinationRoot: string, validateDestination?: () => Promise<void>, progress?: (message: string) => void) { return this.serialize(() => this.migrateConfigurationRecords(destinationRoot, validateDestination, progress, true)) }
   private async migrateConfigurationRecords(destinationDirectory: string, validateDestination?: () => Promise<void>, progress?: (message: string) => void, exactRoot = false) {
+    if (this.machinePaths) throw new Error('Machine storage cannot be moved through the per-user configuration migration.')
     await this.initialize()
     const oldLayout = this.layout; const root = exactRoot ? path.resolve(destinationDirectory) : path.resolve(destinationDirectory, 'Vhostra')
     if (root === oldLayout.root) return { root, message: 'Vhostra is already using this local configuration path.' }
@@ -136,10 +146,27 @@ export class VhostraStore {
     await fs.rm(oldLayout.root, { recursive: true, force: true })
     return { root, message: 'Vhostra configuration was copied, verified, switched, and removed from the old Vhostra-only location.' }
   }
+  private systemLayoutFor(roots: SystemStoragePaths): StoreLayout {
+    const configuration = path.resolve(roots.configuration)
+    const data = path.resolve(roots.data)
+    const logs = path.resolve(roots.logs)
+    const runtime = path.join(data, 'runtime')
+    const protectedRuntime = path.join(configuration, 'configuration', 'runtime')
+    const certs = path.join(data, 'certificates')
+    return {
+      root: configuration, userRoot: this.userData, dataRoot: data, builtinPublic: path.join(data, 'service-data', 'localhost', 'public'),
+      settings: path.join(configuration, 'settings.json'), sites: path.join(configuration, 'sites'), virtualHosts: path.join(configuration, 'virtual-hosts'),
+      screenshots: path.join(this.userData, 'cache', 'screenshots'), exports: path.join(this.userData, 'exports'), backups: path.join(this.userData, 'backups'),
+      configuration: { source: path.join(configuration, 'configuration', 'source'), custom: path.join(configuration, 'configuration', 'custom'), imported: path.join(configuration, 'configuration', 'imported'), generated: path.join(configuration, 'configuration', 'generated') },
+      runtime: { apache: path.join(protectedRuntime, 'apache'), nginx: path.join(protectedRuntime, 'nginx'), openLiteSpeed: path.join(protectedRuntime, 'openlitespeed'), php: path.join(protectedRuntime, 'php'), mariaDb: path.join(runtime, 'mariadb'), phpMyAdmin: path.join(runtime, 'phpmyadmin'), redis: path.join(data, 'service-data', 'redis'), memcached: path.join(data, 'service-data', 'memcached') },
+      certificates: { directory: certs, public: path.join(certs, 'public'), private: path.join(certs, 'private') },
+      persistentData: { mariaDb: path.join(data, 'data', 'mariadb') }, logs,
+    }
+  }
   private layoutFor(root: string): StoreLayout {
     const runtime = path.join(root, 'runtime')
     return {
-      root, settings: path.join(root, 'settings.json'), sites: path.join(root, 'sites'), virtualHosts: path.join(root, 'virtual-hosts'), screenshots: path.join(root, 'cache', 'screenshots'), exports: path.join(root, 'exports'), backups: path.join(root, 'backups'),
+      root, builtinPublic: path.join(root, 'sites', 'localhost', 'public'), settings: path.join(root, 'settings.json'), sites: path.join(root, 'sites'), virtualHosts: path.join(root, 'virtual-hosts'), screenshots: path.join(root, 'cache', 'screenshots'), exports: path.join(root, 'exports'), backups: path.join(root, 'backups'),
       configuration: { source: path.join(root, 'configuration', 'source'), custom: path.join(root, 'configuration', 'custom'), imported: path.join(root, 'configuration', 'imported'), generated: path.join(root, 'configuration', 'generated') },
       runtime: { apache: path.join(runtime, 'apache'), nginx: path.join(runtime, 'nginx'), openLiteSpeed: path.join(runtime, 'openlitespeed'), php: path.join(runtime, 'php'), mariaDb: path.join(runtime, 'mariadb'), phpMyAdmin: path.join(runtime, 'phpmyadmin'), redis: path.join(runtime, 'redis'), memcached: path.join(runtime, 'memcached') },
       certificates: { directory: path.join(root, 'certificates'), public: path.join(root, 'certificates', 'public'), private: path.join(root, 'certificates', 'private') }, persistentData: { mariaDb: path.join(root, 'data', 'mariadb') }, logs: path.join(root, 'logs'),
@@ -147,10 +174,46 @@ export class VhostraStore {
   }
 
   async initialize() { this.initialized ??= this.initializeOnce(); await this.initialized }
-  async getOnboarding(): Promise<OnboardingState> { await this.initialize(); return JSON.parse(await fs.readFile(path.join(this.layout.root, 'onboarding.json'), 'utf8')) }
+  private async readPersonalSettings(): Promise<{ startup?: Settings['startup']; theme?: OnboardingState['theme']; onboardingCompleted?: boolean }> {
+    try { return JSON.parse(await fs.readFile(this.userSettingsFile, 'utf8')) }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}; throw error }
+  }
+  async getOnboarding(): Promise<OnboardingState> {
+    await this.initialize()
+    const machine = JSON.parse(await fs.readFile(path.join(this.layout.root, 'onboarding.json'), 'utf8')) as OnboardingState
+    let personal = await this.readPersonalSettings()
+    if (machine.completed && personal.onboardingCompleted === undefined && this.layout.root.startsWith(`${path.resolve(this.userData)}${path.sep}`)) {
+      // Upgrade of the account that owned the old environment.
+      personal = { ...personal, theme: personal.theme ?? machine.theme, onboardingCompleted: true }
+      await this.writeJson(this.userSettingsFile, personal)
+    }
+    const secondary = machine.completed && personal.onboardingCompleted !== true
+    return { ...machine, theme: personal.theme ?? (secondary ? 'system' : machine.theme), themeSaved: Boolean(personal.theme), completed: machine.completed && !secondary, secondary }
+  }
   async saveOnboarding(input: OnboardingState) {
     if (input.restoredServices && (typeof input.restoredServices.redis !== 'boolean' || typeof input.restoredServices.memcached !== 'boolean')) throw new Error('Invalid restored cache preferences.'); if (input.ready !== undefined && typeof input.ready !== 'boolean') throw new Error('Invalid setup readiness.'); if (!['light', 'dark', 'system'].includes(input.theme) || !validServers.has(input.server) || !validPhp.has(input.php) || !['none', 'redis', 'memcached'].includes(input.cache) || typeof input.completed !== 'boolean') throw new Error('Invalid setup preferences.')
-    await this.initialize(); input = { ...input, themeSaved: true }; await this.writeJson(path.join(this.layout.root, 'onboarding.json'), input); await this.writeLocalhostWelcome(); return input
+    const previous = await this.getOnboarding()
+    const personal = await this.readPersonalSettings()
+    await this.writeJson(this.userSettingsFile, { ...personal, theme: input.theme })
+    if (previous.secondary || previous.completed) return { ...previous, theme: input.theme, themeSaved: true }
+    input = { ...input, themeSaved: true, secondary: false }
+    await this.writeJson(path.join(this.layout.root, 'onboarding.json'), { ...input, theme: 'system', themeSaved: false })
+    await this.writeLocalhostWelcome()
+    return input
+  }
+  async finishOnboarding() {
+    const preferences = await this.getOnboarding()
+    if (!preferences.secondary) {
+      if (!preferences.ready) throw new Error('Complete runtime setup before entering Vhostra.')
+      await this.saveOnboarding({ ...preferences, completed: true })
+    }
+    await this.writeJson(this.userSettingsFile, { ...await this.readPersonalSettings(), onboardingCompleted: true })
+    return { ...preferences, completed: true, secondary: false }
+  }
+  async resetUserPreferences() {
+    const personal = await this.readPersonalSettings()
+    await this.writeJson(this.userSettingsFile, { ...personal, startup: defaults.startup, theme: 'system' })
+    return { message: 'This OS user’s theme and startup preferences were reset. Shared services, databases, certificates and Sites were not changed.' }
   }
   async updateLocalhostWelcome(runtimeMessage: string) { await this.initialize(); await this.writeLocalhostWelcome(runtimeMessage) }
   async getState(): Promise<AppState> { await this.initialize(); const sites = await this.readRecords<Site>(this.layout.sites); return { settings: await this.readSettings(), sites: sites.map(({ configuration: _configuration, ...site }) => site), virtualHosts: sites.map(site => site.configuration).filter((host): host is VirtualHost => Boolean(host)) } }
@@ -178,7 +241,26 @@ export class VhostraStore {
     for (const site of sites) await this.writeSite({ ...site, database: { ...site.database!, ready: true } })
     return sites.map(site => site.id)
   }) }
-  async saveSettings(settings: Settings) { const normalized = this.normalizeSettings(settings); this.validateSettings(normalized); await this.initialize(); await this.writeJson(this.layout.settings, normalized); await this.updateDefaultSiteUrls(normalized.ports.http); await this.invalidatePreviews(); await this.writeLocalhostWelcome(); return normalized }
+  async saveSettings(settings: Settings) {
+    const normalized = this.normalizeSettings(settings); this.validateSettings(normalized); await this.initialize()
+    const previous = await this.readSettings()
+    // Startup belongs to this OS account. A startup-only change does not touch
+    // the shared environment or invalidate site previews.
+    const shared = ({ startup: _startup, ...rest }: Settings) => rest
+    const changed = JSON.stringify(shared(previous)) !== JSON.stringify(shared(normalized))
+    if (changed) await this.writeJson(this.layout.settings, shared(normalized))
+    try { await this.writeJson(this.userSettingsFile, { ...await this.readPersonalSettings(), startup: normalized.startup }) }
+    catch (error) {
+      if (changed) await this.writeJson(this.layout.settings, shared(previous))
+      throw error
+    }
+    if (changed) {
+      await this.updateDefaultSiteUrls(normalized.ports.http)
+      await this.invalidatePreviews()
+      await this.writeLocalhostWelcome()
+    }
+    return normalized
+  }
   addSite(input: Pick<Site, 'name' | 'documentRoot' | 'url' | 'framework'> & { database?: { name: string; importExpected: boolean }; aliases?: string[]; vhostId?: string }) { return this.serialize(() => this.addSiteRecord(input)) }
   private async addSiteRecord(input: Pick<Site, 'name' | 'documentRoot' | 'url' | 'framework'> & { database?: { name: string; importExpected: boolean }; aliases?: string[]; vhostId?: string }) {
     this.validateSiteInput(input); await this.assertExternalRoot(input.documentRoot); await this.initialize()
@@ -212,14 +294,17 @@ export class VhostraStore {
   }) }
   private async assertExternalRoot(directory: string) {
     const actual = await fs.realpath(directory).catch(() => path.resolve(directory))
-    const managed = await fs.realpath(this.layout.root).catch(() => path.resolve(this.layout.root))
-    const within = path.relative(managed, actual); const enclosing = path.relative(actual, managed)
-    if ((!within.startsWith('..') && !path.isAbsolute(within)) || (!enclosing.startsWith('..') && !path.isAbsolute(enclosing))) throw new Error('Keep external Site document roots separate from Vhostra managed storage, including symbolic links.')
+    for (const root of new Set([this.layout.root, this.layout.dataRoot ?? this.layout.root, this.layout.logs, this.layout.userRoot ?? this.layout.root])) {
+      const managed = await fs.realpath(root).catch(() => path.resolve(root))
+      const within = path.relative(managed, actual); const enclosing = path.relative(actual, managed)
+      if ((!within.startsWith('..') && !path.isAbsolute(within)) || (!enclosing.startsWith('..') && !path.isAbsolute(enclosing))) throw new Error('Keep external Site document roots separate from Vhostra managed storage, including symbolic links.')
+    }
   }
   removeSite(id: string) { return this.serialize(() => this.removeSiteRecord(id)) }
   private async removeSiteRecord(id: string) {
     const state = await this.getState(); const site = state.sites.find(item => item.id === id); if (!site) throw new Error('Site definition not found.'); if (site.builtIn === 'localhost') throw new Error('The built-in localhost vhost is protected. Its document root and configuration remain inspectable.')
-    await fs.rm(this.recordPath(this.layout.sites, site.id), { force: true })
+    if (this.machinePaths) await authorizeProtectedTransaction({ version: 1, operations: [{ type: 'delete-site', id: site.id }] })
+    else await fs.rm(this.recordPath(this.layout.sites, site.id), { force: true })
     await fs.rm(path.join(this.layout.screenshots, `${site.id}.jpg`), { force: true })
     await this.writeLocalhostWelcome(); return this.getState()
   }
@@ -288,7 +373,7 @@ export class VhostraStore {
     if (!bytes.length || bytes.length > 1024 * 1024) throw new Error('Preview exceeds the local cache limit.')
     const cacheFile = `${id}.jpg`
     await fs.mkdir(this.layout.screenshots, { recursive: true })
-    const cacheRoot = await fs.realpath(this.layout.screenshots); const managedRoot = await fs.realpath(this.layout.root)
+    const cacheRoot = await fs.realpath(this.layout.screenshots); const managedRoot = await fs.realpath(this.layout.userRoot ?? this.layout.root)
     if (!cacheRoot.startsWith(managedRoot + path.sep)) throw new Error('Preview cache must stay in Vhostra managed storage.')
     const temporary = path.join(cacheRoot, `${id}.${randomUUID()}.tmp`)
     try { await fs.writeFile(temporary, bytes, { mode: 0o600, flag: 'wx' }); await fs.rename(temporary, path.join(cacheRoot, cacheFile)) }
@@ -459,6 +544,7 @@ export class VhostraStore {
     }
   }
   resetConfiguration(keepSites: boolean) { return this.serialize(async () => {
+    if (this.machinePaths) throw new Error('Machine storage reset requires a scoped privileged reset transaction.')
     if (typeof keepSites !== 'boolean') throw new Error('Choose whether to keep Site configurations.')
     await this.assertResetSafe()
     await this.exportBundle(path.join(this.layout.backups, `before-reset-${Date.now()}.json`))
@@ -475,7 +561,8 @@ export class VhostraStore {
     }
     if (!keepSites) for (const target of [this.layout.persistentData.mariaDb, this.layout.certificates.directory]) await fs.rm(target, { recursive: true, force: true })
     await this.writeJson(this.layout.settings, keepSites ? { ...defaults, ports: previousPorts } : defaults)
-    await this.saveOnboarding({ completed: false, theme: 'system', server: defaults.selectedWebServer, php: defaults.selectedPhpVersion, cache: 'none' })
+    await this.writeJson(this.userSettingsFile, { startup: defaults.startup, theme: 'system', onboardingCompleted: false })
+    await this.writeJson(path.join(this.layout.root, 'onboarding.json'), { completed: false, theme: 'system', server: defaults.selectedWebServer, php: defaults.selectedPhpVersion, cache: 'none' })
     // Generated native configuration is reproducible; delete positively owned files only.
     const generated = await import('./generated-config.js')
     for (const server of ['apache', 'nginx', 'openlitespeed'] as WebServer[]) await generated.cleanObsoleteGenerated(this.layout.configuration.generated, server)
@@ -501,7 +588,9 @@ export class VhostraStore {
     for (const snapshot of completed.slice(10)) await fs.rm(snapshot.file)
   }
   private async initializeOnce() {
-    await Promise.all(Object.values(this.directories()).map(directory => fs.mkdir(directory, { recursive: true })))
+    if (this.machinePaths) {
+      await Promise.all([this.layout.screenshots, this.layout.exports, this.layout.backups].map(directory => fs.mkdir(directory, { recursive: true })))
+    } else await Promise.all(Object.values(this.directories()).map(directory => fs.mkdir(directory, { recursive: true })))
     const onboardingFile = path.join(this.layout.root, 'onboarding.json')
     if (!existsSync(onboardingFile)) {
       let existing = false
@@ -529,9 +618,10 @@ export class VhostraStore {
     return { root: this.layout.root, sites: this.layout.sites, virtualHosts: this.layout.virtualHosts, screenshots: this.layout.screenshots, exports: this.layout.exports, backups: this.layout.backups, logs: this.layout.logs, ...configuration, ...runtime, certificates: certificates.directory, publicCertificates: certificates.public, privateCertificates: certificates.private, mariaDbData: this.layout.persistentData.mariaDb }
   }
   private async migrateUnifiedSites() {
-    const legacyFiles = (await fs.readdir(this.layout.virtualHosts)).filter(name => name.endsWith('.json'))
+    const legacyFiles = (await fs.readdir(this.layout.virtualHosts).catch(error => { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [] as string[]; throw error })).filter(name => name.endsWith('.json'))
     const sites = await this.readRecords<Site>(this.layout.sites)
     if (!legacyFiles.length && sites.every(site => Boolean(site.configuration))) return
+    if (this.machinePaths) throw new Error('Legacy Site consolidation requires a scoped privileged transaction before machine storage can be used.')
     const legacy = await this.readRecords<VirtualHost>(this.layout.virtualHosts)
     const hosts = new Map(legacy.map(host => [host.id, host]))
     const merged = sites.map(site => {
@@ -573,16 +663,48 @@ export class VhostraStore {
     }
   }
   private recordPath(directory: string, id: string) { if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(id) && ![localhostSiteId, localhostVhostId].includes(id)) throw new Error('Invalid Site identifier.'); return path.join(directory, `${id}.json`) }
-  private async readSettings() { try { const value = JSON.parse(await fs.readFile(this.layout.settings, 'utf8')) as Partial<Settings>; const normalized = this.normalizeSettings(value); this.validateSettings(normalized); if (!value.ports || !value.php || !value.php.disabledExtensions || !value.startup || !value.startup.closeBehavior || value.startup.serviceStartMode === undefined || 'startServicesOnLaunch' in value.startup || 'startServicesAfterLogin' in value.startup) await this.writeJson(this.layout.settings, normalized); return normalized } catch { await this.writeJson(this.layout.settings, defaults); return { ...defaults, optionalServices: { ...defaults.optionalServices }, php: { ...defaults.php, extensions: [...defaults.php.extensions], disabledExtensions: [...defaults.php.disabledExtensions] }, startup: { ...defaults.startup }, ports: { ...defaultServicePorts } } } }
+  private async readSettings() {
+    let value: Partial<Settings>
+    try { value = JSON.parse(await fs.readFile(this.layout.settings, 'utf8')) as Partial<Settings> }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      value = { ...defaults }; await this.writeJson(this.layout.settings, value)
+    }
+    // Only the legacy root owned by this account can supply a startup preference.
+    // Another account opening a shared store starts with its own defaults.
+    const legacyStartup = this.layout.root.startsWith(`${path.resolve(this.userData)}${path.sep}`) ? value.startup : undefined
+    const personal = await this.readPersonalSettings()
+    const normalized = this.normalizeSettings({ ...value, startup: personal.startup ?? legacyStartup ?? defaults.startup })
+    this.validateSettings(normalized)
+    if (!personal.startup) await this.writeJson(this.userSettingsFile, { ...personal, startup: normalized.startup })
+    if (value.startup) {
+      const { startup: _startup, ...shared } = value
+      await this.writeJson(this.layout.settings, shared)
+    }
+    return normalized
+  }
   private async readRecords<T>(directory: string) { const files = await fs.readdir(directory); const records = await Promise.all(files.filter(file => file.endsWith('.json')).map(async file => JSON.parse(await fs.readFile(path.join(directory, file), 'utf8')) as T)); return records }
-  private async writeJson(file: string, value: unknown) { await fs.mkdir(path.dirname(file), { recursive: true }); const temporary = `${file}.${randomUUID()}.tmp`; try { await fs.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 }); await fs.rename(temporary, file) } finally { await fs.rm(temporary, { force: true }) } }
+  private async writeJson(file: string, value: unknown) {
+    if (this.machinePaths) {
+      const object = file === this.layout.settings ? 'settings' : file === path.join(this.layout.root, 'onboarding.json') ? 'onboarding' : null
+      if (object) { await authorizeProtectedTransaction({ version: 1, operations: [{ type: 'system-json', object, value }] }); return }
+      if (path.dirname(file) === this.layout.sites && file.endsWith('.json')) {
+        const id = path.basename(file, '.json')
+        await authorizeProtectedTransaction({ version: 1, operations: [{ type: 'system-json', object: 'site', id, value }] }); return
+      }
+      for (const root of [this.layout.root, this.layout.dataRoot!, this.layout.logs]) {
+        if (file === root || file.startsWith(`${root}${path.sep}`)) throw new Error('Machine configuration mutation is not allowlisted.')
+      }
+    }
+    await fs.mkdir(path.dirname(file), { recursive: true }); const temporary = `${file}.${randomUUID()}.tmp`; try { await fs.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 }); await fs.rename(temporary, file) } finally { await fs.rm(temporary, { force: true }) }
+  }
   private async ensureLocalhostDefinition() {
-    const documentRoot = path.join(this.layout.sites, 'localhost', 'public'); const now = new Date().toISOString()
+    const documentRoot = this.layout.builtinPublic; const now = new Date().toISOString()
     await fs.mkdir(documentRoot, { recursive: true })
     try { await fs.access(this.recordPath(this.layout.sites, localhostSiteId)) } catch { await this.writeSite({ id: localhostSiteId, name: 'Vhostra Localhost', documentRoot, url: 'http://localhost/', vhostId: localhostVhostId, builtIn: 'localhost', createdAt: now, updatedAt: now }, { id: localhostVhostId, hostname: 'localhost', aliases: [], documentRoot, https: { enabled: false }, rewriteEnabled: true, redirects: [], rewrites: [], headers: [], logs: { access: true, error: true }, builtIn: 'localhost' }) }
   }
   private async writeLocalhostWelcome(runtimeMessage = 'Runtime has not been created.') {
-    const root = path.join(this.layout.sites, 'localhost', 'public'); const template = this.welcomeTemplateDirectory ? path.join(this.welcomeTemplateDirectory, 'index.html') : ''
+    const root = this.layout.builtinPublic; const template = this.welcomeTemplateDirectory ? path.join(this.welcomeTemplateDirectory, 'index.html') : ''
     try {
       if (this.welcomeTemplateDirectory) await fs.cp(this.welcomeTemplateDirectory, root, { recursive: true, force: true })
       const [settings, sites] = await Promise.all([this.readSettings(), this.readRecords<Site>(this.layout.sites)])

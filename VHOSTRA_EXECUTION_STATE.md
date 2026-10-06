@@ -325,3 +325,154 @@ About now checks the repository's published GitHub Releases only on explicit cli
 Configured a six-job native GitHub Actions matrix for Windows x64/arm64, macOS x64/arm64 and Linux x64/arm64; the Linux jobs produce RPM, DEB and AppImage. The manually dispatched publish step validates all ten filenames and generates checksums before creating a GitHub Release. It has not run yet. Windows NSIS invokes the packaged Electron runtime for a narrow HKCU PATH change; macOS first launch from Applications creates a guarded CLI link, with an About removal action; Linux DEB/RPM hooks create and remove the exact package-owned link; AppImage has an explicit guarded CLI wrapper action. See `docs/distribution.md` for limitations. The manual update check now requires the exact OS/architecture asset in the published GitHub Release. Native installer and PATH acceptance remains pending.
 
 Local continuation evidence: final production build passed; full source unit suite passed 139/139, and focused PATH/update/release tests passed after naming corrections. The final worktree was packaged into macOS arm64 and x64 DMGs; both DMGs passed `hdiutil verify`, both app binaries and bundled CLI launchers passed architecture/presence checks, and the arm64 packaged CLI passed help/status smoke from outside the checkout. Linux x64 and arm64 DEB and AppImage artifacts were cross-built on the Mac; ELF architecture and both DEB control architectures were inspected. The x64 DEB payload includes the CLI and verified postinstall/postremove link scripts. Both RPMs were subsequently built in an isolated Linux arm64 container with `rpmbuild`; their `x86_64`/`aarch64` metadata, packaged CLI and guarded install/remove scripts passed inspection, and the existing release verifier passed for all three Linux formats on each architecture. These Linux artifacts were not run or installed on native Linux. Windows packaging requires Wine/NSIS absent on this Mac; the Windows CI jobs are configured but have not run. The AppImage CLI wrapper, Windows NSIS PATH hook, macOS authorization flow and native package uninstall behavior remain pending native acceptance. No release was published and no commit was made.
+## Storage boundary groundwork — 2026-10-04
+
+The user supplied a larger machine-wide storage and privilege migration request.
+This phase is **partial**. Startup, close behavior, theme and individual
+onboarding completion now live in `vhostra-user-settings.json` under Electron
+`userData`. A completed shared store presents a four-step personal welcome to
+a first-time second account; user-only reset leaves shared settings and data
+untouched. Legacy startup and theme are copied for the original default-root
+account. The renderer configuration-location picker and its IPC write route
+were removed. Help displays the actual active environment and the fixed OS
+system paths separately. `docs/storage-audit.md` records current ownership.
+
+The active environment is **still under the legacy per-user/custom root**;
+fixed system paths are descriptive only. No privileged system writer, migration
+to protected directories, combined Hosts/system authorization transaction, or
+native Windows/Linux acceptance has been implemented. Existing root migration
+code is retained internally for legacy tests but is no longer exposed to the
+renderer. The secondary-user route is testable with a shared store but cannot
+be reached from ordinary independent per-user defaults until machine-wide
+storage is wired. A legacy custom root outside the default userData tree also
+needs explicit original-owner upgrade handling before that move. No real
+before/after idle CPU, RAM or storage sample was taken in this phase.
+
+Validation: production build passed, source suite passed 152/152 with loopback
+permission, and `git diff --check` passed. `npm run lint` could not run because
+`eslint` is not installed in this checkout. No native GUI or Docker integration
+fixture was run for this phase. No commit was made.
+
+## Split system layout continuation — 2026-10-04
+
+Store and runtime now accept separate machine configuration, data and log roots
+in a direct fixture mode; per-user cache/exports/backups and Docker executable
+preference stay under the OS user. The fixture reads a prepared legacy copy,
+retains MariaDB bytes and an external Site root, and checks two users' personal
+settings. Production startup does **not** select this mode because the scoped
+privileged writer and combined Hosts transaction are still absent. The active
+global environment therefore remains under the legacy root. Build and full
+source suite passed (159/159) with loopback access. No native multi-user or idle
+measurements establish production system storage.
+
+## macOS activation preflight — 2026-10-04
+
+The migration copier now handles the fixed macOS nested layout as one staged
+root. A focused test covers copy, byte checks and repeat preparation at that
+layout. Read-only inspection of the real legacy environment found 4,832
+managed files totaling 305,318,876 bytes, with two external Site roots kept
+outside the copy. The system root does not yet exist. No live migration or
+native protected mutation was attempted because the production Store and
+runtime still write many machine records as the ordinary user; activating a
+root-owned copy now would break runtime and MariaDB access. The live legacy
+environment and website files were left untouched.
+
+`npm run build` passed. The full source suite passed 163/163 when local
+loopback binding was permitted; the sandbox-only run failed in preview tests
+because binding 127.0.0.1 returned EPERM. This is a partial safety fix, not
+system-storage activation. Protected Store writes, writable runtime/data
+ownership, migration activation, one native combined authorization, and idle
+measurements remain open.
+
+## macOS MariaDB configuration-delivery checkpoint — 2026-10-06
+
+The inactive `/Library/Application Support/Vhostra` root is Docker-shared by
+the user but is not an activation signal. An isolated staging transaction
+kept the authoritative MariaDB config root-owned `0600` and published a
+separate allowlisted, non-secret runtime config root-owned `0644`. Docker
+mounted only the generated file read-only. The staged MariaDB container used
+`mysql` `999:999`, started, completed disposable create/insert/read SQL, and
+reported the generated `max_connections=50` setting. Data was not
+world-writable. The developer counted **one** administrator dialog total,
+with **zero** additional dialogs during Docker or SQL; there was one Vhostra
+privilege invocation. Exact-name container/stage cleanup completed and the
+inactive root was empty afterward. Source tests passed 181/181; production
+build passed. The previous production-launcher isolated staging check remains
+passed; production still selects the legacy Store. See `docs/storage-audit.md`
+for the boundary and native evidence.
+
+Activation remains **NO**. The machine web Compose still directly bind-mounts
+protected web/PHP configuration; the full migrated data/log writer ownership,
+empty-root adoption, explicit activation state, and rollback path are not yet
+implemented and validated. Store and runtime native machine-layout guards
+remain in place. No live migration or activation was performed.
+
+## macOS web/PHP configuration-delivery checkpoint — 2026-10-06
+
+The web/PHP gate now uses one bounded semantic protected operation. It renders
+root-owned `0600` authoritative OpenLiteSpeed, Apache, Nginx and PHP files and
+separate root-owned `0644` non-secret runtime files from validated Site names,
+IDs, indexes and rewrite settings. Machine Compose mounts OpenLiteSpeed startup
+files, PHP policy and only the selected frontend read-only. An isolated stage
+under the inactive system root passed
+sequential OpenLiteSpeed, Apache and Nginx container start, canonical/alias
+routing to a disposable PHP Site, a generated Site header, PHP socket policy and
+`expose_php=Off`, LSPHP/PHP-FPM identity, read-only mount checks, and `0600`
+Site log append by the expected worker. Protected files were never mounted.
+The stage and exact test containers were removed; external website roots and
+the legacy production Store were untouched. Source tests passed **185/185** and
+the production build passed. `docs/storage-audit.md` records the design and
+native evidence. In the final narrowed-mount web run, the developer counted
+**three** macOS administrator dialogs: one initial Vhostra approval and **two**
+additional during Docker/web/PHP operation. The harness invoked Vhostra
+elevation once; the two extra dialogs' requester is not established. The
+earlier MariaDB one-dialog/zero-additional checkpoint remains passed.
+
+Activation remains **NO** because gate 2 still requires privileged migration,
+safe adoption of the empty Docker-shared system root, service-data and log
+ownership/ACL setup, explicit activation state and rollback, and end-to-end
+validation on the migrated layout. The native Store/runtime gates remain shut.
+
+## Docker-only administrator-dialog diagnostic — 2026-10-06
+
+One read-only `docker image ls` call filtered to existing Vhostra runtime
+images, run with **zero Vhostra elevation**, coincided with at least **two**
+macOS administrator dialogs personally observed by the developer. No container,
+Docker setting, system-store stage, migration or activation was involved. The
+successful web staging harness also lists images before its server runs; this
+smallest Docker-only operation independently reproduced the two extra dialogs
+seen after the initial Vhostra approval. Attribution is to the Docker
+image-query operation, not to a specific macOS helper process, which remains
+unidentified. No further prompt-producing diagnostics were run. Gate 1 stays
+technically passed at 185/185 source tests and production build PASS.
+
+## Gate 2 synthetic machine migration — 2026-10-06
+
+`electron/machine-migration.ts` prepares a bounded machine-layout payload
+inside the existing inactive `/Library/Application Support/Vhostra` root.
+A durable per-attempt journal records preparing, copied, verified and
+ready-for-activation; failures leave a rolled-back result. Recovery rechecks
+a ready payload's source inventory, hashes, exact generated files, owners and
+modes. Gate 2 has no active-state commit. Directory existence never selects
+machine storage, and the native Store/runtime activation guards remain.
+
+The copier leaves external Site document roots in place, moves only managed
+built-in Site content, regenerates Docker-readable runtime configuration from
+validated Vhostra settings/Sites, and verifies exact inventory and policy.
+Protected authoritative configuration stays root-owned/private; MariaDB data
+uses the inspected container writer `999:999` without world write; Site logs
+stay `0600`. The worker accepts a synthetic `/private/tmp` fixture only and
+runs one bounded authorization for preparation, verification and six failure
+cases. The first native run passed and exited with one Vhostra privilege
+invocation and zero macOS dialogs personally counted. The final native rerun
+after recovery and HTTPS-model tightening also returned PASS, completed all
+six failure cases with one Vhostra privilege invocation, and exited. The
+developer personally counted one administrator dialog in that final run. The
+inactive root was empty afterward; the real legacy Store and external website
+roots were untouched. Focused tests passed 9/9; the full suite passed
+194/194 with loopback permission and the production build passed.
+
+Gate 3 remains separate: controlled activation commit, startup selection,
+runtime replacement/recovery, and acceptance on the activated layout. Do not
+infer activation from the existence of the inactive directory or a ready
+staging journal. No live migration or activation occurred.
