@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import type { StorageLayout } from '../types/storage'
+import { useRef, useState, type KeyboardEvent } from 'react'
 
 type Entry = { title: string; text: string; command?: string; output?: string }
 type Topic = { title: string; intro: string[]; entries?: Entry[]; note?: string }
@@ -8,7 +7,7 @@ type Topic = { title: string; intro: string[]; entries?: Entry[]; note?: string 
 const topics: Topic[] = [
   { title: 'Getting Started', intro: [
     'Vhostra is a local web development app for websites on your computer. It is not a production hosting control panel. Keep Vhostra and its managed services on your own machine.',
-    'On first launch, choose Set up as new or restore a Vhostra backup. Vhostra chooses its local storage locations automatically. External website files remain in their selected document roots.',
+    'On first launch, choose Set up as new or restore a Vhostra backup. Confirm the Local Configuration Path, where Vhostra keeps its settings, Site definitions, certificates, logs and database data. You can change this location later in Settings.',
     'Choose a theme, one web server (Apache, Nginx or OpenLiteSpeed), a supported PHP version, and optionally Redis or Memcached. Set Up Vhostra validates ports and prepares the runtime; Docker must be available.',
     'Start Services if they are stopped. In Sites, add a Site with an existing Root Directory or import a supported Site configuration. If the Site needs a database, create or import it separately in Databases. Then use Open Site to view it in your browser.'
   ] },
@@ -45,9 +44,9 @@ const topics: Topic[] = [
     'Errors may show a short message first and expandable technical details when available. Logs can contain sensitive paths or application data; review them before sharing.'
   ] },
   { title: 'Settings, backup and reset', intro: [
-    'Settings changes the selected web server, PHP, optional caches, ports and startup behavior. Startup has one service-start choice: When Vhostra opens, After login, or Manually. After login also enables Launch Vhostra on Login. Vhostra remembers the last useful Open or Save directory locally. Resources shows current app and managed-runtime usage only while that page is visible.',
+    'Settings changes the selected web server, PHP, optional caches, ports, startup behavior and Local Configuration Path. Startup has one service-start choice: When Vhostra opens, After login, or Manually. After login also enables Launch Vhostra on Login. Vhostra remembers the last useful Open or Save directory locally. Resources shows current app and managed-runtime usage only while that page is visible.',
     'Export Configuration saves a local bundle of settings and Site definitions without database data or secrets. Export Full Backup also includes database data, users, roles, grants and private authentication metadata in a private sibling folder. Keep both parts together in a trusted location. Restore previews conflicts and asks what to keep or replace.',
-    'Reset my preferences changes only this OS user’s theme, startup mode and close-button behavior. Reset Keep resets this profile’s settings and runtime while preserving Site definitions and MariaDB data and accounts. Reset Remove also removes Vhostra definitions and database state after final confirmation. External website files stay untouched. Back up important data first.'
+    'Reset Keep resets settings and runtime while preserving Site definitions and MariaDB data and accounts. Reset Remove also removes Vhostra definitions and database state after final confirmation. External website files stay untouched. Back up important data first.'
   ] },
   { title: 'CLI', intro: [
     'The desktop package includes a Vhostra CLI launcher. Put it on your PATH, then run vhostra followed by a command. On macOS the launcher is inside the app at Contents/Resources/bin/vhostra; on Linux it is beside VhostraDesktop, and on Windows use vhostra.cmd beside Vhostra.exe. Run help, --help or -h for the full syntax.',
@@ -85,8 +84,6 @@ function CommandBlock({ value, kind = 'command' }: { value: string; kind?: 'comm
 }
 
 export function HelpWorkspace() {
-  const [storage, setStorage] = useState<StorageLayout | null>(null)
-  useEffect(() => { void window.vhostra?.getStorageLayout().then(setStorage).catch(() => undefined) }, [])
   const [query, setQuery] = useState('')
   const [active, setActive] = useState(0)
   const tabs = useRef<Array<HTMLButtonElement | null>>([])
@@ -108,7 +105,6 @@ export function HelpWorkspace() {
     <p className="text-xs font-medium uppercase tracking-[.12em] text-[#606060]">Offline documentation</p>
     <h1 className="mt-1 text-2xl font-bold">Help &amp; Documentation</h1>
     <p className="mt-3 max-w-2xl text-sm leading-5 text-[#606060]">Simple guides for Vhostra’s local development tools. Search stays on this computer.</p>
-    {storage && <section aria-label="Storage locations" className="mt-6 rounded-lg border border-[#E5E5E5] p-4"><h2 className="text-xl font-medium">Storage locations</h2><p className="help-copyable mt-2 text-sm leading-5 text-[#606060]">Vhostra keeps this account’s preferences and development environment in the locations below. Website document roots remain wherever you selected them.</p><dl className="mt-4 space-y-3 text-sm"><div><dt className="font-medium">User configuration directory</dt><dd className="help-copyable break-all font-mono text-xs">{storage.userConfiguration}</dd></div><div><dt className="font-medium">Vhostra environment directory</dt><dd className="help-copyable break-all font-mono text-xs">{storage.root}</dd></div><div><dt className="font-medium">MariaDB data</dt><dd className="help-copyable break-all font-mono text-xs">{storage.persistentData.mariaDb}</dd></div><div><dt className="font-medium">Vhostra logs</dt><dd className="help-copyable break-all font-mono text-xs">{storage.logs}</dd></div></dl><p className="help-copyable mt-4 text-xs leading-5 text-[#606060]">This account’s Vhostra environment directory is authoritative. This guide shows paths only; it never displays credentials or private keys.</p></section>}
     <div className="mt-6 flex max-w-md items-center gap-2"><input aria-label="Search local help" value={query} onChange={event => search(event.target.value)} placeholder="Search local help" className="input"/>{query && <button type="button" aria-label="Clear help search" onClick={() => search('')} className="h-9 rounded-full border border-[#E5E5E5] px-3 text-sm font-medium">Clear</button>}</div>
     {!normalized && <nav aria-label="Help topics" role="tablist" className="mt-6 flex max-w-full flex-wrap gap-2">{topics.map((item, index) => <button key={item.title} ref={element => { tabs.current[index] = element }} type="button" role="tab" id={`help-tab-${index}`} aria-controls="help-panel" aria-selected={active === index} tabIndex={active === index ? 0 : -1} onKeyDown={event => onTabKey(event, index)} onClick={() => choose(index)} className={`help-tab min-h-9 rounded-full px-3 py-2 text-sm font-medium ${active === index ? 'bg-[#0F0F0F] text-white' : 'bg-[#F2F2F2] text-[#0F0F0F] hover:bg-[#E5E5E5]'}`}>{item.title}</button>)}</nav>}
     {normalized && <section aria-label="Help search results" className="mt-6 space-y-4"><p className="text-xs text-[#606060]">{results.length ? `${results.length} matching ${results.length === 1 ? 'section' : 'sections'}` : 'No documentation found for this search.'}</p>{results.map(result => <article key={result.key} id={`help-result-${result.key}`} tabIndex={-1} className="rounded-lg border border-[#E5E5E5] p-4"><p className="text-xs text-[#606060]">{result.topic.title}</p><h2 className="help-heading mt-2 text-sm font-medium">{result.title}</h2><p className="help-copyable mt-2 max-w-[75ch] whitespace-pre-wrap text-sm leading-5 text-[#606060]">{result.text}</p>{result.command && <CommandBlock value={result.command}/>}{result.output && <CommandBlock value={result.output} kind="output"/>}</article>)}</section>}

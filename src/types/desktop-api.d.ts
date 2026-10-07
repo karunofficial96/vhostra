@@ -5,7 +5,7 @@ export interface SiteInput { vhostId?: string; name: string; documentRoot: strin
 export interface SiteUpdate extends SiteInput { id: string }
 export interface HostsMappingResult { installed: string[]; alreadyMapped: string[]; conflicts: Array<{ hostname: string; address: string }>; message: string }
 
-export interface OnboardingPreferences { themeSaved?: boolean; secondary?: boolean; restoredServices?: { redis: boolean; memcached: boolean }; ready?: boolean; completed: boolean; theme: 'light' | 'dark' | 'system'; server: VhostraSettings['selectedWebServer']; php: VhostraSettings['selectedPhpVersion']; cache: 'none' | 'redis' | 'memcached' }
+export interface OnboardingPreferences { themeSaved?: boolean; restoredServices?: { redis: boolean; memcached: boolean }; ready?: boolean; completed: boolean; theme: 'light' | 'dark' | 'system'; server: VhostraSettings['selectedWebServer']; php: VhostraSettings['selectedPhpVersion']; cache: 'none' | 'redis' | 'memcached' }
 export interface NativeImportPreview { plannedLogs?: Record<string, { access: string; error: string }>; source: string; server: string; status: string; hosts: Array<{ hostname: string; aliases: string[]; documentRoot: string; https: { enabled: boolean }; rewriteEnabled: boolean; indexFiles: string[] }>; warnings: string[]; preservedDirectives: string[] }
 export interface RuntimeStatusRow { id: string; label: string; enabled: boolean; state: string }
 export interface DockerPrerequisite { state: 'ready' | 'missing' | 'stopped' | 'broken' | 'timeout'; executable?: string; detail?: string }
@@ -26,7 +26,6 @@ export interface VhostraDesktopApi {
   previewBackup(): Promise<BackupPreview | null>
   restoreBackup(roots?: Record<string, string>, choices?: Record<string, 'keep' | 'replace' | 'skip'>, server?: WebServer): Promise<{ message: string; summary?: { imported: number; skipped: number; replaced: number; conflicted: number; failed: number }; missing: string[]; warnings: string[]; preferences: OnboardingPreferences }>
   resetApp(keepSites: boolean, confirmation: string): Promise<{ message: string }>
-  resetUserPreferences(): Promise<{ message: string }>
   newSitePlan(): Promise<{ id: string; logs: { access: string; error: string } }>
   repairSite(id: string): Promise<HostsMappingResult>
   siteDetails(id: string, includeNative?: boolean): Promise<{ host: VhostraState['virtualHosts'][number]; native: string; nativePath: string; logs: { access: string; error: string } }>
@@ -46,6 +45,8 @@ export interface VhostraDesktopApi {
   removeSite(id: string): Promise<VhostraState & { mappingNotice?: string }>
   setVirtualHostRewrite(id: string, enabled: boolean): Promise<VhostraState>
   chooseDocumentRoot(): Promise<string | null>
+  chooseConfigurationLocation(): Promise<string | null>
+  migrateConfigurationLocation(directory: string): Promise<{ root: string; message: string }>
   openSite(url: string): Promise<void>
   getStorageLayout(): Promise<StorageLayout>
   listPersistentLogs(filter?: string): Promise<Array<{ path: string; size: number; modifiedAt: string }>>

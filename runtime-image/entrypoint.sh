@@ -1,26 +1,6 @@
 #!/bin/sh
 set -eu
 
-case "${VHOSTRA_BUILTIN_MODE:-host-mounted}" in
-  image-copy)
-    # Machine generations are immutable read-only inputs. Built-in serving and
-    # phpMyAdmin application files live only in this disposable container layer.
-    for file in index.html vhostra-health.php vhostra-extensions.php vhostra-cache-health.php vhostra-extension-state.php; do
-      [ -f "/usr/share/vhostra/builtin/$file" ] && [ ! -L "/usr/share/vhostra/builtin/$file" ] || { echo 'Incomplete published built-in generation.' >&2; exit 65; }
-    done
-    mkdir -p /var/www/html
-    cp -a /usr/share/vhostra/builtin/. /var/www/html/
-    ;;
-  host-mounted) ;;
-  *) echo 'Invalid built-in publication mode.' >&2; exit 65 ;;
-esac
-
-case "${VHOSTRA_WEB_SERVER:-openlitespeed}" in
-  openlitespeed) site_log_user=nobody; site_log_group=nogroup ;;
-  apache|nginx) site_log_user=www-data; site_log_group=www-data ;;
-  *) echo 'Unsupported Vhostra log writer' >&2; exit 64 ;;
-esac
-
 LSPHP_BIN="/usr/local/lsws/lsphp${VHOSTRA_LSPHP_VERSION:?}/bin/lsphp"
 test -x "$LSPHP_BIN" || { echo "Vhostra build error: requested LSPHP runtime is unavailable" >&2; exit 64; }
 
@@ -133,10 +113,10 @@ sed -i '/; Vhostra PHP policy begin/,/; Vhostra PHP policy end/d' "$FPM_INI"
   printf '; Vhostra PHP policy end\n'
 } >> "$FPM_INI"
 rm -f "/etc/php/${PHP_VERSION}/fpm/pool.d/www.conf"
-cat > "/etc/php/${PHP_VERSION}/fpm/pool.d/vhostra.conf" <<FPM_POOL
+cat > "/etc/php/${PHP_VERSION}/fpm/pool.d/vhostra.conf" <<'FPM_POOL'
 [vhostra]
-user = ${site_log_user}
-group = ${site_log_group}
+user = nobody
+group = nogroup
 listen = 127.0.0.1:8089
 listen.allowed_clients = 127.0.0.1
 pm = ondemand
@@ -154,28 +134,18 @@ cp /etc/vhostra/openlitespeed/localhost.conf /usr/local/lsws/conf/vhosts/Example
 sed -Ei '/^rewrite[[:space:]]*\{/,/^\}/ s/^[[:space:]]*enable[[:space:]]+0[[:space:]]*$/  enable 1\n  autoLoadHtaccess 1/' /usr/local/lsws/conf/vhosts/Example/vhconf.conf
 
 if [ "${VHOSTRA_HTTPS:-false}" = true ]; then
+  mkdir -p /etc/vhostra/certificates/public /etc/vhostra/certificates/private
+  chmod 0700 /etc/vhostra/certificates/private
   names="${VHOSTRA_TLS_NAMES:?}"
-  case "${VHOSTRA_CERTIFICATE_MODE:-managed}" in
-    external)
-      # The machine-layout publisher owns this read-only mount. A web
-      # container must never create or renew authoritative private keys.
-      /usr/local/bin/vhostra-verify-external-certificate /etc/vhostra/certificates "$names"
-      ;;
-    managed)
-      mkdir -p /etc/vhostra/certificates/public /etc/vhostra/certificates/private
-      chmod 0700 /etc/vhostra/certificates/private
-      saved="$(cat /etc/vhostra/certificates/public/names.txt 2>/dev/null || true)"
-      if [ "$saved" != "$names" ] || ! openssl x509 -checkend 86400 -noout -in /etc/vhostra/certificates/public/localhost.pem >/dev/null 2>&1; then
-        umask 077
-        openssl req -x509 -nodes -days 365 -newkey rsa:2048 -subj /CN=localhost -addext "subjectAltName=$names" -keyout /etc/vhostra/certificates/private/localhost.key.new -out /etc/vhostra/certificates/public/localhost.pem.new
-        mv /etc/vhostra/certificates/private/localhost.key.new /etc/vhostra/certificates/private/localhost.key
-        mv /etc/vhostra/certificates/public/localhost.pem.new /etc/vhostra/certificates/public/localhost.pem
-        printf '%s' "$names" > /etc/vhostra/certificates/public/names.txt
-        umask 022
-      fi
-      ;;
-    *) echo 'Invalid certificate publication mode.' >&2; exit 1 ;;
-  esac
+  saved="$(cat /etc/vhostra/certificates/public/names.txt 2>/dev/null || true)"
+  if [ "$saved" != "$names" ] || ! openssl x509 -checkend 86400 -noout -in /etc/vhostra/certificates/public/localhost.pem >/dev/null 2>&1; then
+    umask 077
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 -subj /CN=localhost -addext "subjectAltName=$names" -keyout /etc/vhostra/certificates/private/localhost.key.new -out /etc/vhostra/certificates/public/localhost.pem.new
+    mv /etc/vhostra/certificates/private/localhost.key.new /etc/vhostra/certificates/private/localhost.key
+    mv /etc/vhostra/certificates/public/localhost.pem.new /etc/vhostra/certificates/public/localhost.pem
+    printf '%s' "$names" > /etc/vhostra/certificates/public/names.txt
+    umask 022
+  fi
 fi
 
 if [ "${VHOSTRA_HTTPS:-false}" = true ] && [ "${VHOSTRA_WEB_SERVER:-openlitespeed}" = openlitespeed ]; then
@@ -194,51 +164,6 @@ fi
 # Preserve the stock protected context's authentication policy while providing
 # its empty managed directory for strict native configuration validation.
 mkdir -p /var/log/vhostra /run/mysqld /var/www/html/protected
-# OLS uses nobody; Apache and Nginx use www-data workers. Their root masters
-# may also open logs. A server switch repairs only managed Site log paths.
-chown "root:$site_log_group" /var/log/vhostra
-chmod 0710 /var/log/vhostra
-mkdir -p /var/log/vhostra/sites
-chown "root:$site_log_group" /var/log/vhostra/sites
-chmod 0710 /var/log/vhostra/sites
-# The built-in localhost snippet is a fixed file, not a member of sites/*.conf.
-builtin_log_dir=/var/log/vhostra/sites/vhostra-localhost-vhost
-[ ! -L "$builtin_log_dir" ] || { echo 'Invalid built-in Site log directory' >&2; exit 65; }
-[ -e "$builtin_log_dir" ] || mkdir -m 0700 "$builtin_log_dir"
-[ -d "$builtin_log_dir" ] || { echo 'Invalid built-in Site log directory' >&2; exit 65; }
-# Only Vhostra's validated, read-only Site snippets may create a host-backed
-# log directory. The ordinary Electron process does not own this service tree.
-for site_config in /etc/vhostra/openlitespeed/sites/*.conf; do
-  [ -f "$site_config" ] || continue
-  site_id="${site_config##*/}"
-  site_id="${site_id%.conf}"
-  case "$site_id" in
-    vhostra-localhost-vhost) ;;
-    *) printf '%s\n' "$site_id" | grep -Eq '^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$' || { echo 'Invalid Site log identifier' >&2; exit 65; } ;;
-  esac
-  site_log_dir="/var/log/vhostra/sites/$site_id"
-  [ ! -L "$site_log_dir" ] || { echo 'Invalid Site log directory' >&2; exit 65; }
-  [ -e "$site_log_dir" ] || mkdir -m 0700 "$site_log_dir"
-  [ -d "$site_log_dir" ] || { echo 'Invalid Site log directory' >&2; exit 65; }
-done
-for site_log_dir in /var/log/vhostra/sites/*; do
-  [ -d "$site_log_dir" ] || continue
-  [ ! -L "$site_log_dir" ] || { echo 'Invalid Site log directory' >&2; exit 65; }
-  case "${site_log_dir##*/}" in
-    vhostra-localhost-vhost) ;;
-    *) printf '%s\n' "${site_log_dir##*/}" | grep -Eq '^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$' || { echo 'Invalid Site log directory name' >&2; exit 65; } ;;
-  esac
-  chown "$site_log_user:$site_log_group" "$site_log_dir"
-  chmod 0700 "$site_log_dir"
-  for site_log_kind in access error; do
-    site_log_file="$site_log_dir/$site_log_kind.log"
-    [ ! -L "$site_log_file" ] || { echo 'Invalid Site log file' >&2; exit 65; }
-    if [ ! -e "$site_log_file" ]; then ( umask 077; : >> "$site_log_file" ); fi
-    [ -f "$site_log_file" ] && [ "$(stat -c %h "$site_log_file")" = 1 ] || { echo 'Invalid Site log file' >&2; exit 65; }
-    chown "$site_log_user:$site_log_group" "$site_log_file"
-    chmod 0600 "$site_log_file"
-  done
-done
 ln -sfn /run/mysqld/mysqld.sock /tmp/mysql.sock
 # This is a Vhostra-managed built-in document root. OLS deliberately rejects
 # symlinks which leave its vhost root, so seed the immutable bundled source on
@@ -246,10 +171,10 @@ ln -sfn /run/mysqld/mysqld.sock /tmp/mysql.sock
 # same supervised runtime and survives container replacement on the host.
 if [ -L /var/www/html/phpmyadmin ]; then rm /var/www/html/phpmyadmin; fi
 if [ ! -f /var/www/html/phpmyadmin/index.php ]; then cp -a /usr/share/phpmyadmin /var/www/html/phpmyadmin; fi
-# Configuration is Vhostra-owned runtime state, not user content. The PHP
-# source reads its secret from the container environment at request time.
-test -n "${VHOSTRA_PMA_PASSWORD:?}"
-cp /usr/share/phpmyadmin/config.inc.php /var/www/html/phpmyadmin/config.inc.php
+# Configuration is Vhostra-owned runtime state, not user content. Render the
+# config-auth secret only into PHP source (never an HTTP response or a client
+# script) and refresh it on every disposable-container start.
+sed "s/__VHOSTRA_PMA_PASSWORD__/${VHOSTRA_PMA_PASSWORD:?}/g" /usr/share/phpmyadmin/config.inc.php > /var/www/html/phpmyadmin/config.inc.php
 chmod 0644 /var/www/html/phpmyadmin/config.inc.php
 # Public Vhostra-owned files must be readable by the selected frontend worker.
 chmod -R a+rX /var/www/html

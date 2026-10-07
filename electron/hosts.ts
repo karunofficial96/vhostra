@@ -1,5 +1,4 @@
 import { hostsDiff } from './hosts-diff.js'
-import { authorizeProtectedTransaction } from './protected-launcher.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
@@ -208,9 +207,7 @@ export class HostsFileManager {
     try {
       await fs.mkdir(this.recoveryDirectory, { recursive: true, mode: 0o700 })
       await fs.writeFile(recoveryFile, JSON.stringify(recovery), { mode: 0o600 })
-      if (this.platform === 'darwin' && !this.localFixture && this.hostsPath === systemHostsPath()) {
-        await authorizeProtectedTransaction({ version: 1, operations: [{ type: 'hosts', expectedSha256: digest(expectedSource), contents }] })
-      } else if (this.platform === 'win32') {
+      if (this.platform === 'win32') {
         // EncodedCommand avoids nested ArgumentList quoting; exit code belongs to
         // the elevated child, not merely the unelevated Start-Process launcher.
         const command = `$ErrorActionPreference='Stop'; $replaced=$false; try { $target=${powerShellString(this.hostsPath)}; if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($target)) -cne [Convert]::ToBase64String([System.IO.File]::ReadAllBytes(${powerShellString(expected)}))) { throw 'Hosts file changed; retry repair' }; [System.IO.File]::Copy($target,${powerShellString(staged)},$false); [System.IO.File]::WriteAllBytes(${powerShellString(staged)},[System.IO.File]::ReadAllBytes(${powerShellString(temporary)})); if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($target)) -cne [Convert]::ToBase64String([System.IO.File]::ReadAllBytes(${powerShellString(expected)}))) { throw 'Hosts file changed; retry repair' }; [System.IO.File]::Replace(${powerShellString(staged)},$target,${powerShellString(backup)}); $replaced=$true; if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($target)) -cne [Convert]::ToBase64String([System.IO.File]::ReadAllBytes(${powerShellString(temporary)}))) { throw 'Hosts write verification failed; native backup retained' }; Remove-Item ${powerShellString(backup)} -Force; exit 0 } catch { $failure=$_; if ($replaced -and (Test-Path ${powerShellString(backup)})) { try { if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($target)) -ceq [Convert]::ToBase64String([System.IO.File]::ReadAllBytes(${powerShellString(temporary)}))) { [System.IO.File]::Copy(${powerShellString(backup)},${powerShellString(staged)},$true); if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($target)) -ceq [Convert]::ToBase64String([System.IO.File]::ReadAllBytes(${powerShellString(temporary)}))) { [System.IO.File]::Replace(${powerShellString(staged)},$target,$null); if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($target)) -cne [Convert]::ToBase64String([System.IO.File]::ReadAllBytes(${powerShellString(expected)}))) { throw 'Hosts recovery verification failed; backup retained' } } } } catch { Write-Warning 'Recovery failed; backup retained' } }; Write-Error $failure; exit 1 } finally { if (Test-Path ${powerShellString(staged)}) { Remove-Item ${powerShellString(staged)} -Force } }`

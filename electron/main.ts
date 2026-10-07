@@ -40,7 +40,6 @@ import { checkDocker, dockerDesktopApplication, dockerInstallUrl, saveDockerExec
 import { checkManualUpdate, type UpdateResult } from './manual-update.js';
 import { authorizeMacCliLink, ensureOwnedCliLink, removeOwnedCliLink, installAppImageCli, removeAppImageCli } from './cli-integration.js';
 import { changeInstalledWindowsPath, WindowsPathSetupError } from './windows-path.js';
-import { systemStoragePaths } from './storage-paths.js';
 
 if (!app.isPackaged && process.env.NODE_ENV === "development" && process.env.VHOSTRA_DEV_PROFILE) {
     if (!path.isAbsolute(process.env.VHOSTRA_DEV_PROFILE)) throw new Error("VHOSTRA_DEV_PROFILE must be an absolute local test directory.");
@@ -133,7 +132,7 @@ function createRuntimeController() {
         (message) => store.updateLocalhostWelcome(message),
         testScope,
     );
-    hosts = new HostsFileManager(path.join(store.layout.userRoot ?? store.layout.root, "temporary"), path.join(store.layout.backups, "hosts"));
+    hosts = new HostsFileManager(path.join(store.layout.root, "temporary"), path.join(store.layout.backups, "hosts"));
     const controller = services;
     let previewRuntimeReady = false;
     services.subscribe(() => {
@@ -311,9 +310,6 @@ if (!hasSingleInstanceLock && !pathCommand) {
 }
 
 if (hasSingleInstanceLock) app.whenReady().then(() => {
-    // macOS supports this per-user Store/runtime. The explored machine-wide
-    // architecture is dormant and requires a new explicit architecture decision.
-    // Do not bypass its guards or weaken permissions. See docs/machine-freeze.md.
     store = new VhostraStore(
         app.getPath("userData"),
         path.join(__dirname, "../dist-welcome"),
@@ -396,7 +392,7 @@ function registerIpc() {
         if (within(parent, managed) && !within(parent, exports)) throw new Error('Choose an export destination outside Vhostra active configuration and runtime storage.');
     };
     const migrationMutations = new Set([
-        "cancel-backup-preview", "export-full-backup", "compare-backup-database", "repair-site", "finish-onboarding", "reset-app", "reset-user-preferences", "edit-hosts", "restore-backup", "setup-onboarding", "save-onboarding", "apply-native-import", "save-settings", "add-site", "update-site", "remove-site", "sync-all-hosts", "sync-hosts",
+        "cancel-backup-preview", "export-full-backup", "compare-backup-database", "repair-site", "finish-onboarding", "reset-app", "edit-hosts", "restore-backup", "setup-onboarding", "save-onboarding", "apply-native-import", "save-settings", "add-site", "update-site", "remove-site", "sync-all-hosts", "sync-hosts",
         "set-vhost-rewrite", "import-configuration", "start-services", "stop-services", "restart-services",
         "reload-web-server", "set-optional-service", "control-managed-service", "manage-php-extension",
         "configure-cwebp", "create-database", "update-database-access", "import-database", "export-database", "export-production-database", "export-site-configuration", "repair-database", "delete-database", "quit-application",
@@ -407,7 +403,7 @@ function registerIpc() {
         if (mutating) desktopMutation = true;
         try { return await listener(event, ...args); } catch (error) {
             const state = await store.getState().catch(()=>null);
-            const mappings: Array<[string,string]> = [['/etc/vhostra/nginx',store.layout.runtime.nginx],['/etc/vhostra/apache',store.layout.runtime.apache],['/etc/vhostra/php',store.layout.runtime.php],['/etc/vhostra/openlitespeed',store.layout.runtime.openLiteSpeed],['/usr/local/lsws/conf/vhostra-sites',store.layout.runtime.openLiteSpeed],['/var/log/vhostra',store.layout.logs],['/var/www/html',store.layout.builtinPublic], ...(state?.sites ?? []).filter(site=>!site.builtIn).map(site=>[`/var/www/vhostra/${site.vhostId}`,site.documentRoot] as [string,string])];
+            const mappings: Array<[string,string]> = [['/etc/vhostra/nginx',store.layout.runtime.nginx],['/etc/vhostra/apache',store.layout.runtime.apache],['/etc/vhostra/php',store.layout.runtime.php],['/etc/vhostra/openlitespeed',store.layout.runtime.openLiteSpeed],['/usr/local/lsws/conf/vhostra-sites',store.layout.runtime.openLiteSpeed],['/var/log/vhostra',store.layout.logs],['/var/www/html',path.join(store.layout.sites,'localhost','public')], ...(state?.sites ?? []).filter(site=>!site.builtIn).map(site=>[`/var/www/vhostra/${site.vhostId}`,site.documentRoot] as [string,string])];
             const suppliedSecrets = args.flatMap(value => value && typeof value === 'object' ? Object.entries(value).filter(([key,item])=> /password|secret|token|credential/i.test(key) && typeof item === 'string').map(([,item])=>item as string) : []);
             throw new Error(mapDiagnosticPaths(redactProgress(await services.redactLocalLog(error instanceof Error ? error.message : String(error)),suppliedSecrets),mappings));
         } finally { if (mutating) desktopMutation = false; }
@@ -462,7 +458,6 @@ function registerIpc() {
     });
     handle("vhostra:reset-app", async (_event, keepSites: boolean, confirmation: string) => {
         if (typeof keepSites !== "boolean" || confirmation !== "Yes, Reset Vhostra") throw new Error("Final reset confirmation is required.");
-        if (!keepSites) throw new Error("Removing Sites, databases, certificates, or persistent data requires a separate destructive operation.");
         await store.assertResetSafe();
         const previous = (await store.getState()).settings;
         if (previous.startup.launchAtLogin) await configureLaunchAtLogin(false);
@@ -479,27 +474,20 @@ function registerIpc() {
             throw error;
         }
     });
-    handle("vhostra:reset-user-preferences", async () => {
-        const previous = (await store.getState()).settings.startup;
-        if (previous.launchAtLogin) await configureLaunchAtLogin(false);
-        try { return await store.resetUserPreferences(); }
-        catch (error) {
-            if (previous.launchAtLogin) await configureLaunchAtLogin(true).catch(reportServiceFailure);
-            throw error;
-        }
-    });
     handle("vhostra:get-state", async () => desktopState(await store.getState()));
     handle("vhostra:get-onboarding", async () => ({ preferences: await store.getOnboarding(), phpVersions: supportedPhpVersions }));
     handle("vhostra:save-onboarding", async (_event, input) => {
         const previous = await store.getOnboarding();
-        return store.saveOnboarding({ ...input, ready: previous.ready, completed: previous.completed, secondary: previous.secondary });
+        return store.saveOnboarding({ ...input, ready: previous.ready, completed: previous.completed });
     });
     handle("vhostra:finish-onboarding", async () => {
-        return store.finishOnboarding();
+        const preferences = await store.getOnboarding();
+        if (!preferences.ready) throw new Error("Complete runtime setup before entering Vhostra.");
+        return store.saveOnboarding({ ...preferences, completed: true });
     });
     handle("vhostra:setup-onboarding", async () => {
         const preferences = await store.getOnboarding();
-        if (preferences.completed || preferences.secondary) throw new Error("Machine setup is already complete. Use Settings to change your environment.");
+        if (preferences.completed) throw new Error("First-run setup is already complete. Use Settings to change your environment.");
         const { settings } = await store.getState();
         await store.saveSettings({ ...settings, selectedWebServer: preferences.server, selectedPhpVersion: preferences.php,
             optionalServices: preferences.restoredServices ?? { redis: preferences.cache === 'redis', memcached: preferences.cache === 'memcached' } });
@@ -679,6 +667,80 @@ function registerIpc() {
         );
         return result.canceled ? null : (result.filePaths[0] ?? null);
     });
+    handle("vhostra:choose-configuration-location", async (event) => {
+        const result = await openFileDialog(
+            {
+                title: "Choose Vhostra configuration destination",
+                defaultPath: store.layout.root,
+                properties: ["openDirectory", "createDirectory"],
+            },
+            BrowserWindow.fromWebContents(event.sender)!, true,
+        );
+        return result.canceled ? null : (result.filePaths[0] ?? null);
+    });
+    handle(
+        "vhostra:migrate-configuration-location",
+        async (_event, directory: string) => {
+            if (typeof directory !== "string" || !path.isAbsolute(directory))
+                throw new Error(
+                    "Choose an absolute local configuration destination.",
+                );
+            const onboarding = await store.getOnboarding();
+            const selectedRoot = onboarding.completed ? path.resolve(directory, 'Vhostra') : path.resolve(directory);
+            if (selectedRoot === store.layout.root) return { root: selectedRoot, message: 'Vhostra is already using this local configuration path.' };
+            if (migrationProgress || services.current().progress) throw new Error("A Vhostra operation is already in progress.");
+            migrationProgress = { id: -Date.now(), lines: [], total: 0 };
+            recordMigrationStage("Preparing configuration migration…");
+            // Coordinate Vhostra's own writer before copying. This stops only the
+            // Vhostra-labeled runtime; host project files and unrelated Docker resources remain untouched.
+            await services.refresh();
+            const wasRunning = services.current().state === "running";
+            const databaseWasRunning = (await services.listManagedServices()).find(row => row.id === "mariadb")?.state === "running";
+            try {
+                await services.resetRuntime(false);
+                await services.pauseBackgroundWork();
+                const result = await (onboarding.completed ? store.migrateConfiguration.bind(store) : store.migrateConfigurationRoot.bind(store))(
+                    directory,
+                    async () => {
+                        createRuntimeController();
+                        await services.refresh();
+                        if (wasRunning) await services.start(databaseWasRunning);
+                        else if (databaseWasRunning) await services.controlManagedService("mariadb", "start");
+                    },
+                    recordMigrationStage,
+                );
+                return {
+                    ...result,
+                    message: wasRunning
+                        ? `${result.message} The Vhostra runtime was restored from the verified new location.`
+                        : result.message,
+                };
+            } catch (error) {
+                // A failed copy never changes the pointer. Restore the already-existing
+                // Vhostra runtime if this operation had stopped it before the attempt.
+                // The failed destination can still own the host ports. Stop that scoped
+                // container before rebuilding the controller for the restored source.
+                await services.resetRuntime(false);
+                createRuntimeController();
+                if (wasRunning)
+                    await services
+                        .start(databaseWasRunning)
+                        .catch((restartError) =>
+                            console.error(
+                                "[Vhostra] Could not restore runtime after configuration migration failure:",
+                                restartError,
+                            ),
+                        );
+                if (!wasRunning && databaseWasRunning) await services.controlManagedService("mariadb", "start").catch(reportServiceFailure);
+                throw error;
+            } finally {
+                migrationProgress = undefined;
+                migrationSeen.clear();
+                publishRuntimeStatus();
+                updateTrayForTransition();
+            }
+        },
+    );
     const siteUrls = new SiteUrlResolver(store, () => hosts, () => services.siteUrlAvailability(), (url, id) => services.verifyLegacyPreviewRoute(url, id));
     handle("vhostra:resolve-site-url", async (_event, id: string) => {
         const result = await siteUrls.resolve(id);
@@ -696,8 +758,6 @@ function registerIpc() {
     handle("vhostra:get-storage-layout", () => {
         const layout = store.layout;
         return {
-            userConfiguration: app.getPath('userData'),
-            systemPaths: systemStoragePaths(process.platform),
             root: layout.root,
             settings: layout.settings,
             sites: layout.sites,
@@ -831,7 +891,7 @@ function registerIpc() {
     handle('vhostra:docker-prerequisite', () => services.prerequisite());
     handle('vhostra:check-docker', async () => { await services.refresh(); return services.prerequisite(); });
     handle('vhostra:install-docker', async () => {
-        const check = await checkDocker(store.layout.userRoot ?? store.layout.root);
+        const check = await checkDocker(store.layout.root);
         if (check.state !== 'missing') return;
         const choice = await dialog.showMessageBox(primaryWindow!, {
             type: 'info', title: 'Install Docker',
@@ -847,7 +907,7 @@ function registerIpc() {
         const file = result.filePaths[0];
         const checked = await checkDocker(undefined, file);
         if (checked.state === 'broken' || checked.state === 'timeout' || checked.state === 'missing') throw new Error('The selected file could not run Docker. Choose the Docker command from a Docker installation.');
-        saveDockerExecutable(store.layout.userRoot ?? store.layout.root, file);
+        saveDockerExecutable(store.layout.root, file);
         await services.refresh();
         return services.prerequisite();
     });

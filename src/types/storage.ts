@@ -12,8 +12,6 @@ export interface StorageRoot {
 }
 
 export interface StorageLayout {
-  userConfiguration: string
-  systemPaths: { configuration: string; data: string; logs: string }
   root: string
   settings: string
   sites: string
@@ -125,16 +123,11 @@ export interface ConfigurationImportReport {
 
 const join = (platform: HostPlatform, ...parts: string[]) => parts.filter(Boolean).join(platform === 'win32' ? '\\' : '/')
 
-/** Describe the supported per-user layout; system paths remain dormant engineering metadata. */
+/** Build a platform-aware layout from a host-provided app-data directory; no OS-specific path is hard-coded. */
 export const createStorageLayout = ({ appDataDirectory, platform }: StorageRoot): StorageLayout => {
   const root = join(platform, appDataDirectory, 'Vhostra')
   const runtime = join(platform, root, 'runtime')
-  const systemRoot = platform === 'darwin' ? '/Library/Application Support/Vhostra' : platform === 'win32' ? 'C:\\ProgramData\\Vhostra' : '/var/lib/vhostra'
   return {
-    userConfiguration: appDataDirectory,
-    systemPaths: platform === 'linux'
-      ? { configuration: '/etc/vhostra', data: systemRoot, logs: '/var/log/vhostra' }
-      : { configuration: systemRoot, data: systemRoot, logs: join(platform, systemRoot, 'logs') },
     root,
     settings: join(platform, root, 'settings.json'),
     sites: join(platform, root, 'sites'),

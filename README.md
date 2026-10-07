@@ -40,9 +40,7 @@ Vhostra's source is publicly viewable, but no software license is currently gran
 
 ## Architecture summary
 
-Within a Vhostra profile, one selected web server and PHP runtime serve its websites as vhosts rather than individual stacks. MariaDB and phpMyAdmin are required services for that profile; Redis and Memcached are optional services. Docker project names and host ports can still collide when multiple OS accounts use the same Docker daemon.
-
-On macOS, the **supported architecture is per-user Vhostra application state, user-selected Site document roots, and Docker-managed services**. It does not require a paid Apple Developer / Developer ID membership or a signed privileged machine service for normal operation. The earlier machine-wide design is dormant engineering history and cannot be activated through production startup, Settings, Welcome, CLI, or environment variables. Distribution signing and notarization are separate packaging/trust concerns. See [the supported macOS architecture](docs/macos-supported-architecture.md) and [the machine-wide freeze](docs/machine-freeze.md).
+Vhostra runs exactly one global web server and exactly one global PHP runtime at a time. Websites are vhosts within that shared environment—not individual stacks. MariaDB and phpMyAdmin are required shared services; Redis and Memcached are optional shared services.
 
 Supported web servers: Apache, Nginx, and OpenLiteSpeed. Only the selected implementation is used.
 
@@ -72,7 +70,7 @@ Official guides: [macOS](https://docs.docker.com/desktop/setup/install/mac-insta
 
 ## Local-first storage and persistence
 
-Vhostra keeps its application data in a per-user environment root, defaulting to `Vhostra` inside Electron's platform-specific `userData` location. An explicit configuration-location choice can move that Vhostra root within the user's accessible filesystem. Website document roots are normal user-selected or user-created host directories, not application-managed container paths. The runtime bind-mounts each document root and only the required Vhostra-managed host locations into disposable containers. [macOS paths and account behavior](docs/macos-supported-architecture.md) are documented from the production layout.
+Vhostra keeps its application data in Electron's platform-specific `userData` location, under a `vhostra` directory. Website document roots are normal user-selected or user-created host directories, not application-managed container paths. The runtime bind-mounts each document root and only the required Vhostra-managed host locations into disposable containers.
 
 The typed storage layout is platform-aware: Electron provides the platform's application-data root for macOS, Windows, or Linux, and the layout derives Vhostra paths from that input. The code does not assume a macOS-only path. Persistent locations include:
 
@@ -123,7 +121,7 @@ Docker configuration uses explicit host-to-container mount plans. Host paths and
 
 ## Docker isolation and safety principles
 
-The Docker layer uses the dedicated `vhostra` web/PHP Compose project and independent `vhostra-database` project, exact ownership labels/mount checks, and an internal database network. It invokes Compose only against Vhostra's generated project file; it never uses global cleanup or broad Docker stop/remove operations. Website roots, generated configuration, database data, logs, certificates, and service configuration are host bind mounts. A server/PHP change checks a candidate web runtime on temporary ports against the same independent MariaDB container, then promotes only the web/PHP service. It never copies a datadir, stops/restarts the DB, or rebuilds its image for a PHP/frontend change. An intentionally stopped DB stays stopped during a web switch. Per-user recovery never restarts a database-bearing web image alongside the independent DB. Failed promotion restores the verified previous configuration and image. If recovery fails, Vhostra retains recovery files and reports their location.
+The Docker layer uses the dedicated `vhostra` web/PHP Compose project and independent `vhostra-database` project, exact ownership labels/mount checks, and an internal database network. It invokes Compose only against Vhostra's generated project file; it never uses global cleanup or broad Docker stop/remove operations. Website roots, generated configuration, database data, logs, certificates, and service configuration are host bind mounts. A server/PHP change checks a candidate web runtime on temporary ports against the same independent MariaDB container, then promotes only the web/PHP service. It never copies a datadir, stops/restarts the DB, or rebuilds its image for a PHP/frontend change. An intentionally stopped DB stays stopped during a web switch. Legacy recovery never restarts a database-bearing web image alongside the independent DB. Failed promotion restores the verified previous configuration and image. If recovery fails, Vhostra retains recovery files and reports their location.
 
 Security configuration for generated runtimes includes `expose_php=Off` and web-server response version hiding where supported.
 
