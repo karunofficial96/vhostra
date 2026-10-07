@@ -5,6 +5,7 @@ import { inspectLegacySystemStorage, prepareSystemMigration, type MigrationEntry
 import { executeProtectedTransaction } from './protected-transaction.js'
 import { authoritativeMariaDbConfig, deriveMariaDbRuntimeConfig, mariaDbPolicyBody, parseAuthoritativeMariaDbConfig } from './mariadb-config.js'
 import { authoritativeWebFile, renderWebPreviewFiles, renderWebRuntimeFiles, runtimeWebFile, type WebRuntimeModel } from './web-runtime-config.js'
+import { cacheDefaultPorts, renderCacheRuntimeConfig } from './cache-runtime-config.js'
 
 export type MigrationPhase = 'legacy' | 'preparing' | 'copied' | 'verified' | 'ready-for-activation' | 'active' | 'failed' | 'rolled-back'
 export interface MachineMigrationRequest {
@@ -153,8 +154,10 @@ async function webModel(payload: string): Promise<WebRuntimeModel> {
 async function regenerateServiceConfiguration(payload: string, entries: MigrationEntry[]) {
   for (const entry of entries.filter(isReproducible)) await fs.rm(path.join(payload, copiedRelative(entry)), { force: true })
   const roots = { configuration: payload, data: payload, logs: path.join(payload, 'logs') }
+  const settings = JSON.parse(await fs.readFile(path.join(payload, 'settings.json'), 'utf8')) as { ports?: { redis?: number; memcached?: number } }
   await executeProtectedTransaction({ version: 1, operations: [
     { type: 'mariadb-runtime-config' }, { type: 'web-runtime-config', model: await webModel(payload) },
+    { type: 'cache-runtime-config', redisPort: settings.ports?.redis ?? cacheDefaultPorts.redis, memcachedPort: settings.ports?.memcached ?? cacheDefaultPorts.memcached },
   ] }, roots, path.join(payload, 'hosts'))
 }
 type Identity = { uid: number; gid: number; mode: number }
@@ -215,11 +218,15 @@ async function verifyPayload(payload: string, source: string, inventory: Migrati
     }
   }
   const model = await webModel(payload)
+  const settings = JSON.parse(await fs.readFile(path.join(payload, 'settings.json'), 'utf8')) as { ports?: { redis?: number; memcached?: number } }
+  const cache = renderCacheRuntimeConfig(settings.ports?.redis ?? cacheDefaultPorts.redis, settings.ports?.memcached ?? cacheDefaultPorts.memcached)
   const webFiles = renderWebRuntimeFiles(model)
   const previews = renderWebPreviewFiles(model, webFiles)
   const expectedGenerated = new Map<string, string>([
     ['configuration/runtime/mariadb/vhostra.cnf', authoritativeMariaDbConfig],
     ['runtime-config/mariadb/vhostra.cnf', deriveMariaDbRuntimeConfig(authoritativeMariaDbConfig)],
+    ['runtime-config/cache/redis.conf', cache.redis],
+    ['runtime-config/cache/memcached.conf', cache.memcached],
     ...webFiles.flatMap(file => [
       [`configuration/${file.key}`, authoritativeWebFile(file.body)],
       [`runtime-config/web/${file.key.slice('runtime/'.length)}`, runtimeWebFile(authoritativeWebFile(file.body))],

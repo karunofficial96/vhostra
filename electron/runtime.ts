@@ -4,6 +4,7 @@ import { generatedMarker, cleanObsoleteGenerated, cleanObsoleteRuntime, cleanObs
 import { authorizeProtectedTransaction } from "./protected-launcher.js";
 import { authoritativeMariaDbConfig, deriveMariaDbRuntimeConfig, mariaDbPolicyBody } from './mariadb-config.js';
 import { authoritativeWebFile, renderWebRuntimeFiles, runtimeWebFile, type WebRuntimeModel } from './web-runtime-config.js';
+import { cacheRuntimePath } from './cache-runtime-config.js';
 import { mapDiagnosticPaths } from './errors.js';
 import { redactProgress } from "./progress.js";
 import { createHash, randomBytes } from "node:crypto";
@@ -1844,9 +1845,8 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
                 ] : []),
                 this.layout.runtime.mariaDb,
                 this.layout.runtime.phpMyAdmin,
-                this.layout.runtime.redis,
-                this.layout.runtime.memcached,
-                this.layout.logs,
+                ...(!this.layout.userRoot ? [this.layout.runtime.redis, this.layout.runtime.memcached] : []),
+                ...(!this.layout.userRoot ? [this.layout.logs] : []),
             ].map((directory) => fs.mkdir(directory, { recursive: true, mode: 0o700 })),
         );
         await this.ensureEnvironment();
@@ -1890,7 +1890,7 @@ foreach (['localhost', '127.0.0.1'] as $host) {
             host,
             container: runtimeDocumentRoot(host),
         }));
-        for (const { host } of mounts) {
+        for (const { host } of this.layout.userRoot ? [] : mounts) {
             const directory = path.join(this.layout.logs, "sites", host.id);
             // The container entrypoint assigns these exact managed log paths to
             // the web worker. Host-side precreation cannot safely choose its UID.
@@ -1914,37 +1914,44 @@ foreach (['localhost', '127.0.0.1'] as $host) {
             { key: 'runtime/php/vhostra.ini', contents: generatedMarker + "expose_php=Off\nlog_errors=On\nerror_log=/dev/stderr\nmysqli.default_socket=/run/mysqld/mysqld.sock\npdo_mysql.default_socket=/run/mysqld/mysqld.sock\n" },
             { key: 'runtime/php/site-logrotate.conf', contents: generatedMarker + mounts.flatMap(({ host }) => ["access", "error"].map(kind => `/var/log/vhostra/sites/${host.id}/${kind}.log`)).join(" ") + " {\n  size 5M\n  rotate 3\n  copytruncate\n  missingok\n  notifempty\n  su root root\n}\n" },
         ];
-        await Promise.all([
-            fs.writeFile(
-                path.join(this.layout.runtime.phpMyAdmin, "README.txt"),
-                "phpMyAdmin is configured by the generated Vhostra Compose project.\n",
-                { mode: 0o600 },
-            ),
-            writeIfMissing(
-                path.join(this.layout.runtime.redis, "redis.conf"),
-                "bind 127.0.0.1\nprotected-mode yes\nappendonly no\nsave \"\"\nmaxmemory 64mb\nmaxmemory-policy allkeys-lru\n",
-                { mode: 0o600 },
-            ),
-            writeIfMissing(
-                path.join(this.layout.runtime.memcached, "memcached.conf"),
-                "-u nobody\n-l 127.0.0.1\n-m 32\n-c 128\n-t 1\n",
-                { mode: 0o600 },
-            ),
-        ]);
-        const redisFile = path.join(this.layout.runtime.redis, "redis.conf");
-        const memcachedFile = path.join(this.layout.runtime.memcached, "memcached.conf");
-        const redisSource = await fs.readFile(redisFile, "utf8");
-        const redisPort = `port ${state.settings.ports.redis}`;
-        const redisConfigured = /^port\s+\d+.*$/m.test(redisSource) ? redisSource.replace(/^port\s+\d+.*$/gm, redisPort) : `${redisSource}\n${redisPort}\n`;
-        if (redisConfigured !== redisSource) await fs.writeFile(redisFile, redisConfigured, { mode: 0o600 });
-        const memcachedSource = await fs.readFile(memcachedFile, "utf8");
-        // Older generated profiles contained only memory/port flags. Memcached
-        // refuses to start as root without -u, so repair missing safe defaults
-        // while retaining the profile's existing local configuration/comments.
-        const memcachedDefaults = `${/(?:^|\s)-u\s+\S+/.test(memcachedSource) ? '' : '-u nobody\n'}${/(?:^|\s)-l\s+\S+/.test(memcachedSource) ? '' : '-l 127.0.0.1\n'}${memcachedSource}`;
-        const memcachedPort = `-p ${state.settings.ports.memcached}`;
-        const memcachedConfigured = /(?:^|\s)-p\s+\d+/.test(memcachedDefaults) ? memcachedDefaults.replace(/(^|\s)-p\s+\d+/g, `$1${memcachedPort}`) : `${memcachedDefaults}\n${memcachedPort}\n`;
-        if (memcachedConfigured !== memcachedSource) await fs.writeFile(memcachedFile, memcachedConfigured, { mode: 0o600 });
+        if (this.layout.userRoot) {
+            // Machine cache policy is rendered by the bounded root transaction;
+            // the ordinary app must not edit service-owned cache directories.
+            await authorizeProtectedTransaction({ version: 1, operations: [{ type: 'cache-runtime-config',
+                redisPort: state.settings.ports.redis, memcachedPort: state.settings.ports.memcached }] });
+        } else {
+            await Promise.all([
+                fs.writeFile(
+                    path.join(this.layout.runtime.phpMyAdmin, "README.txt"),
+                    "phpMyAdmin is configured by the generated Vhostra Compose project.\n",
+                    { mode: 0o600 },
+                ),
+                writeIfMissing(
+                    path.join(this.layout.runtime.redis, "redis.conf"),
+                    "bind 127.0.0.1\nprotected-mode yes\nappendonly no\nsave \"\"\nmaxmemory 64mb\nmaxmemory-policy allkeys-lru\n",
+                    { mode: 0o600 },
+                ),
+                writeIfMissing(
+                    path.join(this.layout.runtime.memcached, "memcached.conf"),
+                    "-u nobody\n-l 127.0.0.1\n-m 32\n-c 128\n-t 1\n",
+                    { mode: 0o600 },
+                ),
+            ]);
+            const redisFile = path.join(this.layout.runtime.redis, "redis.conf");
+            const memcachedFile = path.join(this.layout.runtime.memcached, "memcached.conf");
+            const redisSource = await fs.readFile(redisFile, "utf8");
+            const redisPort = `port ${state.settings.ports.redis}`;
+            const redisConfigured = /^port\s+\d+.*$/m.test(redisSource) ? redisSource.replace(/^port\s+\d+.*$/gm, redisPort) : `${redisSource}\n${redisPort}\n`;
+            if (redisConfigured !== redisSource) await fs.writeFile(redisFile, redisConfigured, { mode: 0o600 });
+            const memcachedSource = await fs.readFile(memcachedFile, "utf8");
+            // Older generated profiles contained only memory/port flags. Memcached
+            // refuses to start as root without -u, so repair missing safe defaults
+            // while retaining the profile's existing local configuration/comments.
+            const memcachedDefaults = `${/(?:^|\s)-u\s+\S+/.test(memcachedSource) ? '' : '-u nobody\n'}${/(?:^|\s)-l\s+\S+/.test(memcachedSource) ? '' : '-l 127.0.0.1\n'}${memcachedSource}`;
+            const memcachedPort = `-p ${state.settings.ports.memcached}`;
+            const memcachedConfigured = /(?:^|\s)-p\s+\d+/.test(memcachedDefaults) ? memcachedDefaults.replace(/(^|\s)-p\s+\d+/g, `$1${memcachedPort}`) : `${memcachedDefaults}\n${memcachedPort}\n`;
+            if (memcachedConfigured !== memcachedSource) await fs.writeFile(memcachedFile, memcachedConfigured, { mode: 0o600 });
+        }
         if (!this.layout.userRoot) await fs.rm(path.join(this.layout.runtime.php, "roots.json"), { force: true }); // Obsolete CLI-development-server router map.
         await this.writeServerConfiguration(
             state.settings.selectedWebServer,
@@ -2978,7 +2985,7 @@ function openLiteSpeedSiteConfig(
     return `phpIniOverride {\n  php_admin_flag log_errors on\n  php_admin_value error_log /var/log/vhostra/sites/${host.id}/error.log\n}\ndocRoot ${container}/\nerrorlog /var/log/vhostra/sites/${host.id}/error.log {\n  useServer 0\n  logLevel WARN\n  rollingSize 5M\n  keepDays 7\n  compressArchive 1\n}\naccesslog /var/log/vhostra/sites/${host.id}/access.log {\n  useServer 0\n  rollingSize 5M\n  keepDays 7\n  compressArchive 1\n}\nindex {\n  indexFiles ${(host.indexFiles ?? ["index.php", "index.html"]).join(",")}\n}\nrewrite {\n  enable ${host.rewriteEnabled === false ? "0" : "1"}\n  autoLoadHtaccess ${host.rewriteEnabled === false ? "0" : "1"}\n}\ncontext / {\n  allowBrowse 1\n  location $DOC_ROOT/\n  extraHeaders set X-Vhostra-Site ${host.id}\n}\naccessControl {\n  deny\n  allow *\n}\n`;
 }
 
-function singleRuntimeComposeYaml(
+export function singleRuntimeComposeYaml(
     state: AppState,
     layout: StoreLayout,
     scope: string,
@@ -3013,6 +3020,7 @@ services:
       VHOSTRA_LSPHP_VERSION: ${q(php)}
       VHOSTRA_WEB_SERVER: ${q(state.settings.selectedWebServer)}
       VHOSTRA_HTTPS: ${q(httpsEnabled)}
+      VHOSTRA_CERTIFICATE_MODE: ${q(layout.userRoot ? 'external' : 'managed')}
       VHOSTRA_TLS_NAMES: ${q(
           [
               "DNS:localhost",
@@ -3037,11 +3045,11 @@ services:
       - ${q(`${layout.builtinPublic}:/var/www/html`)}
       - ${q(`${serviceConfig('openlitespeed')}:/etc/vhostra/openlitespeed:ro`)}
       - ${q(`${serviceConfig('php')}:/etc/vhostra/php:ro`)}
-      - ${q(`${layout.runtime.memcached}/memcached.conf:/etc/vhostra/memcached.conf:ro`)}
-      - ${q(`${layout.runtime.redis}/redis.conf:/etc/redis/vhostra.conf:ro`)}
+      - ${q(`${cacheRuntimePath(layout, 'memcached')}:/etc/vhostra/memcached.conf:ro`)}
+      - ${q(`${cacheRuntimePath(layout, 'redis')}:/etc/redis/vhostra.conf:ro`)}
       ${state.settings.selectedWebServer === 'apache' ? `- ${q(`${serviceConfig('apache')}:/etc/vhostra/apache:ro`)}` : ''}
       ${state.settings.selectedWebServer === 'nginx' ? `- ${q(`${serviceConfig('nginx')}:/etc/vhostra/nginx:ro`)}` : ''}
-      - ${q(`${layout.certificates.directory}:/etc/vhostra/certificates`)}
+      - ${q(`${layout.certificates.directory}:/etc/vhostra/certificates${layout.userRoot ? ':ro' : ''}`)}
       ${state.sites
           .filter((site) => !site.builtIn)
           .map(

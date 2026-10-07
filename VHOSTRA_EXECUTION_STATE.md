@@ -476,3 +476,158 @@ Gate 3 remains separate: controlled activation commit, startup selection,
 runtime replacement/recovery, and acceptance on the activated layout. Do not
 infer activation from the existence of the inactive directory or a ready
 staging journal. No live migration or activation occurred.
+
+## Gate 3 preflight stop — 2026-10-07
+
+Gate 3 was stopped before implementing an activation commit or running native
+activation. The existing production guards still select the legacy Store.
+This is a specific Gate 3 permission/runtime blocker exposed by tracing the
+first fresh startup after a hypothetical commit:
+
+- Gate 2 makes settings and Site records root-owned `0600` below private
+  root-owned directories. `VhostraStore.initializeOnce`, `readSettings`,
+  `readRecords` and `getOnboarding` read those files directly as the ordinary
+  app user. The current protected worker has write operations only, so a
+  fresh ordinary process cannot load an activated machine Store.
+- `DockerRuntimeController` intentionally rejects `layout.userRoot`. Removing
+  that guard alone is unsafe: `generate` and `prepareDatabase` directly create
+  or change the built-in Site content, runtime/Compose files, database working
+  files, Redis/Memcached configuration and log directories. Gate 2 owns much
+  of that layout as service UID `999` with `0700` directories, so the app user
+  cannot perform those operations. The container entrypoint later assigns
+  Site logs to `nobody` or `www-data`, not MariaDB UID `999`.
+- Gate 2's ready payload sits below an attempt-specific stage, and the built-in
+  Site record points there. A durable activation commit must move or publish
+  the payload, rewrite that managed path, reverify it, and place the active
+  marker last. No such transition exists yet.
+
+Making those directories broadly readable/writable or simply removing the
+guards would weaken the protected configuration boundary and risk a partially
+working active Store. Gate 3 therefore remains **incomplete**. The required
+next work is a bounded authorized read/permission model for approved users,
+separate app-writable runtime working space from service-writable persistent
+data and logs, then an atomic activation selector and fresh-process recovery
+tests. The focused system-layout and migration tests passed 11/11. The real
+inactive machine root remained empty, and no privileged operation, Docker
+operation, real legacy migration or activation was performed.
+
+## Gate 3A architecture boundary — 2026-10-07
+
+The user narrowed the work to protected shared reads and per-writer runtime
+ownership, with an explicit stop if the short-lived macOS privilege model
+cannot provide routine prompt-free reads. That stop condition applies: the
+existing `osascript` worker supports bounded protected writes only. A fresh
+authorization invocation per settings/Site read cannot guarantee prompt-free
+ordinary UI use. Apple documents an on-demand, systemwide LaunchDaemon/XPC
+service registered with `SMAppService` as the appropriate model; an ordinary
+bundled XPC service is not a root helper. No service was installed or coded.
+
+`docs/gate3a-boundaries.md` records a proposed signed-client/approved-UID
+authorization boundary, semantic read methods and denial rules, helper
+lifecycle/uninstall behavior, and a per-path writer/owner/mode matrix. The
+matrix identifies the existing mixed-writer runtime subtree and server-specific
+Site log identities as unresolved. Focused regression tests verify that the
+current worker rejects generic and unimplemented reads and that both activation
+guards remain closed. No migration, activation, Docker run or privileged
+operation was performed; the inactive machine root remains empty.
+
+Gate 3A focused boundary tests passed 2/2. `npm test` completed its production
+build and passed all 196/196 source tests. `git diff --check` passed. A
+read-only listing confirmed that `/Library/Application Support/Vhostra` is
+still empty. The stop condition remains in force: routine prompt-free reads
+of root-private shared records require the documented, separately signed,
+approved-user privileged service design and service-specific writer refactor
+before any activation validation.
+
+## Gate 3A.1 signing preflight stop — 2026-10-07
+
+Before implementing the macOS read service, `security find-identity -v -p
+codesigning` reported zero valid code-signing identities on this Mac. The
+repository's macOS package workflow disables signing identity discovery and
+has no signed helper or notarization flow. Apple's code-signing documentation
+states that an ad-hoc signature has no signing identity and cannot satisfy an
+identity-constrained client requirement. The temporary ad-hoc packaged-app
+performance fixture is not a secure service client. Therefore the requested
+securely testable development service cannot be built in the present signing
+environment without weakening client authentication.
+
+`docs/gate3a1-macos-read-service-preflight.md` records the exact signing,
+SMAppService/XPC packaging, approved-user enrollment/revocation, semantic
+protocol, file-validation, update/uninstall and synthetic-test prerequisites.
+No helper, XPC bridge, enrollment, registration or privileged diagnostic was
+implemented or run. Gate 3A.2 runtime ownership and Gate 3 activation remain
+untouched; the native guards remain enabled and production selects the legacy
+Store.
+
+The full `npm test` command completed its production build and passed 196/196
+source tests. `git diff --check` passed. A read-only listing showed that the
+inactive native Vhostra root remains empty.
+
+Gate 3A.1 status for later work: **DESIGN COMPLETE / IMPLEMENTATION BLOCKED ON
+APPLE SIGNING**. A signed and validated approved-user read service remains
+mandatory before macOS machine-store activation.
+
+## Gate 3A.2 partial writer separation — 2026-10-07
+
+`docs/gate3a2-runtime-writers.md` classifies every machine path by owner,
+writer, reader, mode, Docker access, migration and uninstall behavior. A
+bounded `cache-runtime-config` transaction now publishes fixed non-secret
+Redis/Memcached config to root-owned `runtime-config/cache` files (`0644`),
+which Compose mounts read-only. The machine branch of `generate` no longer
+directly edits service-owned cache config or precreates Site logs. The web
+entrypoint provisions only the fixed built-in and validated generated Site-ID
+log directories, keeps files `0600`, and handles OLS `nobody` versus
+Apache/Nginx `www-data`. Redis is configured to run as the inspected image's
+dedicated `101:102` account in the next image; persistence remains disabled.
+Memcached remains ephemeral.
+
+Disposable Docker cache recreation passed with zero Vhostra privilege calls;
+Redis `101:102` and Memcached values disappeared on recreation as intended.
+An isolated inactive-root web/PHP run passed start/stop/recreation for OLS,
+Apache and Nginx, with Site logs `0600` and one Vhostra privilege invocation.
+The user reported at least two macOS dialogs for that run; Docker-only
+checks also generated extra dialogs, so dialog count is not attributed to the
+Vhostra invocation. An isolated MariaDB run passed create/insert/read across
+container recreation, `999:999` writer identity, read-only generated config,
+and non-world-writable data; its staging worker exited. The user observed at
+least two macOS administrator dialogs during this run as well; it made one
+Vhostra privilege invocation, so the additional dialog requester is not
+established. Gate 2 native synthetic migration passed again after the
+generated cache addition. Failed
+diagnostic attempts cleaned their disposable stages; the initial MariaDB
+probe raced the image's temporary bootstrap server and was corrected to wait
+for the final gateway.
+
+Gate 3A.2 is **NOT COMPLETE**. `DockerRuntimeController` still cannot run a
+machine layout: its constructor guard stays enabled, and direct ordinary
+writes remain in the mixed-owner runtime workspace, first-use secrets,
+built-in public content, certificates and recovery paths. No real legacy Store,
+real database, external Site root or active machine Store was touched.
+The final production build and source suite passed 198/198. `git diff --check`
+passed, and a read-only listing confirmed the inactive native system root is
+empty. The production Store remains on the legacy layout.
+
+## Gate 3A.2b production controller audit and fail-closed certificate consumer — 2026-10-07
+
+`docs/gate3a2b-controller-audit.md` traces the actual controller's start,
+generation, Docker launch, readiness, stop, replacement, recovery and cleanup
+mutations. The machine Compose certificate mount is now read-only and its
+entrypoint requires an externally published current pair; it will not
+generate or renew authoritative keys. The legacy container's managed
+certificate behavior is unchanged. The focused Compose boundary test and
+shell syntax check passed. No machine controller or native privileged test
+was run for Gate 3A.2b, and no administrator-dialog interval was opened.
+
+The constructor guard remains closed. Fresh-controller startup still reads
+shared `secrets.env` as the ordinary process and writes PMA `.env`; the
+MariaDB datadir/workspace, built-in health content, and recursive recovery
+copies also still cross ownership boundaries. Root-private shared secrets
+cannot be handed to this controller through an unsigned or generic read
+interface. A signed approved-client Gate 3A.1 service and bounded semantic
+secret/certificate publication remain prerequisites; no real Store/Site/DB
+data or inactive machine root was changed.
+
+The production build passed. The sandboxed full test command encountered
+`listen EPERM` on local-loopback fixture tests; rerunning the source-test
+phase with loopback permission passed **199/199**. `git diff --check` passed.
+A read-only listing again showed the inactive native Vhostra root empty.

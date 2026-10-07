@@ -14,5 +14,6 @@ test('managed Site logs are initialized for the web worker without world write a
   assert.match(entrypoint, /chmod 0700 "\$site_log_dir"/)
   assert.match(entrypoint, /chmod 0600 "\$site_log_file"/)
   assert.match(entrypoint, /\[ ! -L "\$site_log_file" \]/)
-  assert.match(entrypoint, /vhostra-localhost-vhost\|\?\?\?\?\?\?\?\?-/)
+  assert.match(entrypoint, /builtin_log_dir=\/var\/log\/vhostra\/sites\/vhostra-localhost-vhost/)
+  assert.match(entrypoint, /grep -Eq '\^\[\[:xdigit:\]\]\{8\}-/)
 })

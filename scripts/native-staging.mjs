@@ -136,7 +136,7 @@ async function runLauncherStage(uid, gid) {
   process.stdout.write(`${JSON.stringify({ result: 'PASS', productionLauncher: true, logicalTransactions: 1, privilegeInvocations: 3, helperExited: true })}\n`)
 }
 
-async function worker(uid, gid, home, dockerPath, skipDocker, systemShare) {
+async function worker(uid, gid, home, dockerPath, skipDocker, systemShare, recreate = false) {
   if (process.getuid?.() !== 0 || !Number.isInteger(uid) || uid < 1 || !Number.isInteger(gid) || gid < 1) fail('Native staging worker requires a real administrator authorization')
   if (systemShare) await permission(inactiveSystemRoot, 0, 0o755)
   const stage = path.join(systemShare ? inactiveSystemRoot : stageParent, `.Vhostra-permission-stage-${randomUUID()}`)
@@ -231,13 +231,14 @@ async function worker(uid, gid, home, dockerPath, skipDocker, systemShare) {
     }
     // Docker can create a container record before rejecting its bind mount.
     // Arm exact-name cleanup before the run call, including its failure path.
-    containerStarted = true
-    docker(['run', '-d', '--pull', 'never', '--network', 'none', '--name', scope,
+    const runArgs = ['run', '-d', '--pull', 'never', '--network', 'none', '--name', scope,
       '-v', `${database}:/var/lib/mysql`,
       '-v', `${logDir}:/var/log/vhostra`,
       '-v', `${secret}:/run/secrets/root-password:ro`,
       ...(systemShare ? ['-v', `${runtimeMariaDbConfig}:/etc/mysql/mariadb.conf.d/99-vhostra.cnf:ro`] : []),
-      image], 30000, systemShare)
+      image]
+    containerStarted = true
+    docker(runArgs, 30000, systemShare)
     stamp('database_started')
     let mysqlIdentity = null
     if (systemShare) {
@@ -259,6 +260,13 @@ async function worker(uid, gid, home, dockerPath, skipDocker, systemShare) {
     let sqlPassed = false
     const deadline = Date.now() + 60000
     while (Date.now() < deadline) {
+      // First initialization has a temporary local server that is stopped
+      // before the final server and TCP gateway start. Do not write test SQL
+      // during that temporary phase.
+      const gateway = spawnSync(dockerPath, ['exec', scope, 'pgrep', '-x', 'socat'],
+        { uid, gid, env: userEnv, encoding: 'utf8', timeout: 5000, stdio: 'ignore' })
+      dockerOperations++
+      if (gateway.status !== 0) { await new Promise(resolve => setTimeout(resolve, 1000)); continue }
       const probe = spawnSync(dockerPath, ['exec', scope, 'mariadb', '--protocol=socket', '-uroot', '-N', '-e', 'CREATE DATABASE IF NOT EXISTS vhostra_stage_probe; CREATE TABLE IF NOT EXISTS vhostra_stage_probe.probe (id INT); INSERT INTO vhostra_stage_probe.probe VALUES (1); SELECT COUNT(*) FROM vhostra_stage_probe.probe'], { uid, gid, env: userEnv, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] })
       dockerOperations++
       if (probe.status === 0 && probe.stdout.trim().split('\n').at(-1) === '1') { sqlPassed = true; break }
@@ -269,6 +277,23 @@ async function worker(uid, gid, home, dockerPath, skipDocker, systemShare) {
     if (systemShare && docker(['exec', scope, 'mariadb', '--protocol=socket', '-uroot', '-N', '-e', "SHOW GLOBAL VARIABLES LIKE 'max_connections'"], 15000, true, 'generated setting check').trim() !== 'max_connections\t50')
       fail('MariaDB did not load the generated max_connections setting')
     if (systemShare) stamp('generated_setting_verified')
+    if (recreate) {
+      docker(['rm', '-f', scope], 20000)
+      containerStarted = false
+      containerStarted = true
+      docker(runArgs, 30000, true, 'MariaDB recreation')
+      let survived = false
+      const recreationDeadline = Date.now() + 60000
+      while (Date.now() < recreationDeadline) {
+        const probe = spawnSync(dockerPath, ['exec', scope, 'mariadb', '--protocol=socket', '-uroot', '-N', '-e', 'SELECT COUNT(*) FROM vhostra_stage_probe.probe'],
+          { uid, gid, env: userEnv, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] })
+        dockerOperations++
+        if (probe.status === 0 && probe.stdout.trim().split('\n').at(-1) === '1') { survived = true; break }
+        await new Promise(resolve => setTimeout(resolve, 1000))
+      }
+      if (!survived) fail('Staged MariaDB SQL did not survive container recreation')
+      stamp('database_recreated_with_sql')
+    }
     docker(['rm', '-f', scope], 20000)
     containerStarted = false
     const stack = [database]
@@ -283,7 +308,7 @@ async function worker(uid, gid, home, dockerPath, skipDocker, systemShare) {
     }
     await permission(file, 0, 0o600)
     stamp('data_permissions_checked')
-    return { result: 'PASS', stage, workerPid: process.pid, protectedMode: 'root:0600', runtimeConfigMode: systemShare ? 'root:0644' : null, mariaDbMode: 'user:0700', mysqlIdentity, dockerOperations, systemShare, runtimeConfigReadOnly: systemShare, generatedSettingLoaded: systemShare, milestones }
+    return { result: 'PASS', stage, workerPid: process.pid, protectedMode: 'root:0600', runtimeConfigMode: systemShare ? 'root:0644' : null, mariaDbMode: 'user:0700', mysqlIdentity, dockerOperations, systemShare, recreatedWithSql: recreate, runtimeConfigReadOnly: systemShare, generatedSettingLoaded: systemShare, milestones }
   } finally {
     if (containerStarted) { try { docker(['rm', '-f', scope], 20000) } catch {} }
     await fs.rm(stage, { recursive: true, force: true })
@@ -303,7 +328,7 @@ if (process.argv[2] === '--worker-share-root') {
   runLauncherStage(process.getuid(), process.getgid())
     .catch(error => { process.stderr.write(`${error.message.slice(0, 160)}\n`); process.exitCode = 1 })
 } else if (process.argv[2] === '--worker') {
-  worker(Number(process.argv[3]), Number(process.argv[4]), process.argv[5], process.argv[6], process.argv[7] === '--without-docker', process.argv[7] === '--system-share-sql')
+  worker(Number(process.argv[3]), Number(process.argv[4]), process.argv[5], process.argv[6], process.argv[7] === '--without-docker', ['--system-share-sql', '--system-share-recreation'].includes(process.argv[7]), process.argv[7] === '--system-share-recreation')
     .then(value => { process.stdout.write(`${JSON.stringify(value)}\n`) })
     .catch(error => { process.stderr.write(`${error.message.slice(0, error.message.startsWith('isolated Docker run ') ? 400 : 160)}\n`); process.exitCode = 1 })
 } else {
@@ -312,13 +337,13 @@ if (process.argv[2] === '--worker-share-root') {
   const uid = process.getuid(); const gid = process.getgid()
   const home = os.homedir()
   const prepareShareRoot = process.argv[2] === '--prepare-system-share'
-  if (!prepareShareRoot && process.argv[2] !== undefined && process.argv[2] !== '--without-docker' && process.argv[2] !== '--system-share-sql') fail('Unknown native staging option')
+  if (!prepareShareRoot && process.argv[2] !== undefined && process.argv[2] !== '--without-docker' && process.argv[2] !== '--system-share-sql' && process.argv[2] !== '--system-share-recreation') fail('Unknown native staging option')
   const dockerPath = prepareShareRoot ? '' : run('/usr/bin/which', ['docker'], { label: 'Docker lookup' })
   const skipDocker = process.argv[2] === '--without-docker'
-  const systemShare = process.argv[2] === '--system-share-sql'
+  const systemShare = ['--system-share-sql', '--system-share-recreation'].includes(process.argv[2])
   const command = (prepareShareRoot
     ? [process.execPath, script, '--worker-share-root', String(uid)]
-    : [process.execPath, script, '--worker', String(uid), String(gid), home, dockerPath, ...(skipDocker ? ['--without-docker'] : []), ...(systemShare ? ['--system-share-sql'] : [])]).map(shellQuote).join(' ')
+    : [process.execPath, script, '--worker', String(uid), String(gid), home, dockerPath, ...(skipDocker ? ['--without-docker'] : []), ...(systemShare ? [process.argv[2]] : [])]).map(shellQuote).join(' ')
   process.stdout.write(prepareShareRoot
     ? 'macOS will request administrator authorization to create only the empty, inactive Vhostra system root. Approve it on this Mac; do not enter a password in chat.\n'
     : 'macOS will request administrator authorization for an isolated Vhostra staging test. Approve it on this Mac; do not enter a password in chat. The live Vhostra store is not selected.\n')
@@ -340,7 +365,7 @@ if (process.argv[2] === '--worker-share-root') {
         return
       }
       const times = Object.fromEntries(Object.entries(result.milestones).map(([key, value]) => [key, Math.round((value - result.milestones.helper_started) / 1000)]))
-      process.stdout.write(`${JSON.stringify({ result: result.result, authorizationWaitSeconds: Math.round((result.milestones.helper_started - started) / 1000), protectedMode: result.protectedMode, runtimeConfigMode: result.runtimeConfigMode ?? null, mariaDbMode: result.mariaDbMode, dockerSkipped: result.dockerSkipped === true, systemShare: result.systemShare === true, runtimeConfigReadOnly: result.runtimeConfigReadOnly === true, generatedSettingLoaded: result.generatedSettingLoaded === true, mysqlIdentity: result.mysqlIdentity ?? null, dockerOperations: result.dockerOperations ?? 0, helperExited: true, stageChecksSeconds: times })}\n`)
+      process.stdout.write(`${JSON.stringify({ result: result.result, authorizationWaitSeconds: Math.round((result.milestones.helper_started - started) / 1000), protectedMode: result.protectedMode, runtimeConfigMode: result.runtimeConfigMode ?? null, mariaDbMode: result.mariaDbMode, dockerSkipped: result.dockerSkipped === true, systemShare: result.systemShare === true, runtimeConfigReadOnly: result.runtimeConfigReadOnly === true, generatedSettingLoaded: result.generatedSettingLoaded === true, recreatedWithSql: result.recreatedWithSql === true, mysqlIdentity: result.mysqlIdentity ?? null, dockerOperations: result.dockerOperations ?? 0, helperExited: true, stageChecksSeconds: times })}\n`)
     } catch { process.stderr.write('Native staging returned an invalid bounded result.\n'); process.exitCode = 1 }
   })
 }

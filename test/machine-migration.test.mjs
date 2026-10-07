@@ -49,6 +49,11 @@ test('machine migration reaches ready only after copy, generated config and owne
     assert.equal((await lstat(path.join(payload, `logs/sites/${siteId}/access.log`))).mode & 0o777, 0o600)
     assert.equal((await lstat(path.join(payload, 'configuration/runtime/mariadb/vhostra.cnf'))).mode & 0o777, 0o600)
     assert.equal((await lstat(path.join(payload, 'runtime-config/mariadb/vhostra.cnf'))).mode & 0o777, 0o644)
+    for (const service of ['redis', 'memcached']) {
+      const file = path.join(payload, 'runtime-config/cache', `${service}.conf`)
+      assert.equal((await lstat(file)).mode & 0o777, 0o644)
+      assert.match(await readFile(file, 'utf8'), /^# Vhostra container cache configuration/)
+    }
     assert.equal(await readFile(path.join(f.external, 'index.php'), 'utf8'), 'external sentinel')
     assert.equal((await readdir(payload)).includes('active'), false)
     await discardMachineMigrationFixture(f.request)

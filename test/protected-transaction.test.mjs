@@ -7,6 +7,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { executeProtectedTransaction, validateProtectedTransaction } from '../dist-electron/protected-transaction.js'
 import { authoritativeMariaDbConfig, deriveMariaDbRuntimeConfig, parseAuthoritativeMariaDbConfig } from '../dist-electron/mariadb-config.js'
 import { renderWebRuntimeFiles, authoritativeWebFile, runtimeWebFile } from '../dist-electron/web-runtime-config.js'
+import { renderCacheRuntimeConfig } from '../dist-electron/cache-runtime-config.js'
 
 const sha = value => createHash('sha256').update(value).digest('hex')
 const site = id => ({ id, vhostId: randomUUID(), name: 'Fixture', url: 'http://fixture.test/', configuration: {} })
@@ -48,6 +49,29 @@ test('unknown operations, arbitrary paths, traversal and malformed payloads fail
       { type: 'hosts', expectedSha256: 'bad', contents: 'x' },
     ]) assert.throws(() => validateProtectedTransaction(tx([valid, bad]), f.roots, f.hosts), /Protected Vhostra transaction/)
     await assert.rejects(readFile(path.join(f.roots.configuration, 'sites', `${id}.json`)), { code: 'ENOENT' })
+  } finally { await rm(f.dir, { recursive: true, force: true }) }
+})
+
+test('cache projection is fixed, non-secret, read-only to containers and rejects caller paths', async () => {
+  const f = await fixture()
+  try {
+    const operation = { type: 'cache-runtime-config', redisPort: 6381, memcachedPort: 11212 }
+    for (const bad of [
+      { ...operation, path: f.hosts },
+      { ...operation, redisPort: 0 },
+      { ...operation, memcachedPort: '11212' },
+      { ...operation, command: 'cat /etc/shadow' },
+    ]) assert.throws(() => validateProtectedTransaction(tx([bad]), f.roots, f.hosts), /cache runtime/)
+    assert.deepEqual(await executeProtectedTransaction(tx([operation]), f.roots, f.hosts), { completed: 1 })
+    const expected = renderCacheRuntimeConfig(6381, 11212)
+    for (const service of ['redis', 'memcached']) {
+      const file = path.join(f.roots.data, 'runtime-config/cache', `${service}.conf`)
+      assert.equal(await readFile(file, 'utf8'), expected[service])
+      assert.equal((await stat(file)).mode & 0o777, 0o644)
+    }
+    const redis = path.join(f.roots.data, 'runtime-config/cache/redis.conf')
+    await writeFile(redis, 'user contents')
+    await assert.rejects(executeProtectedTransaction(tx([operation]), f.roots, f.hosts), /not Vhostra-owned/)
   } finally { await rm(f.dir, { recursive: true, force: true }) }
 })
 

@@ -140,18 +140,32 @@ cp /etc/vhostra/openlitespeed/localhost.conf /usr/local/lsws/conf/vhosts/Example
 sed -Ei '/^rewrite[[:space:]]*\{/,/^\}/ s/^[[:space:]]*enable[[:space:]]+0[[:space:]]*$/  enable 1\n  autoLoadHtaccess 1/' /usr/local/lsws/conf/vhosts/Example/vhconf.conf
 
 if [ "${VHOSTRA_HTTPS:-false}" = true ]; then
-  mkdir -p /etc/vhostra/certificates/public /etc/vhostra/certificates/private
-  chmod 0700 /etc/vhostra/certificates/private
   names="${VHOSTRA_TLS_NAMES:?}"
-  saved="$(cat /etc/vhostra/certificates/public/names.txt 2>/dev/null || true)"
-  if [ "$saved" != "$names" ] || ! openssl x509 -checkend 86400 -noout -in /etc/vhostra/certificates/public/localhost.pem >/dev/null 2>&1; then
-    umask 077
-    openssl req -x509 -nodes -days 365 -newkey rsa:2048 -subj /CN=localhost -addext "subjectAltName=$names" -keyout /etc/vhostra/certificates/private/localhost.key.new -out /etc/vhostra/certificates/public/localhost.pem.new
-    mv /etc/vhostra/certificates/private/localhost.key.new /etc/vhostra/certificates/private/localhost.key
-    mv /etc/vhostra/certificates/public/localhost.pem.new /etc/vhostra/certificates/public/localhost.pem
-    printf '%s' "$names" > /etc/vhostra/certificates/public/names.txt
-    umask 022
-  fi
+  case "${VHOSTRA_CERTIFICATE_MODE:-managed}" in
+    external)
+      # The machine-layout publisher owns this read-only mount. A web
+      # container must never create or renew authoritative private keys.
+      [ -f /etc/vhostra/certificates/private/localhost.key ] || { echo 'Published TLS key is missing.' >&2; exit 1; }
+      [ -f /etc/vhostra/certificates/public/localhost.pem ] || { echo 'Published TLS certificate is missing.' >&2; exit 1; }
+      saved="$(cat /etc/vhostra/certificates/public/names.txt 2>/dev/null || true)"
+      [ "$saved" = "$names" ] || { echo 'Published TLS names are stale.' >&2; exit 1; }
+      openssl x509 -checkend 86400 -noout -in /etc/vhostra/certificates/public/localhost.pem >/dev/null 2>&1 || { echo 'Published TLS certificate is expired or invalid.' >&2; exit 1; }
+      ;;
+    managed)
+      mkdir -p /etc/vhostra/certificates/public /etc/vhostra/certificates/private
+      chmod 0700 /etc/vhostra/certificates/private
+      saved="$(cat /etc/vhostra/certificates/public/names.txt 2>/dev/null || true)"
+      if [ "$saved" != "$names" ] || ! openssl x509 -checkend 86400 -noout -in /etc/vhostra/certificates/public/localhost.pem >/dev/null 2>&1; then
+        umask 077
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048 -subj /CN=localhost -addext "subjectAltName=$names" -keyout /etc/vhostra/certificates/private/localhost.key.new -out /etc/vhostra/certificates/public/localhost.pem.new
+        mv /etc/vhostra/certificates/private/localhost.key.new /etc/vhostra/certificates/private/localhost.key
+        mv /etc/vhostra/certificates/public/localhost.pem.new /etc/vhostra/certificates/public/localhost.pem
+        printf '%s' "$names" > /etc/vhostra/certificates/public/names.txt
+        umask 022
+      fi
+      ;;
+    *) echo 'Invalid certificate publication mode.' >&2; exit 1 ;;
+  esac
 fi
 
 if [ "${VHOSTRA_HTTPS:-false}" = true ] && [ "${VHOSTRA_WEB_SERVER:-openlitespeed}" = openlitespeed ]; then
@@ -177,12 +191,32 @@ chmod 0710 /var/log/vhostra
 mkdir -p /var/log/vhostra/sites
 chown "root:$site_log_group" /var/log/vhostra/sites
 chmod 0710 /var/log/vhostra/sites
+# The built-in localhost snippet is a fixed file, not a member of sites/*.conf.
+builtin_log_dir=/var/log/vhostra/sites/vhostra-localhost-vhost
+[ ! -L "$builtin_log_dir" ] || { echo 'Invalid built-in Site log directory' >&2; exit 65; }
+[ -e "$builtin_log_dir" ] || mkdir -m 0700 "$builtin_log_dir"
+[ -d "$builtin_log_dir" ] || { echo 'Invalid built-in Site log directory' >&2; exit 65; }
+# Only Vhostra's validated, read-only Site snippets may create a host-backed
+# log directory. The ordinary Electron process does not own this service tree.
+for site_config in /etc/vhostra/openlitespeed/sites/*.conf; do
+  [ -f "$site_config" ] || continue
+  site_id="${site_config##*/}"
+  site_id="${site_id%.conf}"
+  case "$site_id" in
+    vhostra-localhost-vhost) ;;
+    *) printf '%s\n' "$site_id" | grep -Eq '^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$' || { echo 'Invalid Site log identifier' >&2; exit 65; } ;;
+  esac
+  site_log_dir="/var/log/vhostra/sites/$site_id"
+  [ ! -L "$site_log_dir" ] || { echo 'Invalid Site log directory' >&2; exit 65; }
+  [ -e "$site_log_dir" ] || mkdir -m 0700 "$site_log_dir"
+  [ -d "$site_log_dir" ] || { echo 'Invalid Site log directory' >&2; exit 65; }
+done
 for site_log_dir in /var/log/vhostra/sites/*; do
   [ -d "$site_log_dir" ] || continue
   [ ! -L "$site_log_dir" ] || { echo 'Invalid Site log directory' >&2; exit 65; }
   case "${site_log_dir##*/}" in
-    vhostra-localhost-vhost|????????-????-????-????-????????????) ;;
-    *) echo 'Invalid Site log directory name' >&2; exit 65 ;;
+    vhostra-localhost-vhost) ;;
+    *) printf '%s\n' "${site_log_dir##*/}" | grep -Eq '^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$' || { echo 'Invalid Site log directory name' >&2; exit 65; } ;;
   esac
   chown "$site_log_user:$site_log_group" "$site_log_dir"
   chmod 0700 "$site_log_dir"

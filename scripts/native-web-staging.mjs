@@ -33,7 +33,7 @@ const request = (port, host) => new Promise((resolve, reject) => {
   req.on('error', reject)
 })
 
-async function worker(uid, gid, home, dockerPath) {
+async function worker(uid, gid, home, dockerPath, writerRecreation = false, apacheOnly = false) {
   if (process.platform !== 'darwin' || process.getuid?.() !== 0 || !Number.isInteger(uid) || uid < 1 || !Number.isInteger(gid) || gid < 1)
     fail('Web staging requires one administrator-authorized worker')
   const rootStat = await fs.lstat(inactiveRoot)
@@ -53,6 +53,7 @@ async function worker(uid, gid, home, dockerPath) {
   const localRoot = path.join(stage, 'service-data/localhost/public')
   const siteRoot = path.join(stage, 'disposable-site', siteId)
   const logRoot = path.join(stage, 'logs')
+  const overrideRoot = path.join(stage, 'image-overrides')
   const dockerEnv = { ...process.env, HOME: home, DOCKER_HOST: `unix://${path.join(home, '.docker/run/docker.sock')}` }
   let dockerOperations = 0
   const docker = (args, timeout = 30000) => {
@@ -68,9 +69,17 @@ async function worker(uid, gid, home, dockerPath) {
     await fs.mkdir(localRoot, { recursive: true, mode: 0o755 })
     await fs.mkdir(siteRoot, { recursive: true, mode: 0o755 })
     await fs.mkdir(logRoot, { recursive: true, mode: 0o755 })
-    for (const id of [builtInId, siteId]) await fs.mkdir(path.join(logRoot, 'sites', id), { recursive: true, mode: 0o700 })
-    for (const dir of [localRoot, path.dirname(localRoot), siteRoot, path.dirname(siteRoot), logRoot, path.join(logRoot, 'sites'), ...[builtInId, siteId].map(id => path.join(logRoot, 'sites', id))])
+    if (!writerRecreation) for (const id of [builtInId, siteId]) await fs.mkdir(path.join(logRoot, 'sites', id), { recursive: true, mode: 0o700 })
+    for (const dir of [localRoot, path.dirname(localRoot), siteRoot, path.dirname(siteRoot), logRoot,
+      ...(!writerRecreation ? [path.join(logRoot, 'sites'), ...[builtInId, siteId].map(id => path.join(logRoot, 'sites', id))] : [])])
       await fs.chown(dir, uid, gid)
+    if (writerRecreation) {
+      await fs.mkdir(overrideRoot, { mode: 0o755 })
+      await fs.copyFile(fileURLToPath(new URL('../runtime-image/entrypoint.sh', import.meta.url)), path.join(overrideRoot, 'entrypoint.sh'))
+      await fs.copyFile(fileURLToPath(new URL('../runtime-image/supervisor.conf', import.meta.url)), path.join(overrideRoot, 'supervisor.conf'))
+      await fs.chmod(path.join(overrideRoot, 'entrypoint.sh'), 0o755)
+      await fs.chmod(path.join(overrideRoot, 'supervisor.conf'), 0o644)
+    }
     await fs.writeFile(path.join(localRoot, 'index.html'), 'inactive web staging localhost', { mode: 0o644 })
     await fs.writeFile(path.join(siteRoot, 'index.php'), '<?php echo "web-stage-proof|".PHP_SAPI."|".ini_get("mysqli.default_socket")."|".ini_get("expose_php");', { mode: 0o644 })
     await fs.chown(path.join(siteRoot, 'index.php'), uid, gid)
@@ -87,11 +96,11 @@ async function worker(uid, gid, home, dockerPath) {
         const entry = docker(['run', '--rm', '--pull', 'never', '--network', 'none', '--entrypoint', 'sha256sum', candidate, '/usr/local/bin/vhostra-entrypoint']).split(/\s+/)[0]
         const web = docker(['run', '--rm', '--pull', 'never', '--network', 'none', '--entrypoint', 'sha256sum', candidate, '/usr/local/bin/vhostra-web-server']).split(/\s+/)[0]
         docker(['run', '--rm', '--pull', 'never', '--network', 'none', '--entrypoint', 'test', candidate, '-x', '/usr/local/lsws/lsphp83/bin/lsphp'])
-        if (entry === entrypointHash && web === webScriptHash) { image = candidate; break }
+        if ((writerRecreation || entry === entrypointHash) && web === webScriptHash) { image = candidate; break }
       } catch { /* inspect the next local managed image */ }
     }
     if (!image) fail('No local Vhostra runtime image matches the current scripts and PHP 8.3')
-    for (const server of ['openlitespeed', 'apache', 'nginx']) {
+    for (const server of apacheOnly ? ['apache'] : ['openlitespeed', 'apache', 'nginx']) {
       model.server = server
       const published = await executeProtectedTransaction({ version: 1, operations: [{ type: 'web-runtime-config', model }] }, roots, path.join(stage, 'hosts'))
       if (published.completed !== 1) fail('Web runtime publication did not complete')
@@ -116,6 +125,8 @@ async function worker(uid, gid, home, dockerPath) {
         '-e', `VHOSTRA_PMA_PASSWORD=${randomBytes(24).toString('hex')}`,
         '-v', `${localRoot}:/var/www/html`, '-v', `${siteRoot}:/var/www/vhostra/${siteId}:ro`,
         '-v', `${logRoot}:/var/log/vhostra`,
+        ...(writerRecreation ? ['-v', `${path.join(overrideRoot, 'entrypoint.sh')}:/usr/local/bin/vhostra-entrypoint:ro`,
+          '-v', `${path.join(overrideRoot, 'supervisor.conf')}:/usr/local/share/vhostra/supervisor-base.conf:ro`] : []),
         ...files.flatMap(service => ['-v', `${path.join(publicRoot, service)}:/etc/vhostra/${service}:ro`]), image]
       docker(args, 40000)
       const inspected = JSON.parse(docker(['inspect', name]))[0]
@@ -136,13 +147,23 @@ async function worker(uid, gid, home, dockerPath) {
       const deadline = Date.now() + 60000
       while (Date.now() < deadline) {
         try { response = await request(port, siteName); if (response.status === 200) break } catch {}
+        if (writerRecreation && JSON.parse(docker(['inspect', name]))[0].State.Status === 'exited') break
         await new Promise(resolve => setTimeout(resolve, 1000))
       }
       if (!response || response.status !== 200 || response.site !== siteId
         || response.body !== `web-stage-proof|${server === 'openlitespeed' ? 'litespeed' : 'fpm-fcgi'}|/run/mysqld/mysqld.sock|`)
         {
           const parts = response?.body?.startsWith('web-stage-proof|') ? response.body.split('|') : []
-          fail(`${server} did not load generated vhost and PHP settings (http=${response?.status ?? 'none'}, site=${response?.site === siteId}, marker=${parts.length > 0}, sapi=${parts[1] ?? 'none'}, socket=${parts[2] === '/run/mysqld/mysqld.sock' ? 'expected' : 'other'}, expose=${parts[3] === '' ? 'off' : 'other'})`)
+          const state = JSON.parse(docker(['inspect', name]))[0].State
+          const logProbe = spawnSync(dockerPath, ['logs', '--tail', '80', name], { uid, gid, env: dockerEnv,
+            encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'] })
+          dockerOperations++
+          const logs = `${logProbe.stdout ?? ''}\n${logProbe.stderr ?? ''}`
+          const markers = ['permission denied', 'Invalid Site log', 'Invalid Site log directory', 'Fatal error', 'ERROR', 'FATAL', 'exited'].filter(marker => logs.toLowerCase().includes(marker.toLowerCase()))
+          const line = logs.split(/\r?\n/).filter(value => /ERROR|FATAL|permission denied|Invalid Site/i.test(value)
+            && !/password|secret|token|credential/i.test(value)).at(-1)
+            ?.replaceAll(stage, '<stage>').replace(/\b[a-f0-9]{40,}\b/ig, '<redacted>').slice(0, 180) ?? 'none'
+          fail(`${server} did not load generated vhost and PHP settings (http=${response?.status ?? 'none'}, site=${response?.site === siteId}, marker=${parts.length > 0}, sapi=${parts[1] ?? 'none'}, socket=${parts[2] === '/run/mysqld/mysqld.sock' ? 'expected' : 'other'}, expose=${parts[3] === '' ? 'off' : 'other'}, state=${state.Status}, exit=${state.ExitCode}, diagnostic=${markers.join(',') || 'none'}, line=${line})`)
         }
       const alias = await request(port, 'www.web-stage.local.test')
       if (alias.status !== 200 || alias.site !== siteId || alias.body !== response.body) fail(`${server} alias routing failed`)
@@ -161,9 +182,27 @@ async function worker(uid, gid, home, dockerPath) {
       passed[server] = { start: true, php: true, routing: true, setting: true, logs0600: true, worker: workerName }
       docker(['rm', '-f', name])
       active = ''
+      if (writerRecreation) {
+        active = name
+        docker(args, 40000)
+        const second = JSON.parse(docker(['inspect', name]))[0]
+        const secondPort = Number(second.NetworkSettings?.Ports?.['8088/tcp']?.[0]?.HostPort)
+        let again = null
+        const secondDeadline = Date.now() + 60000
+        while (Date.now() < secondDeadline) {
+          try { again = await request(secondPort, siteName); if (again.status === 200) break } catch {}
+          await new Promise(resolve => setTimeout(resolve, 1000))
+        }
+        if (!again || again.status !== 200 || again.body !== response.body || again.site !== siteId)
+          fail(`${server} did not recreate against the same disposable layout`)
+        if (((await fs.lstat(logFile)).mode & 0o777) !== 0o600) fail(`${server} Site log changed mode after recreation`)
+        passed[server].recreated = true
+        docker(['rm', '-f', name])
+        active = ''
+      }
     }
     milestones.servers_completed = Date.now()
-    return { result: 'PASS', passed, privilegeInvocations: 1, dockerOperations, helperPid: process.pid, milestones }
+    return { result: 'PASS', passed, privilegeInvocations: 1, dockerOperations, helperPid: process.pid, writerRecreation, milestones }
   } finally {
     if (active) { try { docker(['rm', '-f', active], 20000) } catch {} }
     await fs.rm(stage, { recursive: true, force: true })
@@ -171,20 +210,22 @@ async function worker(uid, gid, home, dockerPath) {
 }
 
 if (process.argv[2] === '--worker') {
-  worker(Number(process.argv[3]), Number(process.argv[4]), process.argv[5], process.argv[6])
+  worker(Number(process.argv[3]), Number(process.argv[4]), process.argv[5], process.argv[6], process.argv[7] === '--writer-recreation' || process.argv[7] === '--writer-apache-only', process.argv[7] === '--writer-apache-only')
     .then(result => process.stdout.write(`${JSON.stringify(result)}\n`))
-    .catch(error => { process.stderr.write(`${error.message.slice(0, 220)}\n`); process.exitCode = 1 })
+    .catch(error => { process.stderr.write(`${error.message.slice(0, 600)}\n`); process.exitCode = 1 })
 } else {
   if (process.platform !== 'darwin' || process.getuid?.() === 0) fail('Run web staging as an ordinary macOS user')
+  if (process.argv[2] !== undefined && !['--writer-recreation', '--writer-apache-only'].includes(process.argv[2])) fail('Unknown web staging option')
   const dockerPath = safeRun('/usr/bin/which', ['docker'], { label: 'Docker lookup' })
-  const command = [process.execPath, script, '--worker', String(process.getuid()), String(process.getgid()), os.homedir(), dockerPath].map(quoteShell).join(' ')
+  const command = [process.execPath, script, '--worker', String(process.getuid()), String(process.getgid()), os.homedir(), dockerPath,
+    ...(process.argv[2] ? [process.argv[2]] : [])].map(quoteShell).join(' ')
   process.stdout.write('macOS may request one administrator authorization for isolated web staging. Approve it on this Mac; do not enter a password in chat. Production remains on the legacy Store.\n')
   const child = spawn('osascript', ['-e', `do shell script ${quoteApple(command)} with administrator privileges`], { stdio: ['ignore', 'pipe', 'pipe'] })
   let output = ''; let errors = ''
   child.stdout.on('data', chunk => { output += String(chunk).slice(0, 4096) })
   child.stderr.on('data', chunk => { errors += String(chunk).slice(0, 1024) })
   child.on('close', code => {
-    if (code !== 0) { process.stderr.write(`Native web staging failed (status ${code ?? 'unknown'}; ${errors.trim().slice(0, 280)}).\n`); process.exitCode = 1; return }
+    if (code !== 0) { process.stderr.write(`Native web staging failed (status ${code ?? 'unknown'}; ${errors.trim().slice(0, 720)}).\n`); process.exitCode = 1; return }
     try {
       const result = JSON.parse(output.trim())
       if (result.result !== 'PASS') fail('Native web staging did not pass')

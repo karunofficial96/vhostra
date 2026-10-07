@@ -5,6 +5,7 @@ import { isIP } from 'node:net'
 import { systemStoragePaths, type SystemStoragePaths } from './storage-paths.js'
 import { authoritativeMariaDbConfig, deriveMariaDbRuntimeConfig, mariaDbPolicyBody, parseAuthoritativeMariaDbConfig } from './mariadb-config.js'
 import { authoritativeWebFile, isOwnedWebRuntimeFile, renderWebPreviewFiles, renderWebRuntimeFiles, runtimeWebFile, validateWebRuntimeModel, type WebRuntimeModel } from './web-runtime-config.js'
+import { cacheRuntimeMarker, renderCacheRuntimeConfig } from './cache-runtime-config.js'
 
 /** The only machine resources accepted by the short-lived elevated worker. */
 export type ProtectedOperation =
@@ -13,6 +14,7 @@ export type ProtectedOperation =
   | { type: 'generated-web-config'; files: Array<{ key: string; contents: string | null }> }
   | { type: 'mariadb-runtime-config' }
   | { type: 'web-runtime-config'; model: WebRuntimeModel }
+  | { type: 'cache-runtime-config'; redisPort: number; memcachedPort: number }
   | { type: 'hosts'; expectedSha256: string; contents: string }
 export interface ProtectedTransaction { version: 1; operations: ProtectedOperation[] }
 type ValidatedOperation =
@@ -21,6 +23,7 @@ type ValidatedOperation =
   | { type: 'mariadb-private' | 'mariadb-runtime-public'; destination: string; contents: string }
   | { type: 'web-private' | 'web-preview'; destination: string; contents: string }
   | { type: 'web-runtime-public'; destination: string; contents: string | null }
+  | { type: 'cache-runtime-public'; destination: string; contents: string }
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const digest = (value: string) => createHash('sha256').update(value).digest('hex')
@@ -147,6 +150,18 @@ export function validateProtectedTransaction(input: unknown, roots: SystemStorag
       }
       return expanded
     }
+    if (op.type === 'cache-runtime-config') {
+      if (Object.keys(op).some(key => !['type', 'redisPort', 'memcachedPort'].includes(key))) fail('cache runtime configuration has unsupported fields')
+      let rendered: ReturnType<typeof renderCacheRuntimeConfig>
+      try { rendered = renderCacheRuntimeConfig(op.redisPort as number, op.memcachedPort as number) }
+      catch { return fail('cache runtime ports are invalid') }
+      return (['redis', 'memcached'] as const).map(service => {
+        const destination = path.join(roots.data, 'runtime-config/cache', `${service}.conf`)
+        if (seen.has(destination)) fail('duplicate destination')
+        seen.add(destination)
+        return { type: 'cache-runtime-public' as const, destination, contents: rendered[service] }
+      })
+    }
     if (op.type === 'hosts') {
       if (Object.keys(op).some(key => !['type', 'expectedSha256', 'contents'].includes(key)) || typeof op.expectedSha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(op.expectedSha256) || typeof op.contents !== 'string' || Buffer.byteLength(op.contents) > 1024 * 1024 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(op.contents)) fail('Hosts payload is malformed or exceeds 1 MiB')
       const hostsContents = op.contents as string
@@ -208,8 +223,9 @@ export async function executeProtectedTransaction(input: unknown, roots: SystemS
   for (const op of operations) {
     const mariaDbConfig = op.type === 'mariadb-private' || op.type === 'mariadb-runtime-public'
     const webConfig = op.type === 'web-private' || op.type === 'web-runtime-public' || op.type === 'web-preview'
-    const root = op.type === 'hosts' ? path.dirname(hostsPath) : op.type === 'mariadb-runtime-public' || op.type === 'web-runtime-public' ? roots.data : roots.configuration
-    await assertSafeDestination(op.destination, root, mariaDbConfig || webConfig)
+    const cacheConfig = op.type === 'cache-runtime-public'
+    const root = op.type === 'hosts' ? path.dirname(hostsPath) : op.type === 'mariadb-runtime-public' || op.type === 'web-runtime-public' || cacheConfig ? roots.data : roots.configuration
+    await assertSafeDestination(op.destination, root, mariaDbConfig || webConfig || cacheConfig)
     const previous = await fs.readFile(op.destination, 'utf8').catch(error => { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error })
     if (op.type === 'hosts') {
       if (previous === null || digest(previous) !== op.expectedSha256) fail('Hosts file changed before authorization completed')
@@ -233,13 +249,15 @@ export async function executeProtectedTransaction(input: unknown, roots: SystemS
       fail('existing authoritative web configuration is not Vhostra-owned')
     if (op.type === 'web-runtime-public' && previous !== null && !isOwnedWebRuntimeFile(previous))
       fail('existing web runtime configuration is not Vhostra-owned')
+    if (cacheConfig && previous !== null && !previous.startsWith(cacheRuntimeMarker))
+      fail('existing cache runtime configuration is not Vhostra-owned')
     if (op.type === 'web-preview' && previous !== null && !(op.destination.endsWith('runtime-selection.json')
       ? (() => { try { return JSON.parse(previous).owner === 'vhostra' } catch { return false } })()
       : previous.startsWith(generatedMarker))) fail('existing web preview is not Vhostra-owned')
     const stat = await fs.stat(op.destination).catch(() => null)
-    const mode = op.type === 'mariadb-runtime-public' || op.type === 'web-runtime-public' ? 0o644 : mariaDbConfig || webConfig ? 0o600 : stat?.mode ? stat.mode & 0o777 : 0o600
-    if ((mariaDbConfig || webConfig) && stat && (stat.mode & 0o777) !== mode) fail('existing service configuration has unsafe permissions')
-    prepared.push({ destination: op.destination, contents: op.contents, previous, mode, root, directoryMode: mariaDbConfig || webConfig ? 0o755 : 0o700, requireRootOwner: mariaDbConfig || webConfig })
+    const mode = op.type === 'mariadb-runtime-public' || op.type === 'web-runtime-public' || cacheConfig ? 0o644 : mariaDbConfig || webConfig ? 0o600 : stat?.mode ? stat.mode & 0o777 : 0o600
+    if ((mariaDbConfig || webConfig || cacheConfig) && stat && (stat.mode & 0o777) !== mode) fail('existing service configuration has unsafe permissions')
+    prepared.push({ destination: op.destination, contents: op.contents, previous, mode, root, directoryMode: mariaDbConfig || webConfig || cacheConfig ? 0o755 : 0o700, requireRootOwner: mariaDbConfig || webConfig || cacheConfig })
   }
   const completed: typeof prepared = []
   try {
