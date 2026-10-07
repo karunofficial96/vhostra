@@ -716,3 +716,19 @@ automatic migration, machine activation or native authorization was run.
 See `docs/machine-freeze.md` for the resume boundary and documentation links.
 The freeze regression checks and full source suite passed **216/216**; the
 production build passed. Protected direct writes remain zero.
+
+## Supported macOS per-user architecture decision — 2026-10-07
+
+Vhostra intentionally supports per-user application state, user-selected Site
+document roots and Docker-managed services on macOS without requiring a paid
+Apple Developer / Developer ID membership or the proposed signed privileged
+machine service. [The supported architecture](docs/macos-supported-architecture.md)
+records the production paths, account behavior, Docker scope and existing
+bounded authorization. Signing/notarization is a separate distribution trust
+concern. [The machine freeze](docs/machine-freeze.md) now lasts indefinitely:
+Gate 1–3A details remain historical engineering work, and any resumption needs
+a new explicit architecture decision. This current decision supersedes earlier
+Gate plans where they imply machine activation or Developer ID signing is a
+prerequisite for the supported runtime. The Store/runtime guards remain closed.
+The full source suite passed **217/217**, the production build passed, and no
+native administrator authorization or real user-data migration was invoked.

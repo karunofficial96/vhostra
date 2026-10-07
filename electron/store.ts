@@ -213,7 +213,7 @@ export class VhostraStore {
   async resetUserPreferences() {
     const personal = await this.readPersonalSettings()
     await this.writeJson(this.userSettingsFile, { ...personal, startup: defaults.startup, theme: 'system' })
-    return { message: 'This OS user’s theme and startup preferences were reset. Shared services, databases, certificates and Sites were not changed.' }
+    return { message: 'This OS user’s theme and startup preferences were reset. Services, databases, certificates and Sites in this profile were not changed.' }
   }
   async updateLocalhostWelcome(runtimeMessage: string) { await this.initialize(); await this.writeLocalhostWelcome(runtimeMessage) }
   async getState(): Promise<AppState> { await this.initialize(); const sites = await this.readRecords<Site>(this.layout.sites); return { settings: await this.readSettings(), sites: sites.map(({ configuration: _configuration, ...site }) => site), virtualHosts: sites.map(site => site.configuration).filter((host): host is VirtualHost => Boolean(host)) } }

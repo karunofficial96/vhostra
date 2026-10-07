@@ -125,7 +125,7 @@ export interface ConfigurationImportReport {
 
 const join = (platform: HostPlatform, ...parts: string[]) => parts.filter(Boolean).join(platform === 'win32' ? '\\' : '/')
 
-/** Describe the legacy app-data layout and the fixed OS system locations. */
+/** Describe the supported per-user layout; system paths remain dormant engineering metadata. */
 export const createStorageLayout = ({ appDataDirectory, platform }: StorageRoot): StorageLayout => {
   const root = join(platform, appDataDirectory, 'Vhostra')
   const runtime = join(platform, root, 'runtime')

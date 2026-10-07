@@ -25,6 +25,8 @@ test('machine directory and migration-ready marker do not select or initialize m
     await store.getState()
     assert.deepEqual(await readdir(machine), before)
     assert.equal(await readFile(path.join(machine, '.Vhostra-migration-ready'), 'utf8'), 'ready-for-activation')
+    const ordinaryRuntime = new DockerRuntimeController(store.layout, () => store.getState())
+    ordinaryRuntime.dispose()
     assert.throws(() => new DockerRuntimeController(new VhostraStore(userData, undefined, undefined, roots).layout,
       () => store.getState()), /Machine storage runtime is blocked/)
     assert.throws(unavailableProductionMachineCoordinator, /service is unavailable/)
@@ -47,4 +49,17 @@ test('desktop and CLI production entrypoints cannot select synthetic roots or re
   assert.match(main, /if \(app\.isPackaged && process\.env\.VHOSTRA_TEST_SCOPE && process\.env\.VHOSTRA_USER_DATA\)/)
   assert.match(main, /Packaged acceptance profile must be temporary/)
   assert.doesNotMatch(cli, /--(?:enable|activate|migrate)[- ]machine|--system-storage/)
+})
+
+test('production Help shows supported per-user locations without machine migration copy', async () => {
+  const help = await readFile('src/components/HelpWorkspace.tsx', 'utf8')
+  const welcome = await readFile('src/components/Onboarding.tsx', 'utf8')
+  const settings = await readFile('src/App.tsx', 'utf8')
+  assert.match(help, /storage\.userConfiguration/)
+  assert.match(help, /storage\.root/)
+  assert.match(help, /storage\.persistentData\.mariaDb/)
+  assert.match(help, /storage\.logs/)
+  for (const source of [help, welcome, settings]) {
+    assert.doesNotMatch(source, /storage\.systemPaths|migration to the OS system locations|Enable experimental machine|Developer ID|Gate 3A/)
+  }
 })

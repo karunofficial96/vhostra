@@ -1,7 +1,13 @@
 # Storage audit (2026-10-04)
 
-This records the current implementation and the intended ownership. It is not
-an assertion that the machine-wide migration is complete.
+**Historical Gate 1–3A machine-wide migration audit.** Its "required
+destination" column is a record of the abandoned proposal, not the supported
+macOS product architecture. The supported per-user layout is documented in
+[macOS architecture](macos-supported-architecture.md); machine activation
+remains disabled by [the freeze](machine-freeze.md).
+
+This records the implementation and proposed ownership at the time. It is not
+an assertion that the machine-wide migration is complete or planned.
 
 | Current record | Current location | Ownership | Required destination |
 | --- | --- | --- | --- |

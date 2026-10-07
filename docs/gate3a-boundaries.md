@@ -1,5 +1,10 @@
 # Gate 3A boundary decision — 2026-10-07
 
+**Historical machine-wide design.** The supported macOS architecture is now
+the [per-user runtime](macos-supported-architecture.md). This proposed helper
+is not a runtime prerequisite or active product plan; see the
+[machine-wide freeze](machine-freeze.md).
+
 Gate 3A stops before activation. The Gate 1 and Gate 2 staging results remain
 valid, but the ordinary production process cannot use Gate 2's root-private
 machine Store as implemented. The current `osascript` worker is short-lived and

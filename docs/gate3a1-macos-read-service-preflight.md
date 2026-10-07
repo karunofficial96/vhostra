@@ -1,5 +1,10 @@
 # Gate 3A.1 macOS protected-read service preflight — 2026-10-07
 
+**Historical design only.** The supported macOS product architecture is now
+per-user and does not require this proposed signed service or a paid Apple
+Developer membership. Machine-wide work remains dormant under
+[the freeze](machine-freeze.md); resumption needs a new architecture decision.
+
 **Decision: stop before implementing or registering a privileged service.**
 The current checkout and Mac cannot securely validate the required signed
 client identity. `security find-identity -v -p codesigning` found **0 valid
