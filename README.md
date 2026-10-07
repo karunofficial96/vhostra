@@ -2,7 +2,7 @@
   <img src="src/assets/vhostra-logo-light.png" alt="Vhostra" width="420">
 </p>
 
-Vhostra is a lightweight, cross-platform graphical local PHP development environment. It is designed around one shared runtime: many local websites use one selected web server, one selected PHP version, and shared supporting services.
+Vhostra (VHost Runtime Applications) is a lightweight, cross-platform graphical local PHP development environment. It is designed around one shared runtime: many local websites use one selected web server, one selected PHP version, and shared supporting services.
 
 **Local development only.** Vhostra runs on your own computer and is not a production hosting control panel. Its runtime and security model are intended for local development, not an Internet-facing server. A Site/vhost configuration export is for local Vhostra configuration; it is not automatically ready for production. If you use one as a starting point on another server, manually review and edit paths, domains, ports, TLS certificates, permissions, logging, security and deployment settings. **Export Database for Production** is a separate SQL database workflow and does not deploy or configure a Site.
 

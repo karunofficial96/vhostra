@@ -3,7 +3,7 @@
   "version": "1.0.7",
   "private": true,
   "type": "module",
-  "description": "A lightweight graphical local PHP development environment.",
+  "description": "Vhostra (VHost Runtime Applications), a lightweight graphical local PHP development environment.",
   "main": "dist-electron/main.js",
   "bin": {
     "vhostra": "scripts/vhostra.mjs"
