@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { singleRuntimeComposeYaml } from '../dist-electron/runtime.js'
+import { machineGenerationFixture, id } from './machine-generation-fixture.mjs'
 
 const state = {
   settings: {
@@ -24,12 +25,18 @@ const layout = machine => ({
   logs: '/synthetic/logs',
 })
 
-test('machine web certificate authority is a read-only mount with an external publisher', () => {
-  const machine = singleRuntimeComposeYaml(state, layout(true), 'synthetic', true, 'synthetic-image', 'synthetic-network')
+test('machine web certificate authority is a read-only mount with an external publisher', async () => {
+  const fixture = await machineGenerationFixture()
+  try {
+  const token = await fixture.commit(id())
+  const machineLayout = { ...layout(true), dataRoot: fixture.roots.data,
+    builtinPublic: `${fixture.roots.data}/service-data/localhost/public` }
+  const machine = singleRuntimeComposeYaml(state, machineLayout, 'synthetic', true, 'synthetic-image', 'synthetic-network', token)
   assert.match(machine, /VHOSTRA_CERTIFICATE_MODE: "external"/)
   assert.match(machine, /\/synthetic\/data\/certificates:\/etc\/vhostra\/certificates:ro/)
   assert.doesNotMatch(machine, /\/synthetic\/data\/certificates:\/etc\/vhostra\/certificates"/)
   const legacy = singleRuntimeComposeYaml(state, layout(false), 'synthetic', true, 'synthetic-image', 'synthetic-network')
   assert.match(legacy, /VHOSTRA_CERTIFICATE_MODE: "managed"/)
   assert.match(legacy, /\/synthetic\/data\/certificates:\/etc\/vhostra\/certificates"/)
+  } finally { await fixture.cleanup() }
 })

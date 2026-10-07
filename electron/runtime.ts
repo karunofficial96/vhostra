@@ -5,6 +5,8 @@ import { authorizeProtectedTransaction } from "./protected-launcher.js";
 import { authoritativeMariaDbConfig, deriveMariaDbRuntimeConfig, mariaDbPolicyBody } from './mariadb-config.js';
 import { authoritativeWebFile, renderWebRuntimeFiles, runtimeWebFile, type WebRuntimeModel } from './web-runtime-config.js';
 import { cacheRuntimePath } from './cache-runtime-config.js';
+import { unavailableProductionMachineCoordinator, type MachineCoordinator } from './machine-coordinator-contract.js';
+import { committedBuiltInMount, type CommittedBuiltInGeneration } from './machine-generation-content.js';
 import { mapDiagnosticPaths } from './errors.js';
 import { redactProgress } from "./progress.js";
 import { createHash, randomBytes } from "node:crypto";
@@ -98,6 +100,7 @@ export class DockerRuntimeController {
     private serviceRevision = 0;
     private counters = { dockerCalls: 0, composeCalls: 0, refreshes: 0, builds: 0, operations: 0 };
     private dockerCheck: DockerCheck = { state: 'missing' };
+    private machineCoordinator(): MachineCoordinator { return unavailableProductionMachineCoordinator(); }
     private dockerCommand() {
         const command = resolveDockerExecutable(this.layout.userRoot ?? this.layout.root);
         if (!command) throw new Error(prerequisiteMessage({ state: 'missing' }));
@@ -370,6 +373,7 @@ export class DockerRuntimeController {
         }
     }
     async restart(preserveStopped = false) {
+        if (this.layout.userRoot) throw new Error('Machine runtime recovery requires a protected generation and rollback boundary.');
         const restoreStopped = preserveStopped && this.snapshot.state !== "running";
         return this.runExclusive(
             "stopping",
@@ -1615,7 +1619,7 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
         return path.join(this.runtimeRoot, "compose.yml");
     }
     private get environmentFile() {
-        return path.join(this.runtimeRoot, ".env");
+        return path.join(this.databaseRoot, "secrets.env");
     }
     private appendProgress(text: string, notify = true) {
         if (!this.progress) return;
@@ -1716,6 +1720,8 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
         message: string,
         task: () => Promise<T>,
     ): Promise<T> {
+        if (this.layout.userRoot)
+            throw new Error('Machine service operations require signed protected secret and runtime coordination.');
         if (this.operation)
             throw new Error(
                 "A Vhostra service operation is already in progress.",
@@ -1822,6 +1828,7 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
         this.appendProgress("✓ Docker runtime available");
     }
     private async generate(state: AppState) {
+        if (this.layout.userRoot) throw new Error('Machine runtime generation requires protected secret, workspace and built-in content publishers.');
         const hostname = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
         const names = new Set<string>();
         for (const host of state.virtualHosts) {
@@ -1994,8 +2001,9 @@ foreach (['localhost', '127.0.0.1'] as $host) {
     }
     async redactLocalLog(value: string) {
         // Reading a log must not initialize credentials or start services.
+        if (this.layout.userRoot) return redactProgress(value, this.secrets);
         try {
-            const file = path.join(this.databaseLayout.runtime.mariaDb, "secrets.env");
+            const file = this.environmentFile;
             if ((await fs.stat(file)).size <= 64 * 1024) {
                 for (const line of (await fs.readFile(file, "utf8")).split(/\r?\n/)) {
                     const match = line.match(/^[^#=]*(?:PASSWORD|SECRET|TOKEN|KEY)[^=]*=(.+)$/i);
@@ -2006,29 +2014,46 @@ foreach (['localhost', '127.0.0.1'] as $host) {
         return redactProgress(value, this.secrets);
     }
     private async ensureEnvironment() {
+        if (this.layout.userRoot) throw new Error('Machine database secrets require the signed protected service boundary.');
         await fs.mkdir(this.databaseLayout.runtime.mariaDb, { recursive: true });
-        let contents = "";
-        try {
-            contents = await fs.readFile(path.join(this.databaseLayout.runtime.mariaDb, "secrets.env"), "utf8");
-        } catch {
-            try { contents = await fs.readFile(this.databaseOwner?.environmentFile ?? this.environmentFile, "utf8"); } catch { /* first use */ }
+        const canonical = this.environmentFile;
+        const legacy = path.join(this.runtimeRoot, '.env');
+        const readExisting = async (file: string) => {
+            const stat = await fs.lstat(file).catch(error => {
+                if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+                throw error;
+            });
+            if (!stat) return null;
+            if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600)
+                throw new Error('Database secret file ownership or permissions require review.');
+            const value = await fs.readFile(file, 'utf8');
+            if (Buffer.byteLength(value) > 4096) throw new Error('Database secret file exceeds its size limit.');
+            const parsed = new Map<string, string>();
+            for (const line of value.split(/\r?\n/).filter(Boolean)) {
+                const match = line.match(/^(MARIADB_ROOT_PASSWORD|VHOSTRA_PMA_BLOWFISH_SECRET|VHOSTRA_PMA_PASSWORD)=([A-Za-z0-9_-]+)$/);
+                if (!match || parsed.has(match[1])) throw new Error('Database secret file has unexpected or duplicate fields.');
+                parsed.set(match[1], match[2]);
+            }
+            return parsed;
+        };
+        let values = await readExisting(canonical);
+        const old = await readExisting(legacy);
+        if (values && old) for (const [key, value] of old)
+            if (values.get(key) !== value) throw new Error('Stale phpMyAdmin environment conflicts with authoritative database secrets.');
+        if (!values) {
+            values = old ?? new Map<string, string>();
+            for (const [key, bytes] of [['MARIADB_ROOT_PASSWORD', 24], ['VHOSTRA_PMA_BLOWFISH_SECRET', 32], ['VHOSTRA_PMA_PASSWORD', 32]] as const)
+                if (!values.has(key)) values.set(key, randomBytes(bytes).toString('base64url'));
+            const contents = [...values].map(([key, value]) => `${key}=${value}`).join('\n') + '\n';
+            await fs.writeFile(canonical, contents, { flag: 'wx', mode: 0o600 });
         }
-        const missing = (name: string) =>
-            !new RegExp(`^${name}=`, "m").test(contents);
-        if (missing("MARIADB_ROOT_PASSWORD"))
-            contents += `MARIADB_ROOT_PASSWORD=${randomBytes(24).toString("base64url")}\n`;
-        if (missing("VHOSTRA_PMA_BLOWFISH_SECRET"))
-            contents += `VHOSTRA_PMA_BLOWFISH_SECRET=${randomBytes(32).toString("base64url")}\n`;
-        if (missing("VHOSTRA_PMA_PASSWORD"))
-            contents += `VHOSTRA_PMA_PASSWORD=${randomBytes(32).toString("base64url")}\n`;
-        for (const line of contents.split(/\r?\n/)) {
-            const match = line.match(/^[^#=]*(?:PASSWORD|SECRET|TOKEN|KEY)[^=]*=(.*)$/i);
-            if (match) this.secrets.add(match[1]);
-        }
-        await writeIfMissing(path.join(this.databaseLayout.runtime.mariaDb, "secrets.env"), contents, { mode: 0o600 });
-        await fs.writeFile(this.environmentFile, contents.split(/\r?\n/).filter(line => line.startsWith("VHOSTRA_PMA_")).join("\n") + "\n", { mode: 0o600 });
+        for (const key of ['MARIADB_ROOT_PASSWORD', 'VHOSTRA_PMA_BLOWFISH_SECRET', 'VHOSTRA_PMA_PASSWORD'])
+            if (!values.get(key)) throw new Error('Authoritative database secrets are incomplete.');
+        for (const value of values.values()) this.secrets.add(value);
+        if (old) await fs.rm(legacy);
     }
     private async provisionPhpMyAdmin() {
+        if (this.layout.userRoot) throw new Error('Machine phpMyAdmin provisioning requires the signed protected service boundary.');
         if (["stopped", "not-created"].includes(await this.databaseStatus())) return;
         const contents = await fs.readFile(this.environmentFile, "utf8");
         const password = contents
@@ -2473,6 +2498,7 @@ foreach (['localhost', '127.0.0.1'] as $host) {
             "--env-file", path.join(this.databaseRoot, "secrets.env"), "--file", path.join(this.databaseRoot, "compose.yml"), ...args];
     }
     private async databaseCompose(args: string[], allowFailure = false): Promise<string> {
+        if (this.layout.userRoot) throw new Error('Machine MariaDB Compose requires signed protected secret delivery.');
         if (!existsSync(path.join(this.databaseRoot, "compose.yml"))) {
             if (args[0] === "stop") return "";
             throw new Error("MariaDB has not been prepared. Start Services first.");
@@ -2524,6 +2550,7 @@ foreach (['localhost', '127.0.0.1'] as $host) {
     }
     private async prepareDatabase(state: AppState): Promise<void> {
         if (this.databaseOwner) return;
+        if (this.layout.userRoot) throw new Error('Machine MariaDB preparation requires separate coordinator, secret and service-owned data boundaries.');
         await fs.mkdir(this.databaseRoot, { recursive: true });
         await fs.mkdir(this.layout.persistentData.mariaDb, { recursive: true });
         const managedRoot = await fs.realpath(this.layout.dataRoot ?? this.layout.root);
@@ -2555,9 +2582,12 @@ foreach (['localhost', '127.0.0.1'] as $host) {
         } else await writeIfMissing(this.databaseConfigFile, mariaDbPolicyBody, { mode: 0o600 });
         const source = existsSync(fileURLToPath(new URL("../runtime-image/mariadb/", import.meta.url))) ? fileURLToPath(new URL("../runtime-image/mariadb/", import.meta.url)) : path.join(process.resourcesPath, "runtime-image/mariadb");
         await fs.cp(source, path.join(this.databaseRoot, "image"), { recursive: true });
-        const secret = (await fs.readFile(path.join(this.databaseRoot, "secrets.env"), "utf8")).match(/^MARIADB_ROOT_PASSWORD=(.+)$/m)?.[1];
+        const secret = (await fs.readFile(this.environmentFile, "utf8")).match(/^MARIADB_ROOT_PASSWORD=(.+)$/m)?.[1];
         if (!secret) throw new Error("Missing local MariaDB initialization secret.");
-        await writeIfMissing(path.join(this.databaseRoot, "root-password"), secret, { mode: 0o600 });
+        const rootPasswordFile = path.join(this.databaseRoot, 'root-password');
+        await writeIfMissing(rootPasswordFile, secret, { mode: 0o600 });
+        if (await fs.readFile(rootPasswordFile, 'utf8') !== secret)
+            throw new Error('MariaDB bootstrap password projection conflicts with authoritative secrets.');
         const identity = createHash("sha256").update(series);
         for (const name of ["Dockerfile", "entrypoint.sh", "logrotate.conf"]) identity.update(await fs.readFile(path.join(this.databaseRoot, "image", name)));
         const imageName = `vhostra-mariadb:build-${identity.digest("hex").slice(0, 24)}`;
@@ -2992,11 +3022,13 @@ export function singleRuntimeComposeYaml(
     httpsEnabled: boolean,
     imageName: string,
     databaseNetwork: string,
+    committedBuiltIn?: CommittedBuiltInGeneration,
 ) {
     const php = state.settings.selectedPhpVersion.replace(".", "");
     const configRoot = layout.userRoot ? path.join(layout.dataRoot ?? layout.root, 'runtime-config', 'web') : null;
     const serviceConfig = (service: 'openlitespeed' | 'php' | 'apache' | 'nginx') =>
         configRoot ? path.join(configRoot, service) : layout.runtime[service === 'openlitespeed' ? 'openLiteSpeed' : service];
+    const builtInMount = layout.userRoot ? `${committedBuiltInMount(layout, committedBuiltIn)}:/usr/share/vhostra/builtin:ro` : `${layout.builtinPublic}:/var/www/html`;
     return `name: ${scope}
 services:
   runtime:
@@ -3021,6 +3053,7 @@ services:
       VHOSTRA_WEB_SERVER: ${q(state.settings.selectedWebServer)}
       VHOSTRA_HTTPS: ${q(httpsEnabled)}
       VHOSTRA_CERTIFICATE_MODE: ${q(layout.userRoot ? 'external' : 'managed')}
+      VHOSTRA_BUILTIN_MODE: ${q(layout.userRoot ? 'image-copy' : 'host-mounted')}
       VHOSTRA_TLS_NAMES: ${q(
           [
               "DNS:localhost",
@@ -3042,7 +3075,7 @@ services:
       VHOSTRA_PMA_BLOWFISH_SECRET: \${VHOSTRA_PMA_BLOWFISH_SECRET}
       VHOSTRA_PMA_PASSWORD: \${VHOSTRA_PMA_PASSWORD}
     volumes:
-      - ${q(`${layout.builtinPublic}:/var/www/html`)}
+      - ${q(builtInMount)}
       - ${q(`${serviceConfig('openlitespeed')}:/etc/vhostra/openlitespeed:ro`)}
       - ${q(`${serviceConfig('php')}:/etc/vhostra/php:ro`)}
       - ${q(`${cacheRuntimePath(layout, 'memcached')}:/etc/vhostra/memcached.conf:ro`)}

@@ -1,6 +1,20 @@
 #!/bin/sh
 set -eu
 
+case "${VHOSTRA_BUILTIN_MODE:-host-mounted}" in
+  image-copy)
+    # Machine generations are immutable read-only inputs. Built-in serving and
+    # phpMyAdmin application files live only in this disposable container layer.
+    for file in index.html vhostra-health.php vhostra-extensions.php vhostra-cache-health.php vhostra-extension-state.php; do
+      [ -f "/usr/share/vhostra/builtin/$file" ] && [ ! -L "/usr/share/vhostra/builtin/$file" ] || { echo 'Incomplete published built-in generation.' >&2; exit 65; }
+    done
+    mkdir -p /var/www/html
+    cp -a /usr/share/vhostra/builtin/. /var/www/html/
+    ;;
+  host-mounted) ;;
+  *) echo 'Invalid built-in publication mode.' >&2; exit 65 ;;
+esac
+
 case "${VHOSTRA_WEB_SERVER:-openlitespeed}" in
   openlitespeed) site_log_user=nobody; site_log_group=nogroup ;;
   apache|nginx) site_log_user=www-data; site_log_group=www-data ;;
@@ -145,11 +159,7 @@ if [ "${VHOSTRA_HTTPS:-false}" = true ]; then
     external)
       # The machine-layout publisher owns this read-only mount. A web
       # container must never create or renew authoritative private keys.
-      [ -f /etc/vhostra/certificates/private/localhost.key ] || { echo 'Published TLS key is missing.' >&2; exit 1; }
-      [ -f /etc/vhostra/certificates/public/localhost.pem ] || { echo 'Published TLS certificate is missing.' >&2; exit 1; }
-      saved="$(cat /etc/vhostra/certificates/public/names.txt 2>/dev/null || true)"
-      [ "$saved" = "$names" ] || { echo 'Published TLS names are stale.' >&2; exit 1; }
-      openssl x509 -checkend 86400 -noout -in /etc/vhostra/certificates/public/localhost.pem >/dev/null 2>&1 || { echo 'Published TLS certificate is expired or invalid.' >&2; exit 1; }
+      /usr/local/bin/vhostra-verify-external-certificate /etc/vhostra/certificates "$names"
       ;;
     managed)
       mkdir -p /etc/vhostra/certificates/public /etc/vhostra/certificates/private
@@ -236,10 +246,10 @@ ln -sfn /run/mysqld/mysqld.sock /tmp/mysql.sock
 # same supervised runtime and survives container replacement on the host.
 if [ -L /var/www/html/phpmyadmin ]; then rm /var/www/html/phpmyadmin; fi
 if [ ! -f /var/www/html/phpmyadmin/index.php ]; then cp -a /usr/share/phpmyadmin /var/www/html/phpmyadmin; fi
-# Configuration is Vhostra-owned runtime state, not user content. Render the
-# config-auth secret only into PHP source (never an HTTP response or a client
-# script) and refresh it on every disposable-container start.
-sed "s/__VHOSTRA_PMA_PASSWORD__/${VHOSTRA_PMA_PASSWORD:?}/g" /usr/share/phpmyadmin/config.inc.php > /var/www/html/phpmyadmin/config.inc.php
+# Configuration is Vhostra-owned runtime state, not user content. The PHP
+# source reads its secret from the container environment at request time.
+test -n "${VHOSTRA_PMA_PASSWORD:?}"
+cp /usr/share/phpmyadmin/config.inc.php /var/www/html/phpmyadmin/config.inc.php
 chmod 0644 /var/www/html/phpmyadmin/config.inc.php
 # Public Vhostra-owned files must be readable by the selected frontend worker.
 chmod -R a+rX /var/www/html

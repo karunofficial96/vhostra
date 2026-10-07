@@ -132,7 +132,7 @@ gate and checks that production startup still uses the legacy layout.
 ### Executable mutation inventory
 
 `test/runtime-write-audit.test.mjs` pins every direct `fs` mutation call in
-`runtime.ts` (42) and `generated-config.ts` (2) by its source expression. A new
+`runtime.ts` (43) and `generated-config.ts` (2) by its source expression. A new
 call fails the source suite until it is classified here and the inventory is
 deliberately updated. This is an inventory guard, **not** the zero-write
 acceptance test: generated web-server configuration and PHP policy/logrotate
@@ -153,6 +153,18 @@ closed; temporary split-layout fixtures remain available for testing.
 | Site access/error and MariaDB logs | D | Use the dedicated log root and bounded rotation. Host-side legacy files are repaired to `0600`; container startup sets Site log ownership to the selected server/PHP worker: `nobody:nogroup` (`65534:65534`) for OpenLiteSpeed or `www-data:www-data` (`33:33`) for Apache/Nginx in the inspected local images. Independent runtime fixtures confirmed local requests and non-root append without world permissions. |
 | Generated localhost health scripts | C | Keep in managed built-in runtime data, separate from external Site document roots. |
 | User-selected Site document roots and export destinations | F | Keep at their selected paths; never include them in a privileged storage transaction. |
+
+Gate 3A.2b continuation reclassified the changed secret mutations:
+`fs.writeFile(canonical, ...)` creates the **legacy-only** `0600` authoritative
+secret file with exclusive creation; `fs.rm(legacy)` removes only a validated,
+matching old `.env` duplicate. The former unconditional write of a second
+phpMyAdmin `.env` was removed. Neither new call runs for a machine layout;
+`ensureEnvironment` rejects that layout first. A stale duplicate fails rather
+than silently overriding canonical values. The earlier Category C guidance
+above describes the legacy layout only. Machine Compose/image work, root-private
+secrets, service-owned MariaDB data, built-in content and recovery require
+separate writers as detailed in `docs/gate3a2b-writer-boundaries.md`; the
+machine runtime guard remains closed.
 
 For macOS the target ownership is root-owned, non-group-writable protected
 configuration; a separately scoped runtime/data directory writable by the

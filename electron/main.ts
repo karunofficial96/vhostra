@@ -311,6 +311,10 @@ if (!hasSingleInstanceLock && !pathCommand) {
 }
 
 if (hasSingleInstanceLock) app.whenReady().then(() => {
+    // macOS secure machine-wide storage/runtime is intentionally disabled pending
+    // a signed privileged service with authenticated XPC client validation.
+    // Production continues using the legacy Store/runtime. Do not bypass the
+    // machine guards or weaken filesystem permissions. See docs/machine-freeze.md.
     store = new VhostraStore(
         app.getPath("userData"),
         path.join(__dirname, "../dist-welcome"),

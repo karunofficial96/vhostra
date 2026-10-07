@@ -9,9 +9,9 @@ $cfg['Servers'][1]['host'] = '127.0.0.1';
 $cfg['Servers'][1]['port'] = 3306;
 $cfg['Servers'][1]['auth_type'] = 'config';
 $cfg['Servers'][1]['user'] = 'vhostra_pma';
-/* Replaced by the entrypoint from VHOSTRA_PMA_PASSWORD before this server-side
- * PHP configuration is copied to the served phpMyAdmin application. */
-$cfg['Servers'][1]['password'] = '__VHOSTRA_PMA_PASSWORD__';
+/* Read from the container environment; the served PHP source contains no
+ * persistent copy of this password. */
+$cfg['Servers'][1]['password'] = (string) (getenv('VHOSTRA_PMA_PASSWORD') ?: '');
 $cfg['Servers'][1]['AllowNoPassword'] = false;
 $cfg['Servers'][1]['AllowRoot'] = false;
 $cfg['AllowUserDropDatabase'] = true;

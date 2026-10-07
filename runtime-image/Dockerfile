@@ -51,7 +51,8 @@ COPY phpmyadmin-config.inc.php /usr/share/phpmyadmin/config.inc.php
 COPY supervisor.conf /etc/supervisor/conf.d/vhostra.conf
 COPY supervisor.conf /usr/local/share/vhostra/supervisor-base.conf
 COPY entrypoint.sh /usr/local/bin/vhostra-entrypoint
-RUN chmod 0755 /usr/local/bin/vhostra-entrypoint \
+COPY verify-external-certificate.sh /usr/local/bin/vhostra-verify-external-certificate
+RUN chmod 0755 /usr/local/bin/vhostra-entrypoint /usr/local/bin/vhostra-verify-external-certificate \
  && cp /usr/local/lsws/conf/httpd_config.conf /usr/local/lsws/conf/httpd_config.vhostra-base.conf \
  && rm -rf /usr/local/lsws/Example/html \
  && ln -s /var/www/html /usr/local/lsws/Example/html

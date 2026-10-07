@@ -631,3 +631,88 @@ The production build passed. The sandboxed full test command encountered
 `listen EPERM` on local-loopback fixture tests; rerunning the source-test
 phase with loopback permission passed **199/199**. `git diff --check` passed.
 A read-only listing again showed the inactive native Vhostra root empty.
+
+## Gate 3A.2c external certificate consumer hardening — 2026-10-07
+
+The read-only machine certificate consumer now rejects a private key that
+does not match the published certificate, any requested DNS/IP name absent
+from its SAN, and linked certificate inputs. A disposable OpenSSL fixture
+exercised valid, stale-name, missing-name, mismatched-key, missing-SAN and
+symbolic/hard-linked-key cases. The bounded certificate publisher, signed
+approved-client read service, production-controller writer split and machine
+activation remain open. The runtime constructor guard remains closed.
+
+The production build and source suite passed **200/200**. The first sandboxed
+test run had eight local-loopback `listen EPERM` fixture failures; the same
+suite passed with loopback permission. No native machine controller or
+administrator-dialog interval was used.
+
+## Gate 3A.2b writer-boundary continuation — 2026-10-07
+
+`docs/gate3a2b-writer-boundaries.md` records the three database secrets, their
+legacy consumers, the required protected semantic operations, MariaDB service
+ownership, built-in content split, recovery ownership and certificate-publisher
+stop point. Legacy web and database Compose now use the one canonical
+`runtime/mariadb/secrets.env`; a stale conflicting `runtime/.env` fails closed,
+and a matching legacy duplicate is removed. The phpMyAdmin PHP config no
+longer persists the password. A stale MariaDB bootstrap projection also fails.
+
+Machine methods reject secret consumption, MariaDB preparation, built-in
+publication and recovery before writes. Machine Compose's built-in mount is
+read-only. These are fail-closed boundaries, not machine lifecycle acceptance.
+The signed Gate 3A.1 service and protected generation protocol remain absent;
+the machine controller and Store guards remain closed. No native authorization
+or real storage was used in this pass.
+
+The production build passed and the expanded source suite passed **203/203**
+with local-loopback permission. The reviewed runtime mutation inventory is
+updated for the legacy-only canonical secret creation and duplicate removal;
+`git diff --check` passed. No machine activation or native dialog interval was
+started.
+
+## Gate 3A.2c coordinator contract and generation staging — 2026-10-07
+
+`docs/gate3a2c-coordinator-recovery.md` records the narrow semantic machine
+coordinator contract, a fixed-root versioned built-in publisher, a secret-free
+single-commit generation ledger, and the certificate-publisher contract. The
+production coordinator factory always fails because no signed privileged
+service exists. Runtime and Store machine guards remain closed. The publisher
+and ledger ran only against synthetic fixtures; no production protected
+backend or machine lifecycle was selected.
+
+The production build passed and the source suite passed **207/207** with
+local-loopback fixture permission. The new synthetic checks cover semantic
+request rejection, production coordinator unavailability, fixed-root built-in
+publication/idempotence/Site preservation, and single-commit recovery across
+a fresh controller. No privileged or native machine operation was run.
+
+## Gate 3A.2d committed generation and recovery staging — 2026-10-07
+
+`docs/gate3a2d-generation-consumption.md` records the synthetic-only
+committed-generation Compose selector, container-local built-in/phpMyAdmin
+content, fixed-root file ledger, crash assumptions and bounded physical
+cleanup. A fresh resolver validates the sole committed pointer and exact
+built-in manifest before machine Compose accepts its internal token. Site
+document roots remain separate. Interrupted candidates remain unselected;
+the previous generation is retained as rollback through a new commit.
+
+The production machine-runtime guard remains closed; production Store remains
+legacy. Signed protected secret delivery, MariaDB preparation, production
+generation commit, certificate publication and machine acceptance remain
+blocked on Gate 3A.1. No real Store, Site, database or certificate was touched.
+The production build passed and the full source suite passed **214/214** with
+local-loopback fixture permission. `sh -n runtime-image/entrypoint.sh` and
+`git diff --check` passed. No native authorization or activation occurred.
+
+## macOS machine architecture freeze — 2026-10-07
+
+The unfinished Gate 1–3A machine architecture is preserved and intentionally
+disabled pending a Developer ID signed privileged service with authenticated
+XPC client validation. Production startup and CLI continue to select the
+legacy per-user Store/runtime. Machine Store/runtime constructor guards and
+the unavailable production coordinator remain in place; directory existence
+or migration-ready state cannot activate them. No helper registration,
+automatic migration, machine activation or native authorization was run.
+See `docs/machine-freeze.md` for the resume boundary and documentation links.
+The freeze regression checks and full source suite passed **216/216**; the
+production build passed. Protected direct writes remain zero.

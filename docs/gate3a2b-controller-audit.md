@@ -46,11 +46,17 @@ transaction and interruption test; neither exists yet.
 
 The machine Compose now mounts the certificate tree read-only and instructs
 the entrypoint to require an externally published, current certificate/key
-pair and matching names. It refuses to generate or renew keys in that mode.
+pair and matching names. The external consumer also checks that the key and
+certificate have the same public key and that the certificate covers every
+requested DNS/IP name. It refuses linked input files and never generates or
+renews keys in that mode. The consumer requires a SAN extension and rejects
+symbolic and hard links for each published input file.
 The legacy Compose remains `managed`. There is no machine certificate
 publisher yet, so the future machine runtime still cannot start with TLS.
 Private-key sentinel preservation and container mount behavior still need
-native controller validation.
+native controller validation. A disposable OpenSSL test covers the consumer's
+valid, stale-name, missing-name, mismatched-key, missing-SAN and linked-key
+cases without accessing the native machine root.
 
 ## Stop point
 

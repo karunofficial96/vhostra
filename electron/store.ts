@@ -699,11 +699,13 @@ export class VhostraStore {
     await fs.mkdir(path.dirname(file), { recursive: true }); const temporary = `${file}.${randomUUID()}.tmp`; try { await fs.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 }); await fs.rename(temporary, file) } finally { await fs.rm(temporary, { force: true }) }
   }
   private async ensureLocalhostDefinition() {
+    if (this.machinePaths) throw new Error('Machine built-in content requires a bounded publisher before Store startup.')
     const documentRoot = this.layout.builtinPublic; const now = new Date().toISOString()
     await fs.mkdir(documentRoot, { recursive: true })
     try { await fs.access(this.recordPath(this.layout.sites, localhostSiteId)) } catch { await this.writeSite({ id: localhostSiteId, name: 'Vhostra Localhost', documentRoot, url: 'http://localhost/', vhostId: localhostVhostId, builtIn: 'localhost', createdAt: now, updatedAt: now }, { id: localhostVhostId, hostname: 'localhost', aliases: [], documentRoot, https: { enabled: false }, rewriteEnabled: true, redirects: [], rewrites: [], headers: [], logs: { access: true, error: true }, builtIn: 'localhost' }) }
   }
   private async writeLocalhostWelcome(runtimeMessage = 'Runtime has not been created.') {
+    if (this.machinePaths) throw new Error('Machine welcome content requires a bounded publisher before Store startup.')
     const root = this.layout.builtinPublic; const template = this.welcomeTemplateDirectory ? path.join(this.welcomeTemplateDirectory, 'index.html') : ''
     try {
       if (this.welcomeTemplateDirectory) await fs.cp(this.welcomeTemplateDirectory, root, { recursive: true, force: true })
