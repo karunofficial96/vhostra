@@ -3,8 +3,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing v-prefixed version tag to build
-        required: true
+        description: Existing v-prefixed version tag to build (leave blank to verify this branch without publishing)
+        required: false
+        default: ''
         type: string
       publish:
         description: Publish the verified matrix to GitHub Releases
@@ -49,13 +50,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: '22'
           cache: npm
       - name: Verify release tag and version
+        if: inputs.tag != ''
         shell: bash
         env:
           RELEASE_TAG: ${{ inputs.tag }}
@@ -293,12 +295,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: '22'
       - name: Verify release tag and version
+        if: inputs.tag != ''
         shell: bash
         env:
           RELEASE_TAG: ${{ inputs.tag }}
@@ -323,7 +326,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: inputs.publish
+    if: inputs.publish && inputs.tag != ''
     needs: verify
     runs-on: ubuntu-24.04
     permissions:

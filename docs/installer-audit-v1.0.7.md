@@ -17,7 +17,7 @@ The official ARM64 app launched directly from its read-only DMG with `VHOSTRA_TE
 
 ## Candidate fix and limits
 
-The candidate config explicitly sets `mac.identity` to `"-"`. Electron-builder now ad hoc signs the complete app and nested Electron code with its default hardened runtime setting. The locally rebuilt ARM64 DMG passed image verification, mounted read-only, and passed strict `codesign` verification for the app, Electron framework, and every helper app. The rebuilt app was copied into an isolated temporary install directory; its GUI and packaged CLI both passed tests with temporary user data. `spctl` returned a clear **rejected** result for this ad hoc, unnotarized build.
+The candidate config explicitly sets `mac.identity` to `"-"`. Electron-builder now ad hoc signs the complete app and nested Electron code with its default hardened runtime setting. Locally rebuilt ARM64 and x64 DMGs both passed image verification, read-only mounting, and strict `codesign` verification for the app, Electron framework, and every helper app. Each rebuilt app was copied into an isolated temporary install directory; its GUI and packaged CLI passed tests with temporary user data. The x64 app's first GUI start exceeded the test's 15-second window under Rosetta, then passed after its packaged CLI ran. `spctl` returned a clear **rejected** result for both ad hoc, unnotarized builds.
 
 Ad hoc signing fixes signature consistency; it does not provide Developer ID trust or Apple notarization. Without an Apple Developer membership, ordinary downloaded installation may still produce Gatekeeper warnings or require a user-directed, per-app security decision. No quarantine attribute was removed, Gatekeeper was not disabled, and no system-wide exception was installed. The existing per-user storage and runtime architecture were not changed.
 
@@ -45,8 +45,8 @@ The published Windows installers are unsigned, so Windows SmartScreen can warn e
 - `npm run build`: passed as part of the test command.
 - `node --test test/*.test.mjs`: 147 passed with localhost access. The first sandboxed run failed on `listen EPERM 127.0.0.1`; rerunning with localhost access passed.
 - `node --test test/release-matrix.test.mjs`: 4 passed.
-- ARM64 `electron-builder` DMG build: passed. `scripts/verify-macos-artifact.sh` passed on the resulting DMG.
-- Fixed ARM64 app: strict signature verification passed after temporary copy-install; isolated GUI and packaged CLI tests passed. Gatekeeper rejected the unnotarized app as expected.
-- The updated multi-platform GitHub Actions workflow has not run on this branch. It will run against a future reviewed tag; running the old v1.0.7 tag would check out the old workflow and packaging configuration.
+- ARM64 and x64 `electron-builder` DMG builds: passed. `scripts/verify-macos-artifact.sh` passed on both resulting DMGs.
+- Both fixed apps: strict signature verification passed after temporary copy-install; isolated GUI and packaged CLI tests passed (x64 through Rosetta). Gatekeeper rejected the unnotarized apps as expected.
+- The updated multi-platform GitHub Actions workflow can run without a tag against this branch with `publish=false`. A v1.0.7 tag run would check out the old workflow and packaging configuration.
 
 No v1.0.7 release asset was modified, and no user data was deleted or migrated.
