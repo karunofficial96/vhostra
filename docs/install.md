@@ -1,20 +1,40 @@
 # Install Vhostra
 
-These instructions describe the **v1.0.8 release candidate**. No v1.0.8 download is available until the release is approved and published. When it is available, download the package for your operating system and CPU from the [official GitHub Releases page](https://github.com/karunofficial96/vhostra/releases). Compare its SHA-256 hash with the release's `SHA256SUMS` file before opening it. A checksum match checks the downloaded bytes; it is not a substitute for reviewing an operating-system security warning.
+These instructions describe the published **v1.0.8** release. Download the package for your operating system and CPU from the [official GitHub Releases page](https://github.com/karunofficial96/vhostra/releases). Compare its SHA-256 hash with the release's `SHA256SUMS` file before opening it. A checksum match checks the downloaded bytes against the published file; it does not independently prove that the software is safe.
 
 Vhostra keeps settings and managed data in your user profile. Replacing or uninstalling the application does not call for deleting Sites, document roots, databases, certificates, backups, or Docker data. Docker Desktop or a compatible Docker Engine with Compose is a separate prerequisite for starting Vhostra services; Vhostra does not install it for you.
 
 ## macOS
 
-Choose `Vhostra-1.0.8-macos-arm64.dmg` for Apple Silicon or `Vhostra-1.0.8-macos-x64.dmg` for Intel. Check the downloaded file against `SHA256SUMS`, for example:
+Choose the macOS ARM64 DMG for Apple Silicon or the macOS x64 DMG for Intel from the [v1.0.8 release](https://github.com/karunofficial96/vhostra/releases/tag/v1.0.8). Download `SHA256SUMS` and `release-manifest.json` from the same release. In Terminal, substitute the exact name of the DMG you downloaded:
 
 ```bash
-shasum -a 256 Vhostra-1.0.8-macos-arm64.dmg
+shasum -a 256 "ACTUAL_DOWNLOADED_FILENAME.dmg"
 ```
 
-Open the DMG and drag `Vhostra.app` to Applications. The app and its nested Electron code are consistently **ad hoc signed**, but they are **not Apple Developer ID signed or notarized**. macOS Gatekeeper can reject a downloaded app even when its DMG and bundle signatures are internally valid. An ordinary first-launch warning therefore remains possible.
+Find that exact DMG filename in `SHA256SUMS` and compare its 64-character SHA-256 value with the Terminal result. The values must match before you open the DMG. `release-manifest.json` also lists the published artifacts and hashes. Matching the published checksum shows that your downloaded bytes are consistent with that file; it does not independently establish that the software is safe.
 
-If macOS says it cannot check the app for malicious software or identifies an unknown developer, first confirm the source and checksum. After attempting to open it, macOS may offer **Open Anyway** in **System Settings → Privacy & Security**; follow the prompts only if you trust that specific copy. [Apple describes this as a per-app exception](https://support.apple.com/102445). It is not available for every warning or every managed Mac. If macOS reports that the app is damaged, contains malware, or cannot be opened, stop and report the exact message and checksum; do not assume that the per-app option will work.
+### macOS Gatekeeper and Apple Notarization
+
+**Ad hoc signing** checks that the code in the app bundle is internally consistent, but it does not identify Vhostra's publisher to Apple. **Apple Developer ID signing** uses an Apple-issued certificate to identify a developer and detect changes to signed code. **Apple notarization** is a separate Apple review for known malicious software. Vhostra v1.0.8 is ad hoc signed; it is **not Developer ID signed or notarized**. Apple has not notarized this release, and it is not Apple-certified.
+
+Gatekeeper may show: “Apple could not verify 'Vhostra' is free of malware that may harm your Mac or compromise your privacy.” The exact wording may vary by macOS version. This warning alone does not prove Vhostra contains malware, and it does not guarantee that the app is safe. Gatekeeper may reject a downloaded app even when its DMG and internal bundle signatures are valid.
+
+If you trust the release source and the checksum matches, use Apple's per-app approval option **only if macOS offers it for this copy**:
+
+1. Open the downloaded DMG and drag `Vhostra.app` into **Applications**.
+2. Try opening Vhostra from Applications normally.
+3. If the Apple verification warning blocks it, click **Done** if that button appears.
+4. Open **System Settings → Privacy & Security** and scroll to the **Security** section.
+5. Click **Open Anyway** for Vhostra if it appears, then authenticate and confirm the follow-up **Open** prompt.
+
+[Apple's Mac User Guide](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unidentified-developer-mh40616/mac) describes this per-app exception. The button is generally available for about an hour after you try opening the app. It may be unavailable on a managed Mac or for some kinds of security warning.
+
+If **Open Anyway** does not appear, try opening the copy in Applications once more and check Privacy & Security promptly. If it still does not appear, or if Vhostra still cannot open after approval, stop and record the exact macOS message and the DMG checksum when reporting the problem. If macOS says the app is **damaged**, download a fresh DMG from the official v1.0.8 release and verify its checksum. If that copy also reports damage, stop and report it; do not assume this is an ordinary unnotarized-app warning. Treat a malware warning as a separate security concern.
+
+Do not disable macOS security protections globally, remove quarantine attributes, or use `sudo` to bypass macOS security checks.
+
+Vhostra v1.0.8 was installed and tested on a **MacBook Pro M2 Pro running macOS**. Application launch, Docker Desktop integration, OpenLiteSpeed, PHP, MariaDB, phpMyAdmin, localhost, existing local websites, and CLI commands worked in that test. Physical Intel Mac installation has not been verified. CI packaging checks for other platforms are not physical Windows or Linux installation tests.
 
 Vhostra can optionally install its packaged `vhostra` CLI link from the app's About screen. macOS may request administrator approval for `/usr/local/bin`. The app does not change your shell profile. Moving the app to Trash does not run an uninstall hook; use **Remove CLI** before removing the app if you installed that link. Keep your user-data directory and any external site roots when upgrading or uninstalling.
 

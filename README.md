@@ -191,9 +191,18 @@ Use one alternative per `|` above. Hosts commands verify canonical ownership and
 
 ## Installation and development
 
-For published desktop packages, see the [installation guide](docs/install.md) for macOS, Windows and Linux. The v1.0.8 instructions are a release candidate until approved and published; use the [official releases page](https://github.com/karunofficial96/vhostra/releases) to find packages that are actually available. Docker with Compose is a separate prerequisite for starting managed services.
+For published desktop packages, see the [installation guide](docs/install.md) for macOS, Windows and Linux. Download Vhostra from the [official GitHub Releases page](https://github.com/karunofficial96/vhostra/releases). Docker with Compose is a separate prerequisite for starting managed services.
 
-To run from source:
+### macOS Security Notice
+
+Vhostra uses ad hoc code signing; it is not signed with an Apple Developer ID certificate or notarized by Apple. Gatekeeper may show an Apple verification warning. That warning alone does not prove the app contains malware. Download only from the [official GitHub Releases page](https://github.com/karunofficial96/vhostra/releases), and verify the download before approving it.
+
+1. Download the macOS DMG for your Mac and [verify its checksum](docs/install.md#macos). Then open the DMG and drag Vhostra to Applications.
+2. Try opening Vhostra normally. If macOS blocks it, click **Done** if offered.
+3. Open **System Settings → Privacy & Security**, scroll to **Security**, and click **Open Anyway** for Vhostra if available.
+4. Authenticate and confirm only if you trust the source and verified the download. [Apple explains this per-app option](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unidentified-developer-mh40616/mac). See the [full macOS instructions](docs/install.md#macos-gatekeeper-and-apple-notarization) if the option does not appear or macOS reports damage.
+
+### Run from source
 
 ```bash
 npm install
