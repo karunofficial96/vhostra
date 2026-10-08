@@ -13,7 +13,7 @@ Both official DMGs were downloaded independently. Their SHA-256 values match the
 
 The release workflow set `CSC_IDENTITY_AUTO_DISCOVERY=false`, and the macOS build configuration did not request any other signing identity. Electron-builder therefore skipped final bundle signing. The ARM64 executable's linker signature did not seal the app or its frameworks. The user-visible “damaged” message is consistent with these invalid or missing bundle signatures when a downloaded app is assessed by Gatekeeper. The disk images themselves are intact. These findings do not establish the quarantine attribute on the user's uninstalled copy: the copies fetched with `curl` have no `com.apple.quarantine` attribute, and the user's original copy is unavailable.
 
-The official ARM64 app launched directly from its read-only DMG with `VHOSTRA_TEST_SCOPE` and a temporary user-data directory, and its renderer showed the expected stopped-Docker state. This separates runtime launch from Gatekeeper assessment. Rosetta is available on the audit Mac, but the official Intel app did not expose its renderer within the isolated test's 15-second timeout. Its GUI launch remains **NOT VERIFIED**; no cause is inferred from that timeout.
+The official ARM64 app launched directly from its read-only DMG with `VHOSTRA_TEST_SCOPE` and a temporary user-data directory, and its renderer showed the expected stopped-Docker state. This separates runtime launch from Gatekeeper assessment. On the Apple Silicon audit Mac, the official Intel app's first Rosetta GUI run exceeded the isolated test's 15-second startup window. Its packaged CLI then passed, and a second isolated GUI run passed. Native Intel hardware installation remains **NOT VERIFIED**.
 
 ## Candidate fix and limits
 
@@ -28,7 +28,7 @@ The v1.0.7 release published ten artifact files and a checksum manifest. The suc
 | Artifact | v1.0.7 installation evidence | Physical target status |
 | --- | --- | --- |
 | macOS ARM64 DMG | **FAIL:** intact image, invalid bundle signatures; direct isolated launch works. | Installation blocked by Gatekeeper; repaired candidate was temp-installed and launched locally. |
-| macOS x64 DMG | **FAIL:** intact image, unsigned app/framework; Rosetta GUI timeout. | **NOT VERIFIED** on Intel hardware. |
+| macOS x64 DMG | **FAIL:** intact image, unsigned app/framework; CLI and GUI launch through Rosetta passed after the first GUI timeout. | **NOT VERIFIED** on Intel hardware. |
 | Windows x64 NSIS EXE | CI installed per user, checked installed PE x64, CLI, PATH, reinstall, and uninstaller. | **NOT VERIFIED** on physical Windows x64. |
 | Windows ARM64 NSIS EXE | CI installed per user, checked installed PE ARM64, CLI, PATH, reinstall, and uninstaller. | **NOT VERIFIED** on physical Windows ARM64. |
 | Linux amd64 DEB | CI used `apt-get install`, checked CLI and owned symlink, then removed package. | **NOT VERIFIED** on physical Linux x64. |
