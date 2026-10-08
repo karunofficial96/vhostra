@@ -75,6 +75,10 @@ jobs:
       - name: Verify this job's packages and executable architecture
         shell: bash
         run: node scripts/verify-release.mjs release "$(node -p 'require("./package.json").version')" ${{ matrix.platform }} ${{ matrix.arch }}
+      - name: Verify macOS DMG and nested app signatures
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: bash scripts/verify-macos-artifact.sh "release/Vhostra-$(node -p 'require("./package.json").version')-macos-${{ matrix.arch }}.dmg" "${{ matrix.arch }}" "$(node -p 'require("./package.json").version')"
       - name: Smoke packaged Windows CLI
         if: matrix.platform == 'win'
         shell: pwsh
@@ -187,8 +191,13 @@ jobs:
           if ($reinstall.ExitCode -ne 0) { throw "Reinstall exited $($reinstall.ExitCode)" }
           $userPath = [string](Get-ItemProperty HKCU:\Environment -Name Path).Path
           if (($userPath -split ';' | Where-Object { $_ -ieq $installLocation }).Count -ne 1) { throw 'Reinstall duplicated or removed the user PATH entry' }
+          $userData = Join-Path $env:APPDATA 'Vhostra'
+          New-Item -ItemType Directory -Force -Path $userData | Out-Null
+          $preservedFile = Join-Path $userData 'installer-preservation-test.txt'
+          Set-Content -LiteralPath $preservedFile -Value 'keep' -NoNewline
           $remove = Start-Process (Join-Path $installLocation 'Uninstall Vhostra.exe') -ArgumentList '/S', '/currentuser' -Wait -PassThru
           if ($remove.ExitCode -ne 0) { throw "Uninstaller exited $($remove.ExitCode)" }
+          if ((Get-Content -Raw -LiteralPath $preservedFile) -ne 'keep') { throw 'Uninstall deleted Vhostra user data' }
           $after = [string](Get-ItemProperty HKCU:\Environment -Name Path -ErrorAction SilentlyContinue).Path
           $beforeParts = @($before -split ';' | Where-Object { $_ -ne '' })
           $afterParts = @($after -split ';' | Where-Object { $_ -ne '' })
@@ -221,21 +230,43 @@ jobs:
           folder=linux-unpacked
           if [ '${{ matrix.arch }}' = arm64 ]; then folder=linux-arm64-unpacked; fi
           node test/packaged-cli.mjs "$PWD/release/$folder/vhostra"
+      - name: Inspect Linux dependencies, permissions and desktop files
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          cpu=amd64
+          rpm_cpu=x86_64
+          image_cpu=x86_64
+          if [ '${{ matrix.arch }}' = arm64 ]; then cpu=arm64; rpm_cpu=aarch64; image_cpu=arm64; fi
+          deb="release/Vhostra-$(node -p 'require("./package.json").version')-linux-$cpu.deb"
+          rpm_file="release/Vhostra-$(node -p 'require("./package.json").version')-linux-$rpm_cpu.rpm"
+          image="release/Vhostra-$(node -p 'require("./package.json").version')-linux-$image_cpu.AppImage"
+          test -n "$(dpkg-deb -f "$deb" Depends)"
+          test -n "$(rpm -qp --requires "$rpm_file")"
+          dpkg-deb -c "$deb" | grep -E '/opt/Vhostra/VhostraDesktop$'
+          dpkg-deb -c "$deb" | grep -E '/usr/share/applications/[^/]+\.desktop$'
+          rpm -qpl "$rpm_file" | grep -E '/opt/Vhostra/VhostraDesktop$'
+          rpm -qpl "$rpm_file" | grep -E '/usr/share/applications/[^/]+\.desktop$'
+          test -x "$image"
+          folder=linux-unpacked
+          if [ '${{ matrix.arch }}' = arm64 ]; then folder=linux-arm64-unpacked; fi
+          test -x "release/$folder/VhostraDesktop"
+          test -x "release/$folder/vhostra"
       - name: Test DEB install, CLI and removal
         if: matrix.platform == 'linux'
         shell: bash
         run: |
           cpu=amd64
           if [ '${{ matrix.arch }}' = arm64 ]; then cpu=arm64; fi
-          fixture="$RUNNER_TEMP/vhostra-preserve"
+          fixture="$HOME/.config/Vhostra"
           mkdir -p "$fixture"
-          echo keep > "$fixture/site-data"
+          echo keep > "$fixture/installer-preservation-test"
           sudo apt-get install -y "./release/Vhostra-$(node -p 'require("./package.json").version')-linux-$cpu.deb"
           test "$(readlink /usr/bin/vhostra)" = /opt/Vhostra/vhostra
           vhostra --help
           sudo apt-get remove -y vhostra
           test ! -e /usr/bin/vhostra
-          test "$(cat "$fixture/site-data")" = keep
+          test "$(cat "$fixture/installer-preservation-test")" = keep
       - name: Smoke AppImage CLI integration
         if: matrix.platform == 'linux'
         shell: bash
