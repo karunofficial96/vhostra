@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { createReadStream, existsSync, openSync, closeSync, readSync, readdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { extractFile } from '@electron/asar'
 
 const [directory, version, platform = 'all', arch] = process.argv.slice(2)
 if (!directory || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version || '')) throw new Error('Pass an artifact directory and semantic version.')
@@ -43,6 +44,12 @@ if (platform === 'all') {
     : platform === 'mac' ? path.join(directory, unpacked, 'Vhostra.app', 'Contents', 'Resources', 'bin', 'vhostra')
       : path.join(directory, unpacked, 'vhostra')
   if (!existsSync(executable) || !existsSync(cli)) throw new Error('Packaged executable or CLI launcher is missing.')
+  const asar = platform === 'mac'
+    ? path.join(directory, unpacked, 'Vhostra.app', 'Contents', 'Resources', 'app.asar')
+    : path.join(directory, unpacked, 'resources', 'app.asar')
+  if (!existsSync(asar)) throw new Error('Packaged application archive is missing.')
+  const appPackage = JSON.parse(extractFile(asar, 'package.json').toString('utf8'))
+  if (appPackage.name !== 'vhostra' || appPackage.version !== version) throw new Error('Packaged application name or version mismatch.')
   const headerBytes = file => {
     const descriptor = openSync(file, 'r')
     try { const bytes = Buffer.alloc(512); readSync(descriptor, bytes, 0, bytes.length, 0); return bytes }
@@ -66,9 +73,11 @@ if (platform === 'all') {
       return result.stdout.trim()
     }
     if (metadata('dpkg-deb', ['-f', path.join(directory, name('linux', arch, 'deb')), 'Architecture']) !== (arch === 'x64' ? 'amd64' : 'arm64')) throw new Error('DEB architecture mismatch.')
+    if (metadata('dpkg-deb', ['-f', path.join(directory, name('linux', arch, 'deb')), 'Version']) !== version) throw new Error('DEB version mismatch.')
     if (metadata('rpm', ['-qp', '--qf', '%{ARCH}', path.join(directory, name('linux', arch, 'rpm'))]) !== (arch === 'x64' ? 'x86_64' : 'aarch64')) throw new Error('RPM architecture mismatch.')
+    if (metadata('rpm', ['-qp', '--qf', '%{VERSION}', path.join(directory, name('linux', arch, 'rpm'))]) !== version) throw new Error('RPM version mismatch.')
     const appImage = headerBytes(path.join(directory, name('linux', arch, 'AppImage')))
     if (appImage.readUInt16LE(18) !== machine) throw new Error('AppImage architecture mismatch.')
   }
-  console.log(`Verified ${platform}/${arch}: ${requested.length} packages, executable architecture, and CLI launcher.`)
+  console.log(`Verified ${platform}/${arch}: ${requested.length} packages, application version, executable architecture, and CLI launcher.`)
 }

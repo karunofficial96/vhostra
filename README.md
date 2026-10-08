@@ -191,6 +191,10 @@ Use one alternative per `|` above. Hosts commands verify canonical ownership and
 
 ## Installation and development
 
+For published desktop packages, see the [installation guide](docs/install.md) for macOS, Windows and Linux. The v1.0.8 instructions are a release candidate until approved and published; use the [official releases page](https://github.com/karunofficial96/vhostra/releases) to find packages that are actually available. Docker with Compose is a separate prerequisite for starting managed services.
+
+To run from source:
+
 ```bash
 npm install
 npm run dev
@@ -211,7 +215,7 @@ npm run typecheck
 npm run build
 ```
 
-The build compiles the React renderer and Electron main process. Packaging installers and a system-wide CLI launcher are not configured yet.
+The build compiles the React renderer and Electron main process. The [distribution workflow](.github/workflows/package-native.yml) builds ten platform packages and verifies their checksums and packaged launchers. See the [distribution notes](docs/distribution.md) for the artifact matrix and the [draft v1.0.8 release notes](docs/release-notes-v1.0.8.md).
 
 ## Project structure
 

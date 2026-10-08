@@ -1,6 +1,6 @@
 {
   "name": "vhostra",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "private": true,
   "type": "module",
   "description": "Vhostra (VHost Runtime Applications), a lightweight graphical local PHP development environment.",
@@ -124,6 +124,7 @@
   },
   "dependencies": {},
   "devDependencies": {
+    "@electron/asar": "3.4.1",
     "@tailwindcss/vite": "^4.0.9",
     "@vitejs/plugin-react": "^4.3.4",
     "lucide-react": "^0.468.0",

@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, unlink, lstat } from 
 import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { createPackage } from '@electron/asar'
 
 test('release gate requires every architecture and writes checksums only for a full matrix', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'vhostra-release-gate-'))
@@ -53,7 +54,7 @@ test('release artifact merge rejects missing, unexpected, and duplicate inputs',
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
-test('Windows unpacked executable must have the requested PE architecture', async () => {
+test('Windows unpacked executable and application have the requested architecture and version', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'vhostra-win-pe-'))
   const script = path.resolve('scripts/verify-release.mjs')
   try {
@@ -61,6 +62,11 @@ test('Windows unpacked executable must have the requested PE architecture', asyn
     const unpacked = path.join(root, 'win-arm64-unpacked')
     await mkdir(unpacked)
     await writeFile(path.join(unpacked, 'vhostra.cmd'), '@echo off')
+    const appSource = path.join(root, 'app-source')
+    await mkdir(appSource)
+    await writeFile(path.join(appSource, 'package.json'), JSON.stringify({ name: 'vhostra', version: '1.0.0' }))
+    await mkdir(path.join(unpacked, 'resources'))
+    await createPackage(appSource, path.join(unpacked, 'resources', 'app.asar'))
     const exe = Buffer.alloc(512)
     exe.writeUInt32LE(0x80, 0x3c)
     exe.writeUInt16LE(0xaa64, 0x84)
@@ -69,6 +75,11 @@ test('Windows unpacked executable must have the requested PE architecture', asyn
     assert.equal(check().status, 0)
     exe.writeUInt16LE(0x8664, 0x84)
     await writeFile(path.join(unpacked, 'Vhostra.exe'), exe)
+    assert.notEqual(check().status, 0)
+    exe.writeUInt16LE(0xaa64, 0x84)
+    await writeFile(path.join(unpacked, 'Vhostra.exe'), exe)
+    await writeFile(path.join(appSource, 'package.json'), JSON.stringify({ name: 'vhostra', version: '9.9.9' }))
+    await createPackage(appSource, path.join(unpacked, 'resources', 'app.asar'))
     assert.notEqual(check().status, 0)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
