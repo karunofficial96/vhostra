@@ -47,6 +47,6 @@ The published Windows installers are unsigned, so Windows SmartScreen can warn e
 - `node --test test/release-matrix.test.mjs`: 4 passed.
 - ARM64 and x64 `electron-builder` DMG builds: passed. `scripts/verify-macos-artifact.sh` passed on both resulting DMGs.
 - Both fixed apps: strict signature verification passed after temporary copy-install; isolated GUI and packaged CLI tests passed (x64 through Rosetta). Gatekeeper rejected the unnotarized apps as expected.
-- The updated multi-platform GitHub Actions workflow can run without a tag against this branch with `publish=false`. A v1.0.7 tag run would check out the old workflow and packaging configuration.
+- The [unpublished branch workflow run](https://github.com/karunofficial96/vhostra/actions/runs/37738443291) at `9fdda08` completed successfully: macOS x64/ARM64, Windows x64/ARM64, Linux x64/ARM64, and the aggregate ten-artifact SHA-256 gate. Both macOS jobs ran the DMG/nested-signature check; both Windows jobs ran installer/reinstall/uninstall and Vhostra user-data preservation checks; both Linux jobs ran dependency, executable, desktop-file, DEB install/remove, and AppImage CLI checks. The release job was skipped. A v1.0.7 tag run would still check out the old workflow and packaging configuration.
 
 No v1.0.7 release asset was modified, and no user data was deleted or migrated.
