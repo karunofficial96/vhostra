@@ -36,7 +36,7 @@ import { readNativeConfiguration, type NativeImportPreview, type SourceServer } 
 import { localStorageUsage } from "./resources.js";
 import { supportedPhpVersions } from "./store.js";
 import { configureStartup, startupDecision } from "./startup.js";
-import { startAutomaticServices } from './automatic-startup.js';
+import { startAutomaticServices, startConfiguredServices } from './automatic-startup.js';
 import { installWindowSessionEndHandlers, shouldConfirmQuit } from './quit-intent.js';
 import { openFileDialog, saveFileDialog } from "./file-dialogs.js";
 import { checkDocker, dockerDesktopApplication, dockerInstallUrl, saveDockerExecutable } from './docker-prerequisite.js';
@@ -938,7 +938,7 @@ function registerIpc() {
         throw new Error('Docker could not be started. Open Docker and select Check Again.');
     });
     handle("vhostra:runtime-statuses", () => services.runtimeStatuses());
-    handle("vhostra:start-services", () => services.start());
+    handle("vhostra:start-services", () => startConfiguredServices(services));
     handle("vhostra:stop-services", () => services.stop());
     handle("vhostra:restart-services", () => services.restartAll());
     handle(

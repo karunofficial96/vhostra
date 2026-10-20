@@ -55,6 +55,9 @@ for(const keep of [true,false])test(`reset ${keep?'preserves':'removes'} databas
 test('independent database status distinguishes actual healthy/starting/unhealthy/failed/stopped',()=>fixture(async({runtime,state})=>{
  let container={State:{Running:true,Status:'running',Health:{Status:'healthy'}}};runtime.databaseContainerIds=async()=>['test'];runtime.docker=async()=>JSON.stringify([container]);runtime.snapshot.state='stopped'
  for(const [health,expected] of [['healthy','running'],['starting','starting'],['unhealthy','unhealthy']]){container.State.Health.Status=health;assert.equal((await runtime.listManagedServices()).find(row=>row.id==='mariadb').state,expected);assert.equal((await runtime.listManagedServices()).find(row=>row.id==='web').state,'stopped')}
+ runtime.failedServices.add('mariadb');runtime.mariaDbStartFailed=true;container.State.Health.Status='healthy'
+ assert.equal((await runtime.listManagedServices()).find(row=>row.id==='mariadb').state,'running')
+ assert.equal(runtime.failedServices.has('mariadb'),false)
  container.State={Running:false,Status:'exited',ExitCode:1};assert.equal(await runtime.databaseStatus(),'failed');container.State.ExitCode=0;assert.equal(await runtime.databaseStatus(),'stopped')
 }))
 test('local screenshot cache verifies Site identity and preserves external files on removal',()=>fixture(async({store})=>{

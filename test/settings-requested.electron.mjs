@@ -17,7 +17,9 @@ app.whenReady().then(async () => {
     const store = new VhostraStore(profile, path.resolve('dist-welcome'))
     await store.saveOnboarding({ ...await store.getOnboarding(), completed: true })
     const initial = await store.getState()
-    await store.saveSettings({ ...initial.settings, selectedPhpVersion: '8.1', startup: { ...initial.settings.startup, serviceStartMode: 'manual' } })
+    await store.saveSettings({ ...initial.settings, selectedPhpVersion: '8.1',
+      ports: { http: 34180, https: 34443, phpMyAdmin: 34181, mariadb: 34306, redis: 34379, memcached: 34211 },
+      startup: { ...initial.settings.startup, serviceStartMode: 'manual' } })
     const { applicationSession } = await import('../dist-electron/main.js')
     await pause(500)
     ;({ window, runtime } = applicationSession())
@@ -170,6 +172,7 @@ app.whenReady().then(async () => {
     assert.equal(await evaluate(`document.querySelector('input[name="service-start-mode"]:checked').value`), 'on')
     await check('Launch Vhostra on Login', true)
     await waitFor(`window.vhostra.getState().then(state=>state.settings.startup.launchAtLogin)`)
+    await waitFor(`![...document.querySelectorAll('label')].find(label=>label.textContent.trim()==='Run Services on Login').querySelector('input').disabled`)
     await evaluate(`([...document.querySelectorAll('label')].find(label=>label.textContent.trim()==='Run Services on Login').querySelector('input')).click()`)
     await waitFor(`window.vhostra.getState().then(state=>state.settings.startup.serviceStartMode==='after-login' && !state.settings.startup.launchAtLogin)`)
     assert.equal(await evaluate(`document.querySelectorAll('input[name="service-start-mode"]:checked').length`), 1)

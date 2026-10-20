@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { startAutomaticServices } from '../dist-electron/automatic-startup.js';
+import { startAutomaticServices, startConfiguredServices } from '../dist-electron/automatic-startup.js';
+import { classifyMariaDbContainer } from '../dist-electron/runtime.js';
 import { installWindowSessionEndHandlers, shouldConfirmQuit } from '../dist-electron/quit-intent.js';
 import { startupDecision } from '../dist-electron/startup.js';
 
@@ -73,13 +74,49 @@ test('partially running runtime starts only missing enabled services', async () 
   assert.deepEqual(calls, ['mariadb', 'memcached']);
 });
 
-test('one partial-service failure is reported and does not suppress other enabled services', async () => {
+test('manual start retries after a failed snapshot and uses the same orchestration', async () => {
+  const calls = [];
+  const controller = { refresh: async () => ({ state: 'error' }), start: async () => { calls.push('start'); } };
+  await startConfiguredServices(controller);
+  await startConfiguredServices(controller);
+  assert.deepEqual(calls, ['start', 'start']);
+});
+
+test('automatic startup retries transient Docker daemon errors at login', async () => {
+  let probes = 0; let starts = 0; const reports = [];
+  const controller = { checkPrerequisite: async () => ({ state: ++probes < 3 ? 'broken' : 'ready', detail: 'Docker socket unavailable' }),
+    refresh: async () => ({ state: 'stopped' }), start: async () => { starts++; } };
+  await startAutomaticServices(controller, '', { delay: async () => {}, report: async message => { reports.push(message); } });
+  assert.equal(probes, 3); assert.equal(starts, 1);
+  assert.match(reports[0], /waiting for Docker Engine/);
+});
+
+test('login startup survives Docker returning after the former ten-probe window', async () => {
+  let probes = 0; let starts = 0;
+  const controller = { checkPrerequisite: async () => ({ state: ++probes < 13 ? 'broken' : 'ready' }),
+    refresh: async () => ({ state: 'stopped' }), start: async () => { starts++; } };
+  await startAutomaticServices(controller, '', { delay: async () => {}, report: async () => {} });
+  assert.equal(probes, 13);
+  assert.equal(starts, 1);
+});
+
+test('database failure is reported before dependent web startup', async () => {
   const calls = []; const reports = [];
   const controller = { current: () => ({ state: 'running', message: 'Running' }), checkPrerequisite: async () => ({ state: 'ready' }), refresh: async () => ({ state: 'running', message: 'Running' }), listManagedServices: async () => [
     { id: 'mariadb', enabled: true, state: 'failed' }, { id: 'web', enabled: true, state: 'stopped' },
     { id: 'redis', enabled: false, state: 'disabled' }, { id: 'memcached', enabled: false, state: 'disabled' },
   ], controlManagedService: async id => { calls.push(id); if (id === 'mariadb') throw Error('fixture failure'); }, start: async () => { throw Error('unexpected full start'); } };
   await startAutomaticServices(controller, '', { report: async value => { reports.push(value); } });
-  assert.deepEqual(calls, ['mariadb', 'web']);
-  assert.match(reports[0], /could not start mariadb/);
+  assert.deepEqual(calls, ['mariadb']);
+  assert.match(reports[0], /fixture failure/);
+});
+
+test('MariaDB status distinguishes slow readiness, daemon shutdown, and real failure', () => {
+  const base = { Status: 'running', Running: true, StartedAt: 'now', Health: { Status: 'starting' } };
+  assert.equal(classifyMariaDbContainer(base), 'starting');
+  assert.equal(classifyMariaDbContainer({ ...base, Health: { Status: 'healthy' } }), 'running');
+  assert.equal(classifyMariaDbContainer({ ...base, Health: { Status: 'unhealthy' } }), 'unhealthy');
+  assert.equal(classifyMariaDbContainer({ ...base, Status: 'exited', Running: false, ExitCode: 255, Health: { Status: 'healthy' } }), 'stopped');
+  assert.equal(classifyMariaDbContainer({ ...base, Status: 'exited', Running: false, ExitCode: 1 }), 'failed');
+  assert.equal(classifyMariaDbContainer({ ...base, Status: 'exited', Running: false, ExitCode: 255, OOMKilled: true }), 'failed');
 });

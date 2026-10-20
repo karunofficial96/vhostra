@@ -55,6 +55,21 @@ export interface ManagedServiceStatus {
         | "unavailable";
 }
 
+export function classifyMariaDbContainer(state: {
+    Status: string; Running: boolean; OOMKilled?: boolean; Error?: string; ExitCode?: number;
+    StartedAt?: string; Health?: { Status: string };
+}, readyStartedAt?: string): ManagedServiceStatus['state'] {
+    if (state.Status === 'restarting' || state.Status === 'created') return 'starting';
+    if (!state.Running) {
+        // Docker Desktop can stop all containers with 255 during daemon shutdown.
+        const daemonShutdown = state.ExitCode === 255 && state.Health?.Status === 'healthy' && !state.Error && !state.OOMKilled;
+        return state.OOMKilled || state.Error || (state.ExitCode && ![137, 143].includes(state.ExitCode) && !daemonShutdown) ? 'failed' : 'stopped';
+    }
+    if (state.Health?.Status === 'unhealthy') return 'unhealthy';
+    if (state.Health?.Status === 'healthy' || readyStartedAt && readyStartedAt === state.StartedAt) return 'running';
+    return 'starting';
+}
+
 let progressSequence = Date.now();
 const actionLabel = (action: string) => ({ start: "Starting", stop: "Stopping", restart: "Restarting", install: "Installing", enable: "Enabling", disable: "Disabling", remove: "Removing" }[action] ?? action);
 const projectName = "vhostra";
@@ -235,7 +250,6 @@ export class DockerRuntimeController {
             "Preparing Vhostra runtime…",
             async () => {
                 if (includeDatabase) this.markStarting('mariadb');
-                this.markStarting('web');
                 this.set({
                     state: "starting",
                     message: "Checking Docker…",
@@ -257,6 +271,7 @@ export class DockerRuntimeController {
                 });
                 await this.generate(state);
                 if (includeDatabase) await this.startDatabase();
+                this.markStarting('web');
                 await this.compose(["config", "--quiet"]);
                 this.set({
                     state: "starting",
@@ -665,7 +680,9 @@ export class DockerRuntimeController {
     async listManagedServices(): Promise<ManagedServiceStatus[]> {
         const state = await this.getState();
         const actualDatabaseState = this.restartingServices.has('mariadb') ? 'restarting' : this.stoppingServices.has('mariadb') ? 'stopping' : this.startingServices.has('mariadb') ? 'starting' : await this.databaseStatus();
-        const databaseState = this.restartingServices.has('mariadb') ? 'restarting' : this.stoppingServices.has('mariadb') ? 'stopping' : this.startingServices.has('mariadb') ? 'starting' : this.failedServices.has('mariadb') || this.mariaDbStartFailed && ['stopped', 'starting'].includes(actualDatabaseState) ? 'failed' : actualDatabaseState;
+        if (actualDatabaseState === 'running') { this.failedServices.delete('mariadb'); this.mariaDbStartFailed = false; }
+        const databaseState = ['unavailable', 'running', 'restarting', 'stopping'].includes(actualDatabaseState) ? actualDatabaseState
+            : this.failedServices.has('mariadb') || this.mariaDbStartFailed && ['stopped', 'starting'].includes(actualDatabaseState) ? 'failed' : actualDatabaseState;
         if (this.snapshot.state !== "running")
             return [
                 {
@@ -1715,13 +1732,17 @@ try { mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
         this.progress = { id: ++progressSequence, lines: [], total: 0 };
         this.set({ state, message, services: this.snapshot.services });
         const result = Promise.resolve().then(async () => {
-            try {
-                const environment = await fs.readFile(this.environmentFile, "utf8");
-                for (const line of environment.split(/\r?\n/)) {
-                    const match = line.match(/^[^#=]*(?:PASSWORD|SECRET|TOKEN|KEY)[^=]*=(.*)$/i);
-                    if (match) this.secrets.add(match[1].replace(/^['"]|['"]$/g, ""));
-                }
-            } catch { /* first start has no credentials yet */ }
+            const secretFiles = [this.environmentFile];
+            if (this.databaseRoot) secretFiles.push(path.join(this.databaseRoot, 'secrets.env'));
+            for (const file of secretFiles) {
+                try {
+                    const environment = await fs.readFile(file, "utf8");
+                    for (const line of environment.split(/\r?\n/)) {
+                        const match = line.match(/^[^#=]*(?:PASSWORD|SECRET|TOKEN|KEY)[^=]*=(.*)$/i);
+                        if (match) this.secrets.add(match[1].replace(/^['"]|['"]$/g, ""));
+                    }
+                } catch { /* first start has no credentials yet */ }
+            }
             return task();
         }).catch(async (error) => {
             for (const id of [...this.startingServices, ...this.stoppingServices, ...this.restartingServices]) this.failedServices.add(id);
@@ -2538,11 +2559,9 @@ foreach (['localhost', '127.0.0.1'] as $host) {
             const ids = await this.databaseContainerIds(true);
             if (!ids.length) { this.databaseReadyStartedAt = undefined; return "not-created"; }
             const [row] = JSON.parse(await this.docker(["inspect", ...ids]));
-            if (row.State.Status === "restarting" || row.State.Status === "created") return "starting";
-            if (!row.State.Running) { this.databaseReadyStartedAt = undefined; return row.State.OOMKilled || row.State.Error || (row.State.ExitCode && ![137, 143].includes(row.State.ExitCode)) ? "failed" : "stopped"; }
-            if (row.State.Health?.Status === "unhealthy") return "unhealthy";
-            if (row.State.Health?.Status === "healthy" || this.databaseReadyStartedAt !== undefined && this.databaseReadyStartedAt === row.State.StartedAt) return "running";
-            return "starting";
+            const status = classifyMariaDbContainer(row.State, this.databaseReadyStartedAt);
+            if (!row.State.Running) this.databaseReadyStartedAt = undefined;
+            return status;
         } catch { return "unavailable"; }
     }
     async allServicesStopped() {
@@ -2633,6 +2652,9 @@ networks:
                 || path.resolve(labels["com.docker.compose.project.working_dir"] ?? "/") !== path.resolve(this.runtimeRoot)) throw new Error("Another container owns this MariaDB datadir. Refusing concurrent access.");
             if (row.State.Running) await this.docker(["stop", "--time", "60", row.Id]);
         }
+        // A healthy database is already ready. Avoid a redundant Compose up,
+        // which can replace it if unrelated generated configuration changed.
+        if (await this.databaseStatus() === 'running') { this.clearStarting('mariadb'); return; }
         const tag = (await fs.readFile(path.join(this.databaseRoot, "compose.yml"), "utf8")).match(/image: (vhostra-mariadb:build-[a-f0-9]{24})/)?.[1];
         if (!tag) throw new Error("Invalid MariaDB image identity.");
         const image = (await this.docker(["image", "ls", "--quiet", "--filter", `reference=${tag}`])).trim();
@@ -2654,7 +2676,8 @@ networks:
         for (let attempt = 0; attempt < 90 && Date.now() < deadline; attempt++) {
             const [row] = JSON.parse(await this.docker(['inspect', ids[0]]));
             if (row.State.Health?.Status === 'healthy') { this.databaseReadyStartedAt = row.State.StartedAt; return; }
-            if (row.State.Health?.Status === 'unhealthy' || !row.State.Running && row.State.Status !== 'created' && row.State.Status !== 'restarting') throw new Error('MariaDB did not become healthy. Inspect its local bounded logs; persistent data was retained.');
+            if (!row.State.Running && row.State.Status !== 'created' && row.State.Status !== 'restarting')
+                throw await this.databaseStartupError(`MariaDB exited with code ${row.State.ExitCode ?? 'unknown'}${row.State.Error ? `: ${row.State.Error}` : ''}.`);
             if (row.State.Running) {
                 try {
                     this.counters.dockerCalls++;
@@ -2665,7 +2688,18 @@ networks:
             }
             if (Date.now() < deadline) await wait(Math.min(1000, deadline - Date.now()));
         }
-        throw new Error("MariaDB did not become healthy within 90 seconds. Persistent data was retained.");
+        throw await this.databaseStartupError("MariaDB did not become healthy within 90 seconds.");
+    }
+    private async databaseStartupError(reason: string): Promise<Error> {
+        const ids = await this.databaseContainerIds(true).catch(() => []);
+        let lastLog = '';
+        if (ids.length) {
+            this.counters.dockerCalls++;
+            await execute(this.dockerCommand(), ['logs', '--tail', '30', ids[0]], true,
+                line => { this.appendProgress(`MariaDB: ${line}`); lastLog = line.split(/\r?\n/).filter(Boolean).at(-1) ?? lastLog; }, 10000)
+                .catch(() => this.appendProgress('MariaDB container logs unavailable.'));
+        }
+        return new Error(`${reason}${lastLog ? ` Last container log: ${lastLog.slice(0, 400)}.` : ''} Persistent data was retained.`);
     }
     private async removeDatabase() {
         const ids = await this.databaseContainerIds(true);
