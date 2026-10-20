@@ -300,4 +300,3 @@ jobs:
           name: verified-vhostra-beta-1.0.9
           path: release-assets/*
           if-no-files-found: error
-

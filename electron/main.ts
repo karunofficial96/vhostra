@@ -40,7 +40,7 @@ import { startAutomaticServices, startConfiguredServices } from './automatic-sta
 import { installWindowSessionEndHandlers, shouldConfirmQuit } from './quit-intent.js';
 import { openFileDialog, saveFileDialog } from "./file-dialogs.js";
 import { checkDocker, dockerDesktopApplication, dockerInstallUrl, saveDockerExecutable } from './docker-prerequisite.js';
-import { checkManualUpdate, type UpdateResult } from './manual-update.js';
+import { checkManualUpdate, detectLinuxInstallFormat, type UpdateResult } from './manual-update.js';
 import { authorizeMacCliLink, ensureOwnedCliLink, removeOwnedCliLink, installAppImageCli, removeAppImageCli } from './cli-integration.js';
 import { changeInstalledWindowsPath, WindowsPathSetupError } from './windows-path.js';
 
@@ -1136,7 +1136,8 @@ async function removeMacCli(): Promise<string> {
 let pendingUpdateCheck: Promise<UpdateResult> | null = null;
 function checkForUpdates() {
     if (!pendingUpdateCheck) {
-        pendingUpdateCheck = checkManualUpdate(app.getVersion()).finally(() => { pendingUpdateCheck = null; });
+        const linuxFormat = process.platform === 'linux' ? detectLinuxInstallFormat(process.env.APPIMAGE, process.execPath) : null;
+        pendingUpdateCheck = checkManualUpdate(app.getVersion(), fetch, process.platform, process.arch, linuxFormat).finally(() => { pendingUpdateCheck = null; });
     }
     return pendingUpdateCheck;
 }

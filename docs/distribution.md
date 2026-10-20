@@ -1,6 +1,6 @@
 # Vhostra distribution
 
-`package.json` is the version source; `package-lock.json` carries the matching root package version. The current release candidate is **1.0.8**. See the [installation guide](install.md) for user-facing package selection and security-warning instructions, and the [draft release notes](release-notes-v1.0.8.md) for changes.
+`package.json` is the version source; `package-lock.json` carries the matching root package version. The local stable candidate is **1.0.9**. The [installation guide](install.md) still documents the published v1.0.8 release; use the [v1.0.9 upgrade test](v1.0.9-upgrade-test.md) before publishing the candidate.
 
 The manual [Package and release Vhostra](../.github/workflows/package-native.yml) workflow can verify a branch with a blank `tag` and `publish=false`. It builds on native macOS, Windows and Linux x64/ARM64 runners, runs platform packaging checks, merges exactly ten artifact files, and generates and verifies `SHA256SUMS` and `release-manifest.json`. A tagged run checks that `v<package-version>` exists and matches the package version. Only a separate tagged run with `publish=true` can invoke the release job. Normal pushes do not publish anything.
 

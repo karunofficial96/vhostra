@@ -1,9 +1,16 @@
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+
+export type LinuxInstallFormat = 'deb' | 'rpm' | 'AppImage';
+export type UpdateChoice = { format: LinuxInstallFormat; label: string; url: string };
+
 export type UpdateResult = {
-  state: 'unconfigured' | 'up-to-date' | 'available' | 'offline' | 'invalid' | 'error';
+  state: 'unconfigured' | 'up-to-date' | 'available' | 'choice-required' | 'offline' | 'invalid' | 'error';
   currentVersion: string;
   availableVersion?: string;
   notes?: string;
   url?: string;
+  choices?: UpdateChoice[];
   message: string;
 };
 
@@ -13,16 +20,41 @@ export const RELEASE_API = 'https://api.github.com/repos/karunofficial96/vhostra
 const RELEASE_URL = /^https:\/\/github\.com\/karunofficial96\/vhostra\/releases\/tag\/[^/?#]+$/;
 const ASSET_URL = /^https:\/\/github\.com\/karunofficial96\/vhostra\/releases\/download\/[^/?#]+\/[^/?#]+$/;
 
-export function releaseAssetName(version: string, platform: NodeJS.Platform, arch: string, linuxFormat: 'deb' | 'rpm' | 'AppImage' = 'AppImage'): string | null {
+export function releaseAssetName(version: string, platform: NodeJS.Platform, arch: string, linuxFormat: LinuxInstallFormat | null = null): string | null {
   if (!['x64', 'arm64'].includes(arch)) return null;
   const base = `Vhostra-${version.replace(/^v/, '')}`;
   if (platform === 'win32') return `${base}-windows-${arch}.exe`;
   if (platform === 'darwin') return `${base}-macos-${arch}.dmg`;
   if (platform === 'linux') {
+    if (!linuxFormat) return null;
     const packageArch = linuxFormat === 'deb' ? (arch === 'x64' ? 'amd64' : 'arm64') : linuxFormat === 'rpm' ? (arch === 'x64' ? 'x86_64' : 'aarch64') : (arch === 'x64' ? 'x86_64' : 'arm64');
     return `${base}-linux-${packageArch}.${linuxFormat}`;
   }
   return null;
+}
+
+function packageOwnsExecutable(format: 'deb' | 'rpm', executable: string): boolean {
+  const command = format === 'deb' ? 'dpkg-query' : 'rpm';
+  const args = format === 'deb' ? ['-S', executable] : ['-qf', '--qf', '%{NAME}', executable];
+  const result = spawnSync(command, args, { encoding: 'utf8', timeout: 2_000, maxBuffer: 16 * 1024 });
+  if (result.status !== 0 || result.error) return false;
+  return format === 'deb'
+    ? result.stdout.split('\n').some(line => /^vhostra(?::(?:amd64|arm64))?: /.test(line))
+    : result.stdout.trim() === 'vhostra';
+}
+
+// Query ownership of this exact running executable. Both package managers may
+// be present on a machine, so neither the distro nor command availability is proof.
+export function detectLinuxInstallFormat(appImagePath: string | undefined, executable: string, ownsExecutable: (format: 'deb' | 'rpm', executable: string) => boolean = packageOwnsExecutable): LinuxInstallFormat | null {
+  if (!path.isAbsolute(executable)) return null;
+  try {
+    const deb = ownsExecutable('deb', executable);
+    const rpm = ownsExecutable('rpm', executable);
+    if (deb && rpm || appImagePath && (deb || rpm)) return null;
+    if (deb) return 'deb';
+    if (rpm) return 'rpm';
+    return appImagePath ? 'AppImage' : null;
+  } catch { return null; }
 }
 
 type Version = { numbers: number[]; prerelease: string[] };
@@ -52,7 +84,7 @@ export function compareVersions(left: string, right: string): number | null {
   return 0;
 }
 
-export async function checkManualUpdate(currentVersion: string, request: typeof fetch = fetch, platform: NodeJS.Platform = process.platform, arch: string = process.arch, linuxFormat: 'deb' | 'rpm' | 'AppImage' = 'AppImage'): Promise<UpdateResult> {
+export async function checkManualUpdate(currentVersion: string, request: typeof fetch = fetch, platform: NodeJS.Platform = process.platform, arch: string = process.arch, linuxFormat: LinuxInstallFormat | null = null): Promise<UpdateResult> {
   const result = (state: UpdateResult['state'], message: string, extra: Partial<UpdateResult> = {}): UpdateResult => ({ state, message, currentVersion, ...extra });
   if (!parseVersion(currentVersion)) return result('unconfigured', 'This build has an unsupported version for release checking.');
   try {
@@ -82,11 +114,24 @@ export async function checkManualUpdate(currentVersion: string, request: typeof 
     const comparison = compareVersions(version, currentVersion);
     if (comparison === null) return result('invalid', 'The release version is malformed.');
     if (comparison <= 0) return result('up-to-date', 'Vhostra is up to date.');
-    const assetName = releaseAssetName(version, platform, arch, linuxFormat);
     const assets = item.assets;
-    const asset = Array.isArray(assets) ? assets.find(entry => entry && typeof entry === 'object' && (entry as Record<string, unknown>).name === assetName) as Record<string, unknown> | undefined : undefined;
-    const download = asset?.browser_download_url;
-    if (!assetName || typeof download !== 'string' || !ASSET_URL.test(download) || !download.endsWith(`/${assetName}`))
+    const downloadFor = (format: LinuxInstallFormat | null): string | null => {
+      const assetName = releaseAssetName(version, platform, arch, format);
+      const asset = Array.isArray(assets) ? assets.find(entry => entry && typeof entry === 'object' && (entry as Record<string, unknown>).name === assetName) as Record<string, unknown> | undefined : undefined;
+      const download = asset?.browser_download_url;
+      return assetName && typeof download === 'string' && ASSET_URL.test(download) && download.endsWith(`/${assetName}`) ? download : null;
+    };
+    if (platform === 'linux' && !linuxFormat) {
+      const choices = (['deb', 'rpm', 'AppImage'] as const).flatMap(format => {
+        const download = downloadFor(format);
+        return download ? [{ format, label: format === 'deb' ? 'DEB package' : format === 'rpm' ? 'RPM package' : 'AppImage', url: download }] : [];
+      });
+      return choices.length
+        ? result('choice-required', 'Choose the installer format for this Linux installation.', { availableVersion: version, choices })
+        : result('unconfigured', 'A download for this operating system and architecture has not been published.');
+    }
+    const download = downloadFor(linuxFormat);
+    if (!download)
       return result('unconfigured', 'A download for this operating system and architecture has not been published.');
     return result('available', `Vhostra ${version} is available.`, { availableVersion: version, url: download, notes: typeof item.body === 'string' ? item.body.slice(0, 4000) : undefined });
   } catch (error) {

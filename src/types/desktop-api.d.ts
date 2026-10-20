@@ -93,7 +93,7 @@ export interface VhostraDesktopApi {
   allHostsStatus(): ReturnType<VhostraDesktopApi['hostsStatus']>
   hostsStatus(id: string): Promise<Array<{ hostname: string; state: 'mapped' | 'required' | 'conflict'; address?: string; issue?: string }>>
   getAppInfo(): Promise<{ name: string; version: string; platform: string; appImage: boolean }>
-  checkForUpdates(): Promise<{ state: 'unconfigured' | 'up-to-date' | 'available' | 'offline' | 'invalid' | 'error'; currentVersion: string; availableVersion?: string; notes?: string; url?: string; message: string }>
+  checkForUpdates(): Promise<{ state: 'unconfigured' | 'up-to-date' | 'available' | 'choice-required' | 'offline' | 'invalid' | 'error'; currentVersion: string; availableVersion?: string; notes?: string; url?: string; choices?: Array<{ format: 'deb' | 'rpm' | 'AppImage'; label: string; url: string }>; message: string }>
   installCli(): Promise<string>
   removeCli(): Promise<string>
   onExplicitQuit(listener: () => void): () => void
