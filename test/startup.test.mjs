@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, access, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, access, rm, chmod } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { configureStartup, desktopArgument } from '../dist-electron/startup.js';
@@ -16,6 +16,11 @@ test('Linux startup uses XDG location, preserves unrelated entries, and launches
         assert.match(await readFile(file, 'utf8'), /Exec="\/opt\/My App\/electron" "\/work\/Vhostra" "--vhostra-login-start"/);
         await configureStartup(true, { ...env, packaged: true });
         assert.match(await readFile(file, 'utf8'), /Exec="\/opt\/My App\/electron" "--vhostra-login-start"\n/);
+        const appImagePath = path.join(root, 'Vhostra portable.AppImage');
+        await writeFile(appImagePath, 'fixture'); await chmod(appImagePath, 0o700);
+        await configureStartup(true, { ...env, packaged: true, executable: '/tmp/.mount-vhostra/Vhostra', appImagePath });
+        assert.match(await readFile(file, 'utf8'), /Exec=".*Vhostra portable\.AppImage" "--vhostra-login-start"\n/);
+        await assert.rejects(configureStartup(true, { ...env, packaged: true, appImagePath: path.join(root, 'missing.AppImage') }), { code: 'ENOENT' });
         await configureStartup(false, env);
         await assert.rejects(access(file), { code: 'ENOENT' });
         assert.equal(await readFile(unrelated, 'utf8'), 'unrelated');

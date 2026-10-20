@@ -599,7 +599,7 @@ export class VhostraStore {
   private normalizeSettings(settings: Partial<Settings>) {
     const legacy = settings.startup as (Partial<Settings['startup']> & { startServicesOnLaunch?: boolean; startServicesAfterLogin?: boolean }) | undefined
     const mode: ServiceStartMode = legacy?.serviceStartMode ?? (legacy?.startServicesAfterLogin ? 'after-login' : legacy?.startServicesOnLaunch === false ? 'manual' : 'on-open')
-    const startup = { launchAtLogin: mode === 'after-login' ? true : legacy?.launchAtLogin ?? defaults.startup.launchAtLogin, serviceStartMode: mode, closeBehavior: legacy?.closeBehavior ?? defaults.startup.closeBehavior }
+    const startup = { launchAtLogin: legacy?.launchAtLogin ?? defaults.startup.launchAtLogin, serviceStartMode: mode, closeBehavior: legacy?.closeBehavior ?? defaults.startup.closeBehavior }
     return { ...defaults, ...settings, optionalServices: { ...defaults.optionalServices, ...settings.optionalServices }, php: { ...defaults.php, ...settings.php, extensions: [...(settings.php?.extensions ?? defaults.php.extensions)], disabledExtensions: [...(settings.php?.disabledExtensions ?? defaults.php.disabledExtensions)] }, startup, ports: { ...defaultServicePorts, ...settings.ports } } as Settings
   }
   private validateSettings(settings: Settings) {

@@ -7,6 +7,8 @@ import { extractFile } from '@electron/asar'
 const [directory, version, platform = 'all', arch] = process.argv.slice(2)
 if (!directory || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version || '')) throw new Error('Pass an artifact directory and semantic version.')
 const arches = ['x64', 'arm64']
+// electron-builder converts the prerelease separator for native DEB/RPM metadata.
+const linuxPackageVersion = version.replace(/-/g, '~')
 const targets = {
   win: ['exe'], mac: ['dmg'], linux: ['rpm', 'deb', 'AppImage'],
 }
@@ -73,9 +75,9 @@ if (platform === 'all') {
       return result.stdout.trim()
     }
     if (metadata('dpkg-deb', ['-f', path.join(directory, name('linux', arch, 'deb')), 'Architecture']) !== (arch === 'x64' ? 'amd64' : 'arm64')) throw new Error('DEB architecture mismatch.')
-    if (metadata('dpkg-deb', ['-f', path.join(directory, name('linux', arch, 'deb')), 'Version']) !== version) throw new Error('DEB version mismatch.')
+    if (metadata('dpkg-deb', ['-f', path.join(directory, name('linux', arch, 'deb')), 'Version']) !== linuxPackageVersion) throw new Error('DEB version mismatch.')
     if (metadata('rpm', ['-qp', '--qf', '%{ARCH}', path.join(directory, name('linux', arch, 'rpm'))]) !== (arch === 'x64' ? 'x86_64' : 'aarch64')) throw new Error('RPM architecture mismatch.')
-    if (metadata('rpm', ['-qp', '--qf', '%{VERSION}', path.join(directory, name('linux', arch, 'rpm'))]) !== version) throw new Error('RPM version mismatch.')
+    if (metadata('rpm', ['-qp', '--qf', '%{VERSION}', path.join(directory, name('linux', arch, 'rpm'))]) !== linuxPackageVersion) throw new Error('RPM version mismatch.')
     const appImage = headerBytes(path.join(directory, name('linux', arch, 'AppImage')))
     if (appImage.readUInt16LE(18) !== machine) throw new Error('AppImage architecture mismatch.')
   }

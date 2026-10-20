@@ -9,6 +9,7 @@ import {
     ipcMain,
     Menu,
     nativeImage,
+    powerMonitor,
     protocol,
     shell,
     Tray,
@@ -34,7 +35,9 @@ import { startResourceDiagnostics } from "./diagnostics.js";
 import { readNativeConfiguration, type NativeImportPreview, type SourceServer } from "./config-import.js";
 import { localStorageUsage } from "./resources.js";
 import { supportedPhpVersions } from "./store.js";
-import { configureStartup } from "./startup.js";
+import { configureStartup, startupDecision } from "./startup.js";
+import { startAutomaticServices } from './automatic-startup.js';
+import { installWindowSessionEndHandlers, shouldConfirmQuit } from './quit-intent.js';
 import { openFileDialog, saveFileDialog } from "./file-dialogs.js";
 import { checkDocker, dockerDesktopApplication, dockerInstallUrl, saveDockerExecutable } from './docker-prerequisite.js';
 import { checkManualUpdate, type UpdateResult } from './manual-update.js';
@@ -78,6 +81,8 @@ let trayRefreshPending = false;
 let trayRefreshAgain = false;
 let lastVisibleRefresh = 0;
 let isQuitting = false;
+let systemShutdown = false;
+let loginLaunch = false;
 let migrationProgress: RuntimeSnapshot["progress"];
 let migrationMessage = "";
 const migrationSeen = new Map<DockerRuntimeController, { id: number; total: number }>();
@@ -243,8 +248,9 @@ const createWindow = () => {
         primaryWindow = null; windowVisible = false; windowMinimized = false;
         if (!isQuitting) updateTrayMenu();
     });
+    installWindowSessionEndHandlers(window, process.platform, () => { systemShutdown = true; });
     window.on("close", (event) => {
-        if (isQuitting) return;
+        if (isQuitting || systemShutdown) return;
         event.preventDefault();
         void store
             .getState()
@@ -309,7 +315,10 @@ if (!hasSingleInstanceLock && !pathCommand) {
     });
 }
 
-if (hasSingleInstanceLock) app.whenReady().then(() => {
+if (hasSingleInstanceLock) app.whenReady().then(async () => {
+    loginLaunch = process.platform === 'darwin'
+        ? app.getLoginItemSettings().wasOpenedAtLogin === true
+        : process.argv.includes('--vhostra-login-start');
     store = new VhostraStore(
         app.getPath("userData"),
         path.join(__dirname, "../dist-welcome"),
@@ -324,7 +333,9 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     registerScreenshotProtocol();
     installApplicationMenu();
     createTray();
-    createWindow();
+    // A login item can start the runtime without placing a window on screen.
+    const startupSettings = await store.getState().then(state => state.settings.startup);
+    if (startupDecision(startupSettings, loginLaunch).showWindow) createWindow();
     if (app.isPackaged && process.platform === 'darwin' &&
         (process.execPath.startsWith('/Applications/') || process.execPath.startsWith(path.join(os.homedir(), 'Applications') + path.sep))) {
         void installMacCli();
@@ -341,15 +352,8 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
                     return;
                 }
             }
-            if ((await store.getOnboarding()).completed && (state.settings.startup.serviceStartMode === 'on-open' || (process.argv.includes('--vhostra-login-start') && state.settings.startup.serviceStartMode === 'after-login')) && services.current().state === 'stopped')
-                return services
-                    .start()
-                    .catch((error) =>
-                        dialog.showErrorBox(
-                            "Vhostra startup failed",
-                            error instanceof Error ? error.message : String(error),
-                        ),
-                    );
+            if ((await store.getOnboarding()).completed && startupDecision(state.settings.startup, loginLaunch).startServices)
+                await startAutomaticServices(services, store.layout.logs);
         })
         .catch((error) =>
             dialog.showErrorBox(
@@ -362,8 +366,9 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     });
 });
 app.on("window-all-closed", () => { if (!isQuitting) updateTrayMenu(); });
+powerMonitor.on('shutdown', () => { systemShutdown = true; });
 app.on("before-quit", (event) => {
-    if (!isQuitting && services) { event.preventDefault(); void requestExplicitQuit(); return; }
+    if (shouldConfirmQuit(systemShutdown, isQuitting, Boolean(services))) { event.preventDefault(); void requestExplicitQuit(); return; }
     services?.dispose();
     tray?.destroy(); tray = null; trayImage = null;
 });
@@ -460,7 +465,7 @@ function registerIpc() {
         if (typeof keepSites !== "boolean" || confirmation !== "Yes, Reset Vhostra") throw new Error("Final reset confirmation is required.");
         await store.assertResetSafe();
         const previous = (await store.getState()).settings;
-        if (previous.startup.launchAtLogin) await configureLaunchAtLogin(false);
+        if (previous.startup.launchAtLogin || previous.startup.serviceStartMode === 'after-login') await configureLaunchAtLogin(false);
         try {
             await services.pauseBackgroundWork();
             // A declined Hosts prompt leaves runtime, definitions and databases unchanged.
@@ -470,7 +475,7 @@ function registerIpc() {
             pendingBackup = null; pendingNativeImport = null; storageCache = null;
             createRuntimeController(); await services.refresh(); return result;
         } catch (error) {
-            if (previous.startup.launchAtLogin) await configureLaunchAtLogin(true).catch(reportServiceFailure);
+            if (previous.startup.launchAtLogin || previous.startup.serviceStartMode === 'after-login') await configureLaunchAtLogin(true).catch(reportServiceFailure);
             throw error;
         }
     });
@@ -549,20 +554,21 @@ function registerIpc() {
         const previous = (await store.getState()).settings;
         const result = await store.saveSettings(settings);
         const loginChanged =
-            result.startup.launchAtLogin !== previous.startup.launchAtLogin;
+            (result.startup.launchAtLogin || result.startup.serviceStartMode === 'after-login') !==
+            (previous.startup.launchAtLogin || previous.startup.serviceStartMode === 'after-login');
         const runtimeChanged =
             JSON.stringify({ ...result, startup: undefined }) !==
             JSON.stringify({ ...previous, startup: undefined });
         try {
             if (loginChanged)
-                await configureLaunchAtLogin(result.startup.launchAtLogin);
+                await configureLaunchAtLogin(result.startup.launchAtLogin || result.startup.serviceStartMode === 'after-login');
             if (runtimeChanged) await services.applyConfiguration();
             return result;
         } catch (error) {
             await store.saveSettings(previous);
             if (loginChanged)
                 await configureLaunchAtLogin(
-                    previous.startup.launchAtLogin,
+                    previous.startup.launchAtLogin || previous.startup.serviceStartMode === 'after-login',
                 ).catch(reportServiceFailure);
             throw error;
         }
@@ -1142,6 +1148,7 @@ async function configureLaunchAtLogin(enabled: boolean) {
         home: app.getPath("home"),
         configHome: process.env.XDG_CONFIG_HOME,
         executable: process.execPath,
+        appImagePath: process.env.APPIMAGE,
         appPath: app.getAppPath(),
         packaged: app.isPackaged,
         setLoginItemSettings: (settings) => app.setLoginItemSettings(settings),

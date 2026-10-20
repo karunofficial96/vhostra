@@ -1,4 +1,4 @@
-import { promises as fs } from 'node:fs';
+import { promises as fs, constants } from 'node:fs';
 import path from 'node:path';
 
 interface StartupEnvironment {
@@ -6,10 +6,19 @@ interface StartupEnvironment {
     home: string;
     configHome?: string;
     executable: string;
+    appImagePath?: string;
     appPath: string;
     packaged: boolean;
     setLoginItemSettings(settings: { openAtLogin: boolean; args: string[] }): void;
     getLoginItemSettings(options: { args: string[] }): { openAtLogin: boolean; status?: string };
+}
+
+export function startupDecision(startup: { launchAtLogin: boolean; serviceStartMode: 'on-open' | 'after-login' | 'manual' }, loginLaunch: boolean) {
+    return {
+        registerLoginItem: startup.launchAtLogin || startup.serviceStartMode === 'after-login',
+        showWindow: !loginLaunch || startup.launchAtLogin,
+        startServices: loginLaunch ? startup.serviceStartMode === 'after-login' : startup.serviceStartMode === 'on-open',
+    };
 }
 
 // Desktop Entry string escaping is applied after Exec argument quoting.
@@ -30,8 +39,12 @@ export async function configureStartup(enabled: boolean, env: StartupEnvironment
             await fs.rm(file, { force: true });
             return;
         }
-        if (env.executable.includes('=')) throw new Error('Linux startup executable paths cannot contain an equals sign.');
-        const exec = [env.executable, ...args].map(desktopArgument).join(' ');
+        // AppImage's process.execPath is inside an ephemeral mount. Use the
+        // original executable file, which must remain in place for autostart.
+        const executable = env.appImagePath ?? env.executable;
+        if (!path.isAbsolute(executable) || executable.includes('=')) throw new Error('Choose an absolute Linux startup executable path without an equals sign.');
+        if (env.appImagePath) await fs.access(executable, constants.X_OK);
+        const exec = [executable, ...args].map(desktopArgument).join(' ');
         await fs.mkdir(directory, { recursive: true });
         await fs.writeFile(file, `[Desktop Entry]\nType=Application\nName=Vhostra\nExec=${exec}\nX-GNOME-Autostart-enabled=true\n`, { mode: 0o600 });
         return;
