@@ -4,16 +4,19 @@ import { startAutomaticServices } from '../dist-electron/automatic-startup.js';
 import { installWindowSessionEndHandlers, shouldConfirmQuit } from '../dist-electron/quit-intent.js';
 import { startupDecision } from '../dist-electron/startup.js';
 
-test('all four login preference combinations are independent', () => {
-  for (const [launchAtLogin, servicesOnLogin, expected] of [
-    [false, false, [false, false, false]],
-    [true, false, [true, true, false]],
-    [false, true, [true, false, true]],
-    [true, true, [true, true, true]],
+test('service startup modes distinguish normal opening from background login', () => {
+  for (const [mode, launchAtLogin, normal, login] of [
+    ['manual', false, [false, true, false], [false, false, false]],
+    ['manual', true, [true, true, false], [true, true, false]],
+    ['on-open', false, [false, true, true], [false, false, false]],
+    ['on-open', true, [true, true, true], [true, true, true]],
+    ['after-login', false, [true, true, false], [true, false, true]],
   ]) {
-    const decision = startupDecision({ launchAtLogin, serviceStartMode: servicesOnLogin ? 'after-login' : 'manual' }, true);
-    assert.deepEqual(Object.values(decision), expected);
+    const startup = { launchAtLogin, serviceStartMode: mode };
+    assert.deepEqual(Object.values(startupDecision(startup, false)), normal);
+    assert.deepEqual(Object.values(startupDecision(startup, true)), login);
   }
+  assert.equal(startupDecision({ launchAtLogin: true, serviceStartMode: 'after-login' }, true).showWindow, false);
 });
 
 test('confirmed shutdown bypasses quit confirmation; manual quit retains it', () => {

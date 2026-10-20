@@ -310,15 +310,14 @@ const hasSingleInstanceLock = pathCommand ? false : app.requestSingleInstanceLoc
 if (!hasSingleInstanceLock && !pathCommand) {
     app.quit();
 } else {
-    app.on("second-instance", () => {
-        void app.whenReady().then(openApplicationWindow);
+    app.on("second-instance", (_event, commandLine) => {
+        if (!commandLine.includes('--vhostra-login-start')) void app.whenReady().then(openApplicationWindow);
     });
 }
 
 if (hasSingleInstanceLock) app.whenReady().then(async () => {
-    loginLaunch = process.platform === 'darwin'
-        ? app.getLoginItemSettings().wasOpenedAtLogin === true
-        : process.argv.includes('--vhostra-login-start');
+    loginLaunch = process.argv.includes('--vhostra-login-start') ||
+        (process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin === true);
     store = new VhostraStore(
         app.getPath("userData"),
         path.join(__dirname, "../dist-welcome"),

@@ -27,10 +27,9 @@ app.whenReady().then(async () => {
     await click('Light'); await pause(100)
     assert.equal(await evaluate('document.documentElement.dataset.theme'), 'light')
     await writeFile('/private/tmp/vhostra-onboarding-light.png', (await window.webContents.capturePage()).toPNG())
-    await click('System'); nativeTheme.themeSource = 'dark'; await pause(150)
-    assert.equal(await evaluate('document.documentElement.dataset.theme'), 'dark')
-    nativeTheme.themeSource = 'light'; await pause(150)
-    assert.equal(await evaluate('document.documentElement.dataset.theme'), 'light')
+    await click('System'); await waitFor(`localStorage.getItem('vhostra:appearance') === 'system'`)
+    nativeTheme.themeSource = 'dark'; await waitFor(`document.documentElement.dataset.theme === 'dark'`)
+    nativeTheme.themeSource = 'light'; await waitFor(`document.documentElement.dataset.theme === 'light'`)
     await click('Continue'); await pause(100); await click('Nginx'); await pause(100)
     await click('Continue'); await pause(100)
     assert.equal(await evaluate('document.querySelector("select").value'), initial.phpVersions.at(-1))
@@ -39,9 +38,9 @@ app.whenReady().then(async () => {
     await click('Continue'); await pause(100)
     assert.match(await evaluate('document.body.textContent'), /Startup Settings/)
     assert.equal(await evaluate(`document.querySelectorAll('input[name=service-start-mode]:checked').length`), 1)
-    assert.equal(await evaluate(`[...document.querySelectorAll('label')].find(label=>label.textContent.trim()==='When Vhostra opens').querySelector('input').checked`), true)
+    assert.equal(await evaluate(`[...document.querySelectorAll('label')].find(label=>label.textContent.trim()==='Run Services When Vhostra Opens').querySelector('input').checked`), true)
     assert.equal(await evaluate(`[...document.querySelectorAll('label')].find(label=>label.textContent.includes('Launch Vhostra on Login')).querySelector('input').checked`), false)
-    await evaluate(`[...document.querySelectorAll('label')].find(label=>label.textContent.trim()==='Manually').querySelector('input').click()` )
+    await evaluate(`[...document.querySelectorAll('label')].find(label=>label.textContent.trim()==='Manual').querySelector('input').click()` )
     await waitFor(`window.vhostra.getState().then(state=>state.settings.startup.serviceStartMode==='manual')`)
     await click('Continue'); await pause(100)
     assert.match(await evaluate('document.body.textContent'), /Ready to set up/)
@@ -58,8 +57,12 @@ app.whenReady().then(async () => {
     assert.match(await evaluate('document.body.textContent'), /Dashboard/)
     runtime.start = start
     window.setSize(860, 700); await pause(100)
+    window.setAlwaysOnTop(true)
+    const showWindow = async () => { if (process.platform === 'darwin') app.show(); window.show(); app.focus({ steal: true }); window.focus(); await waitFor(`document.visibilityState === 'visible'`) }
+    await showWindow()
     let samples = 0; const resourceUsage = runtime.resourceUsage
     runtime.resourceUsage = async () => { samples++; return null }
+    const waitForSamples = async count => { const deadline = Date.now() + 20000; while (samples < count) { if (Date.now() > deadline) throw Error(`Timed out waiting for ${count} resource samples; saw ${samples}, visibility=${await evaluate('document.visibilityState')}, windowVisible=${window.isVisible()}`); if (!window.isVisible() || await evaluate(`document.visibilityState !== 'visible'`)) await showWindow(); await pause(100) } }
     await click('Resources'); await waitFor('document.body.textContent.includes("summed process working sets")')
     assert.match(await evaluate('document.body.textContent'), /summed process working sets/)
     const resources = await evaluate('window.vhostra.getResources()')
@@ -68,9 +71,10 @@ app.whenReady().then(async () => {
     const contentBounds = await evaluate('(()=>{const main=document.querySelector("main");return main.scrollWidth<=main.clientWidth})()')
     assert.equal(contentBounds, true)
     await writeFile('/private/tmp/vhostra-resources.png', (await window.webContents.capturePage()).toPNG())
-    await pause(8500); assert.ok(samples >= 3)
-    await click('Dashboard'); await pause(200); const before = samples; await pause(8500); assert.equal(samples, before)
-    await click('Resources'); await pause(300); window.hide(); await pause(8500); assert.equal(samples, before + 1); window.show(); await pause(400)
+    await waitForSamples(3)
+    await click('Dashboard'); await showWindow(); await pause(200); const before = samples; await pause(8500); assert.equal(samples, before)
+    await showWindow(); await click('Resources'); await waitForSamples(before + 1); window.hide(); await pause(8500); assert.equal(samples, before + 1); window.show(); await pause(400)
+    window.setAlwaysOnTop(false)
     runtime.resourceUsage = resourceUsage
     await window.reload(); await pause(500)
     assert.doesNotMatch(await evaluate('document.body.textContent'), /Welcome to Vhostra/)
@@ -81,10 +85,11 @@ app.whenReady().then(async () => {
       assert.equal(await welcome.webContents.executeJavaScript('document.querySelector("#theme-toggle").getAttribute("aria-label")'), `Appearance: ${theme}`)
       assert.equal(await welcome.webContents.executeJavaScript('localStorage.getItem("vhostra:welcome-appearance")'), theme)
     }
-    nativeTheme.themeSource = 'dark'; await pause(150)
-    assert.equal(await welcome.webContents.executeJavaScript('document.documentElement.dataset.theme'), 'dark')
-    nativeTheme.themeSource = 'light'; await pause(150)
-    assert.equal(await welcome.webContents.executeJavaScript('document.documentElement.dataset.theme'), 'light')
+    const waitForWelcomeTheme = async theme => { const deadline = Date.now() + 15000; while (await welcome.webContents.executeJavaScript('document.documentElement.dataset.theme') !== theme) { if (Date.now() > deadline) throw Error(`Timed out waiting for Welcome ${theme} theme`); await pause(100) } }
+    nativeTheme.themeSource = 'dark'
+    await waitForWelcomeTheme('dark')
+    nativeTheme.themeSource = 'light'
+    await waitForWelcomeTheme('light')
     console.log('Native production UI: genuine first run, backend versions/defaults, theme/icons/system changes, choices, failure/retry completion contract, no reappearance, actual application/storage metrics, minimum bounds, visible-only nonoverlapping resource samples and localhost three-way OS-following appearance passed.')
   } catch (error) { failed = true; console.error(error) } finally {
     clearTimeout(timeout); nativeTheme.themeSource = 'system'; welcome?.destroy(); await runtime?.pauseBackgroundWork(); runtime?.dispose(); desktopWindow?.destroy(); await (await import('../dist-electron/logs.js')).drainApplicationLogs(); await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 150 }); app.exit(failed ? 1 : 0)

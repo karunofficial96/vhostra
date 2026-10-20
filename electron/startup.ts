@@ -16,8 +16,10 @@ interface StartupEnvironment {
 export function startupDecision(startup: { launchAtLogin: boolean; serviceStartMode: 'on-open' | 'after-login' | 'manual' }, loginLaunch: boolean) {
     return {
         registerLoginItem: startup.launchAtLogin || startup.serviceStartMode === 'after-login',
-        showWindow: !loginLaunch || startup.launchAtLogin,
-        startServices: loginLaunch ? startup.serviceStartMode === 'after-login' : startup.serviceStartMode === 'on-open',
+        showWindow: !loginLaunch || (startup.serviceStartMode !== 'after-login' && startup.launchAtLogin),
+        startServices: startup.serviceStartMode === 'after-login'
+            ? loginLaunch
+            : startup.serviceStartMode === 'on-open' && (!loginLaunch || startup.launchAtLogin),
     };
 }
 
