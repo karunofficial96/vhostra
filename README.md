@@ -36,7 +36,7 @@ Vhostra's source is publicly viewable, but no software license is currently gran
 - PHP extension inventory obtained from the active PHP implementation when the runtime is running; optional packages are selected only when available for both LSPHP and normal PHP-FPM, and are checked through the real PHP request path
 - Zend OPcache preference and `cwebp` support (enabled by default); `cwebp` is supplied by the runtime’s `webp` package and validated in the runtime health check
 - Hosts-file mappings for virtual-host hostnames and aliases, using a narrow elevation prompt rather than running the app with permanent administrator privileges
-- Independent Launch Vhostra on Login setting and one service-start mode: When Vhostra opens, After login, or Manually; fresh profiles start services on open
+- Three exclusive service startup choices and a separate Launch Vhostra on Login checkbox; fresh profiles default to Run Services When Vhostra Opens
 
 ## Architecture summary
 
@@ -259,7 +259,7 @@ Changing an optional extension, OPcache, or `cwebp` preference persists the desi
 
 ## Startup
 
-Settings and Welcome use one service-start radio group: **When Vhostra opens** (fresh default), **After login**, or **Manually**. Launch Vhostra on Login is an independent checkbox. After login uses Vhostra's own native login item or XDG entry and automatically enables that checkbox; turning the checkbox off while After login is selected changes service startup to Manually. MacOS and Windows use Electron's native login-item support; Linux writes only Vhostra's own XDG autostart desktop entry. Service startup runs only for the selected mode after safe initialization and skips an already running or starting runtime. Existing profiles migrate deterministically: After login wins when its old flag was enabled; otherwise an enabled on-open flag becomes When Vhostra opens; otherwise Manually. The old flags are removed from saved settings. Other settings are preserved.
+Settings and Welcome provide three exclusive choices: **Manual**, **Run Services When Vhostra Opens**, and **Run Services on Login**. **Launch Vhostra on Login** is a separate checkbox in Manual and Run Services When Vhostra Opens modes. Run Services on Login clears and disables it, registers Vhostra's per-user login item, and starts enabled services without displaying the main window. Switching away leaves the checkbox unchecked. macOS uses Electron's native login item and its `wasOpenedAtLogin` marker; Windows uses Electron's per-user login registration and a launch argument; Linux uses only Vhostra's XDG autostart entry. AppImage autostart points at the original executable rather than its temporary mount. Automatic startup waits for Docker Engine with bounded retries, skips running services, attempts only missing enabled services, and records failures in the local application log. macOS login-item registration in an unsigned/unnotarized build may fail or may not launch reliably. Existing profile preferences are preserved except an incompatible window-launch selection in Run Services on Login mode. See the [cross-platform startup and shutdown acceptance checklist](docs/startup-acceptance.md).
 
 The CLI also supports `vhostra database users`, `vhostra database user delete USER HOST`, `vhostra database user password USER HOST`, and `vhostra database access grant DATABASE USER HOST`. Account identity always includes the host; passwords are entered privately in a terminal and never shown in output. Deletion requires an explicit typed confirmation.
 

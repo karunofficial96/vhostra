@@ -49,17 +49,57 @@ test('legacy startup checkboxes migrate to one mode without losing other prefere
       [{ launchAtLogin: false, startServicesOnLaunch: true, startServicesAfterLogin: false }, 'on-open'],
       [{ launchAtLogin: false, startServicesOnLaunch: false, startServicesAfterLogin: false }, 'manual'],
       [{ launchAtLogin: false, startServicesOnLaunch: true, startServicesAfterLogin: true }, 'after-login'],
+      [{ launchAtLogin: true, startServicesOnLaunch: true, startServicesAfterLogin: true }, 'after-login'],
     ]) {
       await writeFile(store.layout.settings, JSON.stringify({ ...original, selectedWebServer: 'nginx', startup: { ...legacy, closeBehavior: 'keep-services' } }))
       const migrated = (await new VhostraStore(directory).getState()).settings
       assert.equal(migrated.startup.serviceStartMode, expected)
-      assert.equal(migrated.startup.launchAtLogin, expected === 'after-login')
+      assert.equal(migrated.startup.launchAtLogin, false)
       assert.equal(migrated.selectedWebServer, 'nginx')
       assert.equal(migrated.startup.closeBehavior, 'keep-services')
       const saved = JSON.parse(await readFile(store.layout.settings, 'utf8'))
       assert.equal('startServicesOnLaunch' in saved.startup, false)
       assert.equal('startServicesAfterLogin' in saved.startup, false)
     }
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
+test('valid startup choices persist and login services clear window launch without modifying data', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'vhostra-login-persistence-'))
+  try {
+    const store = new VhostraStore(directory)
+    const original = await store.getState()
+    const marker = path.join(directory, 'database-preservation-marker')
+    await writeFile(marker, 'database data')
+    for (const mode of ['manual', 'on-open', 'after-login']) for (const launchAtLogin of [false, true]) {
+      await store.saveSettings({ ...original.settings, startup: { ...original.settings.startup, launchAtLogin, serviceStartMode: mode } })
+      const reloaded = await new VhostraStore(directory).getState()
+      assert.equal(reloaded.settings.startup.launchAtLogin, mode === 'after-login' ? false : launchAtLogin)
+      assert.equal(reloaded.settings.startup.serviceStartMode, mode)
+      assert.deepEqual(reloaded.sites.map(site => site.id), original.sites.map(site => site.id))
+      assert.equal(await readFile(marker, 'utf8'), 'database data')
+    }
+    const saved = (await store.getState()).settings
+    await store.saveSettings({ ...saved, startup: { ...saved.startup, serviceStartMode: 'manual' } })
+    assert.equal((await new VhostraStore(directory).getState()).settings.startup.launchAtLogin, false)
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
+test('incompatible saved startup settings are repaired without resetting other preferences', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'vhostra-startup-repair-'))
+  try {
+    const store = new VhostraStore(directory)
+    const original = (await store.getState()).settings
+    await writeFile(store.layout.settings, JSON.stringify({ ...original, selectedWebServer: 'nginx', startup: { ...original.startup, launchAtLogin: true, serviceStartMode: 'after-login' } }))
+    const repaired = (await new VhostraStore(directory).getState()).settings
+    assert.equal(repaired.startup.launchAtLogin, false)
+    assert.equal(repaired.startup.serviceStartMode, 'after-login')
+    assert.equal(repaired.selectedWebServer, 'nginx')
+    assert.equal(JSON.parse(await readFile(store.layout.settings, 'utf8')).startup.launchAtLogin, false)
+    await writeFile(store.layout.settings, JSON.stringify({ ...original, selectedWebServer: 'apache', startup: { ...original.startup, serviceStartMode: 'invalid' } }))
+    const normalized = (await new VhostraStore(directory).getState()).settings
+    assert.equal(normalized.startup.serviceStartMode, 'on-open')
+    assert.equal(normalized.selectedWebServer, 'apache')
   } finally { await rm(directory, { recursive: true, force: true }) }
 })
 
